@@ -89,7 +89,7 @@ Authorization: Bearer <privy_token>
 List active merchants.
 
 **Query Parameters:**
-- `category` (optional) - Filter by category: "kuliner" | "hiburan" | "travel" | "fashion" | "lainnya"
+- `categoryId` (optional) - Filter by category ID (UUID)
 - `search` (optional) - Search by name (case-insensitive)
 - `page` (optional, default: 1) - Page number
 - `limit` (optional, default: 20, max: 100) - Items per page
@@ -101,7 +101,10 @@ List active merchants.
     {
       "id": "uuid",
       "name": "Merchant Name",
-      "category": "kuliner",
+      "categoryId": "uuid",
+      "category": {
+        "name": "kuliner"
+      },
       "logoUrl": "https://...",
       "description": "...",
       "isActive": true,
@@ -392,51 +395,15 @@ Get all active merchant categories.
   "data": [
     {
       "id": "uuid",
-      "name": "kuliner",
-      "displayName": "Kuliner",
-      "description": "Restoran, kafe, dan tempat makan",
-      "icon": "🍔",
-      "sortOrder": 1
+      "name": "kuliner"
     },
     {
       "id": "uuid",
-      "name": "hiburan",
-      "displayName": "Hiburan",
-      "description": "Bioskop, konser, dan hiburan lainnya",
-      "icon": "🎬",
-      "sortOrder": 2
+      "name": "hiburan"
     },
     {
       "id": "uuid",
-      "name": "event",
-      "displayName": "Event",
-      "description": "Konferensi, workshop, dan acara khusus",
-      "icon": "🎉",
-      "sortOrder": 3
-    },
-    {
-      "id": "uuid",
-      "name": "kesehatan",
-      "displayName": "Kesehatan",
-      "description": "Klinik, gym, spa, dan wellness",
-      "icon": "💪",
-      "sortOrder": 4
-    },
-    {
-      "id": "uuid",
-      "name": "lifestyle",
-      "displayName": "Lifestyle",
-      "description": "Fashion, kecantikan, dan gaya hidup",
-      "icon": "✨",
-      "sortOrder": 5
-    },
-    {
-      "id": "uuid",
-      "name": "travel",
-      "displayName": "Travel",
-      "description": "Hotel, transportasi, dan wisata",
-      "icon": "✈️",
-      "sortOrder": 6
+      "name": "travel"
     }
   ]
 }
@@ -444,10 +411,9 @@ Get all active merchant categories.
 
 **Notes:**
 - Returns only active categories
-- Categories are sorted by `sortOrder` (ascending)
-- Use `name` field for filtering merchants by category
-- Use `displayName` for UI display
-- Icons are emoji characters
+- Categories are sorted by name (ascending)
+- Simplified structure - only id and name fields
+- Use categoryId for filtering merchants
 
 #### `GET /api/categories/:id`
 Get a specific category by ID.
@@ -458,10 +424,6 @@ Get a specific category by ID.
   "data": {
     "id": "uuid",
     "name": "kuliner",
-    "displayName": "Kuliner",
-    "description": "Restoran, kafe, dan tempat makan",
-    "icon": "🍔",
-    "sortOrder": 1,
     "isActive": true
   }
 }
@@ -501,6 +463,21 @@ Admin login.
   }
 }
 ```
+
+**Errors:**
+- `401` - Invalid credentials (wrong password or email not found)
+- `401` - Account is inactive
+- `403` - Password not set (first-login flow required)
+  ```json
+  {
+    "error": "Password belum diset",
+    "code": "PASSWORD_NOT_SET"
+  }
+  ```
+
+**First-Login Flow:**
+When admin receives `PASSWORD_NOT_SET` error, redirect to set-password page.
+Use `POST /api/auth/set-password` to complete first-login setup.
 
 **Errors:**
 - `401` - Invalid credentials or inactive admin
@@ -972,6 +949,212 @@ Get recent redemptions. **Requires owner auth.**
   ]
 }
 ```
+
+#### `GET /api/admin/analytics/redemptions-over-time`
+Get redemption trends over time. **Requires owner auth.**
+
+**Query Parameters:**
+- `period` (optional, default: "daily") - "daily" | "weekly" | "monthly"
+
+**Response:** `200 OK`
+```json
+{
+  "data": [
+    {
+      "period": "2026-01-01",
+      "count": 15
+    },
+    {
+      "period": "2026-01-02",
+      "count": 23
+    }
+  ]
+}
+```
+
+#### `GET /api/admin/analytics/merchant-categories`
+Get merchant distribution by category. **Requires owner auth.**
+
+**Response:** `200 OK`
+```json
+{
+  "data": [
+    {
+      "categoryName": "kuliner",
+      "count": 12
+    },
+    {
+      "categoryName": "hiburan",
+      "count": 8
+    }
+  ]
+}
+```
+
+#### `GET /api/admin/analytics/wealth-volume`
+Get WEALTH token volume over time. **Requires owner auth.**
+
+**Query Parameters:**
+- `period` (optional, default: "monthly") - "daily" | "weekly" | "monthly"
+
+**Response:** `200 OK`
+```json
+{
+  "data": [
+    {
+      "period": "2026-01",
+      "volume": "5000.123"
+    },
+    {
+      "period": "2026-02",
+      "volume": "7500.456"
+    }
+  ]
+}
+```
+
+#### `GET /api/admin/analytics/top-merchants`
+Get top performing merchants by redemption count. **Requires owner auth.**
+
+**Query Parameters:**
+- `limit` (optional, default: 3, max: 10)
+
+**Response:** `200 OK`
+```json
+{
+  "data": [
+    {
+      "merchantId": "uuid",
+      "merchantName": "Merchant A",
+      "redemptionCount": 150
+    },
+    {
+      "merchantId": "uuid",
+      "merchantName": "Merchant B",
+      "redemptionCount": 120
+    }
+  ]
+}
+```
+
+#### `GET /api/admin/analytics/top-vouchers`
+Get top performing vouchers by redemption count. **Requires owner auth.**
+
+**Query Parameters:**
+- `limit` (optional, default: 3, max: 10)
+
+**Response:** `200 OK`
+```json
+{
+  "data": [
+    {
+      "voucherId": "uuid",
+      "voucherTitle": "Discount 50%",
+      "merchantName": "Merchant A",
+      "redemptionCount": 85
+    }
+  ]
+}
+```
+
+#### `GET /api/admin/analytics/treasury-balance`
+Get treasury wallet balance (stub for blockchain integration). **Requires owner auth.**
+
+**Response:** `200 OK`
+```json
+{
+  "balance": "0",
+  "tokenAddress": "0x...",
+  "treasuryAddress": "0x...",
+  "note": "Blockchain integration pending. Balance is currently a placeholder."
+}
+```
+
+**Errors:**
+- `400` - Treasury addresses not configured in settings
+
+**Notes:**
+- All analytics endpoints use 5-minute cache
+- Cache is automatically refreshed on data mutations
+- Requires owner role for access
+
+---
+
+### 📤 Admin - File Upload
+
+#### `POST /api/admin/upload/logo`
+Upload merchant logo to R2 storage. **Requires admin auth.**
+
+**Content-Type:** `multipart/form-data`
+
+**Body:**
+- `file` - Image file (max 5MB, images only: jpg, png, gif, webp)
+
+**Response:** `201 Created`
+```json
+{
+  "url": "https://pub-xxx.r2.dev/logos/uuid.png",
+  "filename": "uuid.png",
+  "size": 123456,
+  "contentType": "image/png"
+}
+```
+
+**Errors:**
+- `400` - No file provided
+- `400` - File too large (max 5MB)
+- `400` - Invalid file type (only images allowed)
+- `500` - Upload failed
+
+**Notes:**
+- Files are stored in public R2 bucket
+- Returns public URL immediately accessible
+- UUID filename prevents collisions
+
+#### `POST /api/admin/vouchers/:id/upload-qr`
+Upload QR codes as ZIP file for a voucher. **Requires admin auth.**
+
+**Content-Type:** `multipart/form-data`
+
+**Body:**
+- `file` - ZIP file containing PNG images
+
+**Validation:**
+- All files must be PNG format
+- Flat structure (no subdirectories)
+- File count must match: `totalStock × qrPerRedemption`
+- No duplicate image hashes
+
+**Response:** `200 OK`
+```json
+{
+  "voucher": {
+    "id": "uuid",
+    "title": "Voucher Title",
+    "totalQrCodes": 10
+  },
+  "qrCodes": [
+    {
+      "id": "uuid",
+      "imageUrl": "https://r2.dev/...",
+      "status": "available"
+    }
+  ]
+}
+```
+
+**Errors:**
+- `400` - Invalid ZIP structure
+- `400` - Wrong number of files
+- `400` - Non-PNG files found
+- `400` - Duplicate image hash
+- `409` - Voucher already has QR codes
+- `404` - Voucher not found
+
+**Notes:**
+- Transaction-safe: Auto-rollback on failure
+- Files stored in private R2 bucket with signed URLs
+- Image hashes prevent duplicates
 
 ---
 
