@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
 import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import {
+  createVoucherSchema,
+  updateVoucherSchema,
+} from "../../schemas/voucher.js";
 
 const adminVouchers = new Hono<AuthEnv>();
 
@@ -42,15 +46,18 @@ adminVouchers.get("/", async (c) => {
 
 // POST /api/admin/vouchers — Create voucher
 adminVouchers.post("/", async (c) => {
-  const {
-    merchantId,
-    title,
-    description,
-    startDate,
-    endDate,
-    totalStock,
-    priceIdr,
-  } = await c.req.json();
+  const body = await c.req.json();
+
+  const parsed = createVoucherSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Validation failed", details: parsed.error.flatten() },
+      400
+    );
+  }
+
+  const { merchantId, title, description, startDate, endDate, totalStock, priceIdr, qrPerRedemption } =
+    parsed.data;
 
   const voucher = await prisma.voucher.create({
     data: {
@@ -62,6 +69,7 @@ adminVouchers.post("/", async (c) => {
       totalStock,
       remainingStock: totalStock,
       priceIdr,
+      qrPerRedemption,
     },
   });
 
@@ -71,20 +79,44 @@ adminVouchers.post("/", async (c) => {
 // PUT /api/admin/vouchers/:id — Update voucher
 adminVouchers.put("/:id", async (c) => {
   const id = c.req.param("id");
-  const data = await c.req.json();
+  const body = await c.req.json();
 
-  if (data.startDate) data.startDate = new Date(data.startDate);
-  if (data.endDate) data.endDate = new Date(data.endDate);
+  const parsed = updateVoucherSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Validation failed", details: parsed.error.flatten() },
+      400
+    );
+  }
 
-  const voucher = await prisma.voucher.update({ where: { id }, data });
-  return c.json({ voucher });
+  const data = { ...parsed.data } as Record<string, unknown>;
+  if (data.startDate) data.startDate = new Date(data.startDate as string);
+  if (data.endDate) data.endDate = new Date(data.endDate as string);
+
+  try {
+    const voucher = await prisma.voucher.update({ where: { id }, data });
+    return c.json({ voucher });
+  } catch {
+    return c.json({ error: "Voucher not found" }, 404);
+  }
 });
 
 // DELETE /api/admin/vouchers/:id — Delete voucher (owner only)
 adminVouchers.delete("/:id", requireOwner, async (c) => {
   const id = c.req.param("id");
-  await prisma.voucher.delete({ where: { id } });
-  return c.json({ ok: true });
+  try {
+    await prisma.voucher.delete({ where: { id } });
+    return c.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("Foreign key constraint")) {
+      return c.json(
+        { error: "Cannot delete voucher with existing redemptions" },
+        400
+      );
+    }
+    return c.json({ error: "Voucher not found" }, 404);
+  }
 });
 
 export default adminVouchers;

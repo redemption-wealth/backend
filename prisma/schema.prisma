@@ -66,7 +66,7 @@ model User {
 model Admin {
   id           String    @id @default(uuid())
   email        String    @unique
-  passwordHash String    @map("password_hash")
+  passwordHash String?   @map("password_hash")
   role         AdminRole @default(admin)
   isActive     Boolean   @default(true) @map("is_active")
   createdAt    DateTime  @default(now()) @map("created_at")
@@ -95,18 +95,19 @@ model Merchant {
 }
 
 model Voucher {
-  id             String   @id @default(uuid())
-  merchantId     String   @map("merchant_id")
-  title          String
-  description    String?  @db.Text
-  startDate      DateTime @map("start_date") @db.Date
-  endDate        DateTime @map("end_date") @db.Date
-  totalStock     Int      @map("total_stock")
-  remainingStock Int      @map("remaining_stock")
-  priceIdr       Int      @map("price_idr")
-  isActive       Boolean  @default(true) @map("is_active")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  id              String   @id @default(uuid())
+  merchantId      String   @map("merchant_id")
+  title           String
+  description     String?  @db.Text
+  startDate       DateTime @map("start_date") @db.Date
+  endDate         DateTime @map("end_date") @db.Date
+  totalStock      Int      @map("total_stock")
+  remainingStock  Int      @map("remaining_stock")
+  priceIdr        Int      @map("price_idr")
+  qrPerRedemption Int      @default(1) @map("qr_per_redemption")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
   merchant    Merchant     @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   qrCodes     QrCode[]
@@ -119,6 +120,7 @@ model Voucher {
 model QrCode {
   id               String    @id @default(uuid())
   voucherId        String    @map("voucher_id")
+  redemptionId     String?   @map("redemption_id")
   imageUrl         String    @map("image_url")
   imageHash        String    @unique @map("image_hash")
   status           QrStatus  @default(available)
@@ -130,10 +132,11 @@ model QrCode {
 
   voucher    Voucher     @relation(fields: [voucherId], references: [id], onDelete: Restrict)
   assignedTo User?       @relation(fields: [assignedToUserId], references: [id], onDelete: SetNull)
-  redemption Redemption?
+  redemption Redemption? @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
 
   @@index([voucherId, status])
   @@index([assignedToUserId])
+  @@index([redemptionId])
   @@map("qr_codes")
 }
 
@@ -141,11 +144,11 @@ model Redemption {
   id                     String           @id @default(uuid())
   userId                 String           @map("user_id")
   voucherId              String           @map("voucher_id")
-  qrCodeId               String           @unique @map("qr_code_id")
   wealthAmount           Decimal          @map("wealth_amount") @db.Decimal(36, 18)
   priceIdrAtRedeem       Int              @map("price_idr_at_redeem")
   wealthPriceIdrAtRedeem Decimal          @map("wealth_price_idr_at_redeem") @db.Decimal(18, 4)
-  devCutAmount           Decimal          @map("dev_cut_amount") @db.Decimal(36, 18)
+  appFeeAmount           Decimal          @map("app_fee_amount") @db.Decimal(36, 18)
+  gasFeeAmount           Decimal          @default(0) @map("gas_fee_amount") @db.Decimal(36, 18)
   txHash                 String?          @unique @map("tx_hash")
   idempotencyKey         String           @unique @map("idempotency_key")
   status                 RedemptionStatus @default(pending)
@@ -155,7 +158,7 @@ model Redemption {
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Restrict)
   voucher     Voucher      @relation(fields: [voucherId], references: [id], onDelete: Restrict)
-  qrCode      QrCode       @relation(fields: [qrCodeId], references: [id], onDelete: Restrict)
+  qrCodes     QrCode[]
   transaction Transaction?
 
   @@index([userId, status])
@@ -185,10 +188,21 @@ model Transaction {
 
 model AppSettings {
   id                    String   @id @default("singleton")
-  devCutPercentage      Decimal  @default(3) @map("dev_cut_percentage") @db.Decimal(5, 2)
+  appFeePercentage      Decimal  @default(3) @map("app_fee_percentage") @db.Decimal(5, 2)
   tokenContractAddress  String?  @map("token_contract_address")
   treasuryWalletAddress String?  @map("treasury_wallet_address")
   updatedAt             DateTime @updatedAt @map("updated_at")
 
   @@map("app_settings")
+}
+
+model FeeSetting {
+  id        String   @id @default(uuid())
+  label     String
+  amountIdr Int      @map("amount_idr")
+  isActive  Boolean  @default(false) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("fee_settings")
 }

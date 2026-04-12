@@ -17,9 +17,12 @@ vi.mock("@/db.js", () => ({
 }));
 
 // Mock Privy client to avoid real API calls
+const mockVerifyAuthToken = vi.fn();
+const mockGetUser = vi.fn();
+
 class MockPrivyClient {
-  verifyAuthToken = vi.fn();
-  getUser = vi.fn();
+  verifyAuthToken = mockVerifyAuthToken;
+  getUser = mockGetUser;
 }
 
 vi.mock("@privy-io/server-auth", () => ({
@@ -40,6 +43,7 @@ beforeEach(async () => {
   await testPrisma.user.deleteMany();
   await testPrisma.admin.deleteMany();
   await testPrisma.appSettings.deleteMany();
+  await testPrisma.feeSetting.deleteMany();
 });
 
 afterAll(async () => {
@@ -47,4 +51,4 @@ afterAll(async () => {
   await pool.end();
 });
 
-export { testPrisma };
+export { testPrisma, mockVerifyAuthToken, mockGetUser };

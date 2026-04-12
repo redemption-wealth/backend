@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.14.3",
+    "@hono/zod-validator": "^0.7.6",
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
     "@privy-io/server-auth": "^1.32.5",

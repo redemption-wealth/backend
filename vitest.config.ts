@@ -33,6 +33,7 @@ export default defineConfig({
           testTimeout: 30_000,
           hookTimeout: 60_000,
           sequence: { concurrent: false },
+          fileParallelism: false,
         },
       },
       {
@@ -46,6 +47,7 @@ export default defineConfig({
           testTimeout: 60_000,
           hookTimeout: 60_000,
           sequence: { concurrent: false },
+          fileParallelism: false,
         },
       },
     ],

@@ -14,20 +14,26 @@ export async function initiateRedemption({
   idempotencyKey,
   wealthPriceIdr,
 }: InitiateRedemptionParams) {
-  // Check idempotency
-  const existing = await prisma.redemption.findUnique({
-    where: { idempotencyKey },
+  // Check idempotency (scoped to user)
+  const existing = await prisma.redemption.findFirst({
+    where: { idempotencyKey, userId },
   });
   if (existing) {
     return { redemption: existing, alreadyExists: true };
   }
 
-  // Fetch app settings for dev cut
+  // Fetch app settings for app fee
   const settings = await prisma.appSettings.findUnique({
     where: { id: "singleton" },
   });
-  const devCutPercentage =
-    settings?.devCutPercentage ?? new Prisma.Decimal(3);
+  const appFeePercentage =
+    settings?.appFeePercentage ?? new Prisma.Decimal(3);
+
+  // Fetch active gas fee setting
+  const activeFee = await prisma.feeSetting.findFirst({
+    where: { isActive: true },
+  });
+  const gasFeeIdr = activeFee?.amountIdr ?? 0;
 
   // Transaction with row-level locking
   const redemption = await prisma.$transaction(async (tx) => {
@@ -39,9 +45,10 @@ export async function initiateRedemption({
         is_active: boolean;
         end_date: Date;
         price_idr: number;
+        qr_per_redemption: number;
       }>
     >(
-      `SELECT id, remaining_stock, is_active, end_date, price_idr FROM vouchers WHERE id = $1 FOR UPDATE`,
+      `SELECT id, remaining_stock, is_active, end_date, price_idr, qr_per_redemption FROM vouchers WHERE id = $1 FOR UPDATE`,
       voucherId
     );
 
@@ -51,44 +58,57 @@ export async function initiateRedemption({
     if (new Date(voucher.end_date) < new Date())
       throw new Error("Voucher expired");
 
-    // Lock first available QR code (FIFO)
-    const [qrCode] = await tx.$queryRawUnsafe<Array<{ id: string }>>(
-      `SELECT id FROM qr_codes WHERE voucher_id = $1 AND status = 'available' ORDER BY created_at ASC LIMIT 1 FOR UPDATE`,
-      voucherId
+    const qrPerRedemption = voucher.qr_per_redemption;
+
+    // Lock available QR codes (FIFO)
+    const qrCodes = await tx.$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT id FROM qr_codes WHERE voucher_id = $1 AND status = 'available' ORDER BY created_at ASC LIMIT $2 FOR UPDATE`,
+      voucherId,
+      qrPerRedemption
     );
 
-    if (!qrCode) throw new Error("No QR codes available");
+    if (qrCodes.length === 0) throw new Error("No QR codes available");
+    if (qrCodes.length < qrPerRedemption)
+      throw new Error("Not enough QR codes available");
 
-    // Calculate amounts
-    const wealthAmount = new Prisma.Decimal(voucher.price_idr).div(
-      new Prisma.Decimal(wealthPriceIdr)
-    );
-    const devCutAmount = wealthAmount.mul(devCutPercentage).div(100);
+    // 3-component pricing: base + app fee + gas fee
+    const priceIdr = new Prisma.Decimal(voucher.price_idr);
+    const appFee = priceIdr.mul(appFeePercentage).div(100);
+    const gasFee = new Prisma.Decimal(gasFeeIdr);
+    const totalIdr = priceIdr.add(appFee).add(gasFee);
+
+    const wealthPriceDecimal = new Prisma.Decimal(wealthPriceIdr);
+    const wealthAmount = totalIdr.div(wealthPriceDecimal);
+    const appFeeAmount = appFee.div(wealthPriceDecimal);
+    const gasFeeAmount = gasFee.div(wealthPriceDecimal);
 
     // Create redemption (pending — waiting for on-chain tx)
     const newRedemption = await tx.redemption.create({
       data: {
         userId,
         voucherId,
-        qrCodeId: qrCode.id,
         wealthAmount,
         priceIdrAtRedeem: voucher.price_idr,
-        wealthPriceIdrAtRedeem: new Prisma.Decimal(wealthPriceIdr),
-        devCutAmount,
+        wealthPriceIdrAtRedeem: wealthPriceDecimal,
+        appFeeAmount,
+        gasFeeAmount,
         idempotencyKey,
         status: "pending",
       },
     });
 
-    // Assign QR to user
-    await tx.qrCode.update({
-      where: { id: qrCode.id },
-      data: {
-        status: "assigned",
-        assignedToUserId: userId,
-        assignedAt: new Date(),
-      },
-    });
+    // Assign QR codes to user and link to redemption
+    for (const qr of qrCodes) {
+      await tx.qrCode.update({
+        where: { id: qr.id },
+        data: {
+          status: "assigned",
+          assignedToUserId: userId,
+          assignedAt: new Date(),
+          redemptionId: newRedemption.id,
+        },
+      });
+    }
 
     return newRedemption;
   });
@@ -138,6 +158,7 @@ export async function failRedemption(txHash: string) {
   return prisma.$transaction(async (tx) => {
     const redemption = await tx.redemption.findFirst({
       where: { txHash, status: "pending" },
+      include: { qrCodes: true },
     });
 
     if (!redemption) throw new Error("Redemption not found");
@@ -148,15 +169,18 @@ export async function failRedemption(txHash: string) {
       data: { status: "failed" },
     });
 
-    // Release QR back to available
-    await tx.qrCode.update({
-      where: { id: redemption.qrCodeId },
-      data: {
-        status: "available",
-        assignedToUserId: null,
-        assignedAt: null,
-      },
-    });
+    // Release all QR codes back to available
+    for (const qr of redemption.qrCodes) {
+      await tx.qrCode.update({
+        where: { id: qr.id },
+        data: {
+          status: "available",
+          assignedToUserId: null,
+          assignedAt: null,
+          redemptionId: null,
+        },
+      });
+    }
 
     return redemption;
   });
