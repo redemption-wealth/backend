@@ -13,11 +13,13 @@ async function createOwnerWithToken() {
 }
 
 describe("GET /api/admin/analytics/summary", () => {
-  test("returns 403 for non-owner", async () => {
+  test("returns 200 for admin", async () => {
     const admin = await fixtures.createAdmin({ role: "admin" });
     const token = await createTestAdminToken({ id: admin.id, role: "admin" });
     const res = await authGet("/api/admin/analytics/summary", token);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.summary).toBeDefined();
   });
 
   test("returns aggregated stats", async () => {
@@ -44,11 +46,13 @@ describe("GET /api/admin/analytics/summary", () => {
 });
 
 describe("GET /api/admin/analytics/recent-activity", () => {
-  test("returns 403 for non-owner", async () => {
+  test("returns 200 for admin", async () => {
     const admin = await fixtures.createAdmin({ role: "admin" });
     const token = await createTestAdminToken({ id: admin.id, role: "admin" });
     const res = await authGet("/api/admin/analytics/recent-activity", token);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.activities).toBeDefined();
   });
 
   test("returns activity list", async () => {
