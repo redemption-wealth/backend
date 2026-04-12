@@ -53,48 +53,12 @@ async function main() {
 
   // Seed categories
   const categories = [
-    {
-      name: "kuliner",
-      displayName: "Kuliner",
-      description: "Restoran, kafe, dan tempat makan",
-      icon: "🍔",
-      sortOrder: 1,
-    },
-    {
-      name: "hiburan",
-      displayName: "Hiburan",
-      description: "Bioskop, konser, dan hiburan lainnya",
-      icon: "🎬",
-      sortOrder: 2,
-    },
-    {
-      name: "event",
-      displayName: "Event",
-      description: "Konferensi, workshop, dan acara khusus",
-      icon: "🎉",
-      sortOrder: 3,
-    },
-    {
-      name: "kesehatan",
-      displayName: "Kesehatan",
-      description: "Klinik, gym, spa, dan wellness",
-      icon: "💪",
-      sortOrder: 4,
-    },
-    {
-      name: "lifestyle",
-      displayName: "Lifestyle",
-      description: "Fashion, kecantikan, dan gaya hidup",
-      icon: "✨",
-      sortOrder: 5,
-    },
-    {
-      name: "travel",
-      displayName: "Travel",
-      description: "Hotel, transportasi, dan wisata",
-      icon: "✈️",
-      sortOrder: 6,
-    },
+    { name: "kuliner" },
+    { name: "hiburan" },
+    { name: "event" },
+    { name: "kesehatan" },
+    { name: "lifestyle" },
+    { name: "travel" },
   ];
 
   for (const category of categories) {

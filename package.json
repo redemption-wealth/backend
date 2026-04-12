@@ -25,20 +25,27 @@
     "test:watch": "vitest --watch"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1029.0",
+    "@aws-sdk/s3-request-presigner": "^3.1029.0",
     "@hono/node-server": "^1.14.3",
     "@hono/zod-validator": "^0.7.6",
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
     "@privy-io/server-auth": "^1.32.5",
+    "adm-zip": "^0.5.17",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.5.0",
+    "file-type": "^22.0.1",
     "hono": "^4.7.11",
     "jose": "^6.2.2",
+    "node-cache": "^5.1.2",
     "pg": "^8.20.0",
+    "viem": "^2.47.12",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^11.14.0",
+    "@types/adm-zip": "^0.5.8",
     "@types/bcryptjs": "^3.0.0",
     "@types/node": "^22.15.0",
     "@types/pg": "^8.20.0",

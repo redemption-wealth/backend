@@ -6,14 +6,14 @@ const merchants = new Hono();
 
 // GET /api/merchants — Public: list active merchants
 merchants.get("/", async (c) => {
-  const category = c.req.query("category");
+  const categoryId = c.req.query("categoryId");
   const search = c.req.query("search");
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "20");
 
   const where = {
     isActive: true,
-    ...(category && { category: category as never }),
+    ...(categoryId && { categoryId }),
     ...(search && {
       name: { contains: search, mode: "insensitive" as const },
     }),
@@ -22,6 +22,7 @@ merchants.get("/", async (c) => {
   const [merchants, total] = await Promise.all([
     prisma.merchant.findMany({
       where,
+      include: { category: { select: { name: true } } },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
       take: limit,

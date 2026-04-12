@@ -5,19 +5,15 @@ const app = new Hono();
 
 /**
  * GET /api/categories
- * Get all active categories sorted by sortOrder
+ * Get all active categories
  */
 app.get("/", async (c) => {
   const categories = await prisma.category.findMany({
     where: { isActive: true },
-    orderBy: { sortOrder: "asc" },
+    orderBy: { name: "asc" },
     select: {
       id: true,
       name: true,
-      displayName: true,
-      description: true,
-      icon: true,
-      sortOrder: true,
     },
   });
 
@@ -36,10 +32,6 @@ app.get("/:id", async (c) => {
     select: {
       id: true,
       name: true,
-      displayName: true,
-      description: true,
-      icon: true,
-      sortOrder: true,
       isActive: true,
     },
   });

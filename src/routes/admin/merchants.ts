@@ -12,7 +12,7 @@ const adminMerchants = new Hono<AuthEnv>();
 // GET /api/admin/merchants — List all merchants (including inactive)
 adminMerchants.get("/", async (c) => {
   const query = merchantQuerySchema.safeParse({
-    category: c.req.query("category") || undefined,
+    categoryId: c.req.query("categoryId") || undefined,
     search: c.req.query("search") || undefined,
     page: c.req.query("page"),
     limit: c.req.query("limit"),
@@ -25,10 +25,10 @@ adminMerchants.get("/", async (c) => {
     );
   }
 
-  const { category, search, page, limit } = query.data;
+  const { categoryId, search, page, limit } = query.data;
 
   const where = {
-    ...(category && { category: category as never }),
+    ...(categoryId && { categoryId }),
     ...(search && {
       name: { contains: search, mode: "insensitive" as const },
     }),
@@ -37,7 +37,10 @@ adminMerchants.get("/", async (c) => {
   const [merchants, total] = await Promise.all([
     prisma.merchant.findMany({
       where,
-      include: { creator: { select: { email: true } } },
+      include: {
+        creator: { select: { email: true } },
+        category: { select: { name: true } },
+      },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
       take: limit,

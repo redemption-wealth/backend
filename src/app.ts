@@ -23,6 +23,7 @@ import adminAdminRoutes from "./routes/admin/admins.js";
 import adminAnalyticsRoutes from "./routes/admin/analytics.js";
 import adminFeeSettingsRoutes from "./routes/admin/fee-settings.js";
 import adminSettingsRoutes from "./routes/admin/settings.js";
+import adminUploadRoutes from "./routes/admin/upload.js";
 
 const app = new Hono();
 
@@ -65,6 +66,7 @@ admin.route("/admins", adminAdminRoutes);
 admin.route("/analytics", adminAnalyticsRoutes);
 admin.route("/fee-settings", adminFeeSettingsRoutes);
 admin.route("/settings", adminSettingsRoutes);
+admin.route("/upload", adminUploadRoutes);
 app.route("/api/admin", admin);
 
 // --- Error handler ---
