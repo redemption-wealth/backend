@@ -1,4 +1,10 @@
 {
   "buildCommand": "pnpm run vercel-build",
-  "installCommand": "pnpm install && pnpm exec prisma generate"
+  "installCommand": "pnpm install && pnpm exec prisma generate",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
+  ]
 }
