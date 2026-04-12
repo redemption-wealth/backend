@@ -23,7 +23,7 @@ async function getCachedOrCalculate<T>(
   return result;
 }
 
-export function getDateRange(period: "daily" | "weekly" | "monthly"): {
+export function getDateRange(period: "daily" | "yearly" | "monthly"): {
   startDate: Date;
   endDate: Date;
   bucketCount: number;
@@ -35,23 +35,21 @@ export function getDateRange(period: "daily" | "weekly" | "monthly"): {
     case "daily":
       startDate.setDate(now.getDate() - 7);
       return { startDate, endDate: now, bucketCount: 7 };
-    case "weekly":
-      startDate.setDate(now.getDate() - 8 * 7);
-      return { startDate, endDate: now, bucketCount: 8 };
+    case "yearly":
+      startDate.setFullYear(now.getFullYear() - 5);
+      return { startDate, endDate: now, bucketCount: 5 };
     case "monthly":
       startDate.setMonth(now.getMonth() - 6);
       return { startDate, endDate: now, bucketCount: 6 };
   }
 }
 
-export function formatDateLabel(date: Date, period: "daily" | "weekly" | "monthly"): string {
+export function formatDateLabel(date: Date, period: "daily" | "yearly" | "monthly"): string {
   switch (period) {
     case "daily":
       return date.toISOString().split("T")[0];
-    case "weekly":
-      const weekStart = new Date(date);
-      weekStart.setDate(date.getDate() - date.getDay());
-      return weekStart.toISOString().split("T")[0];
+    case "yearly":
+      return date.getFullYear().toString();
     case "monthly":
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -112,7 +110,7 @@ export async function getSummaryStats(): Promise<{
   });
 }
 
-export async function getRedemptionsOverTime(period: "daily" | "weekly" | "monthly"): Promise<
+export async function getRedemptionsOverTime(period: "daily" | "yearly" | "monthly"): Promise<
   Array<{ label: string; count: number }>
 > {
   return getCachedOrCalculate("redemptions-over-time-" + period, async () => {
@@ -168,7 +166,7 @@ export async function getMerchantCategoryDistribution(): Promise<
   });
 }
 
-export async function getWealthVolumeOverTime(period: "daily" | "weekly" | "monthly"): Promise<
+export async function getWealthVolumeOverTime(period: "daily" | "yearly" | "monthly"): Promise<
   Array<{ label: string; volume: string }>
 > {
   return getCachedOrCalculate("wealth-volume-" + period, async () => {

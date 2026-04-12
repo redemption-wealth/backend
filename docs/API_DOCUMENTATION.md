@@ -910,7 +910,7 @@ Delete admin. **Requires owner auth.**
 ### 📊 Admin - Analytics
 
 #### `GET /api/admin/analytics/summary`
-Get dashboard summary stats. **Requires owner auth.**
+Get dashboard summary stats. **Requires admin or owner auth.**
 
 **Response:** `200 OK`
 ```json
@@ -920,13 +920,16 @@ Get dashboard summary stats. **Requires owner auth.**
     "totalVouchers": 150,
     "totalRedemptions": 500,
     "confirmedRedemptions": 480,
-    "totalWealthVolume": "50000.123"
+    "totalWealthVolume": "50000.123",
+    "totalUsers": 120,
+    "avgWealthPerRedeem": "104.167",
+    "totalValueIdr": 12500000
   }
 }
 ```
 
 #### `GET /api/admin/analytics/recent-activity`
-Get recent redemptions. **Requires owner auth.**
+Get recent redemptions. **Requires admin or owner auth.**
 
 **Query Parameters:**
 - `limit` (optional, default: 10, max: 50)
@@ -951,10 +954,10 @@ Get recent redemptions. **Requires owner auth.**
 ```
 
 #### `GET /api/admin/analytics/redemptions-over-time`
-Get redemption trends over time. **Requires owner auth.**
+Get redemption trends over time. **Requires admin or owner auth.**
 
 **Query Parameters:**
-- `period` (optional, default: "daily") - "daily" | "weekly" | "monthly"
+- `period` (optional, default: "daily") - "daily" | "yearly" | "monthly"
 
 **Response:** `200 OK`
 ```json
@@ -973,7 +976,7 @@ Get redemption trends over time. **Requires owner auth.**
 ```
 
 #### `GET /api/admin/analytics/merchant-categories`
-Get merchant distribution by category. **Requires owner auth.**
+Get merchant distribution by category. **Requires admin or owner auth.**
 
 **Response:** `200 OK`
 ```json
@@ -992,10 +995,10 @@ Get merchant distribution by category. **Requires owner auth.**
 ```
 
 #### `GET /api/admin/analytics/wealth-volume`
-Get WEALTH token volume over time. **Requires owner auth.**
+Get WEALTH token volume over time. **Requires admin or owner auth.**
 
 **Query Parameters:**
-- `period` (optional, default: "monthly") - "daily" | "weekly" | "monthly"
+- `period` (optional, default: "monthly") - "daily" | "yearly" | "monthly"
 
 **Response:** `200 OK`
 ```json
@@ -1014,7 +1017,7 @@ Get WEALTH token volume over time. **Requires owner auth.**
 ```
 
 #### `GET /api/admin/analytics/top-merchants`
-Get top performing merchants by redemption count. **Requires owner auth.**
+Get top performing merchants by redemption count. **Requires admin or owner auth.**
 
 **Query Parameters:**
 - `limit` (optional, default: 3, max: 10)
@@ -1024,21 +1027,25 @@ Get top performing merchants by redemption count. **Requires owner auth.**
 {
   "data": [
     {
-      "merchantId": "uuid",
-      "merchantName": "Merchant A",
-      "redemptionCount": 150
+      "id": "uuid",
+      "name": "Merchant A",
+      "logoUrl": "https://...",
+      "redeemCount": 150,
+      "wealthVolume": "15000.50"
     },
     {
-      "merchantId": "uuid",
-      "merchantName": "Merchant B",
-      "redemptionCount": 120
+      "id": "uuid",
+      "name": "Merchant B",
+      "logoUrl": "https://...",
+      "redeemCount": 120,
+      "wealthVolume": "12000.30"
     }
   ]
 }
 ```
 
 #### `GET /api/admin/analytics/top-vouchers`
-Get top performing vouchers by redemption count. **Requires owner auth.**
+Get top performing vouchers by redemption count. **Requires admin or owner auth.**
 
 **Query Parameters:**
 - `limit` (optional, default: 3, max: 10)
@@ -1048,10 +1055,11 @@ Get top performing vouchers by redemption count. **Requires owner auth.**
 {
   "data": [
     {
-      "voucherId": "uuid",
-      "voucherTitle": "Discount 50%",
+      "id": "uuid",
+      "title": "Discount 50%",
       "merchantName": "Merchant A",
-      "redemptionCount": 85
+      "redeemCount": 85,
+      "wealthVolume": "8500.75"
     }
   ]
 }
@@ -1076,7 +1084,7 @@ Get treasury wallet balance (stub for blockchain integration). **Requires owner 
 **Notes:**
 - All analytics endpoints use 5-minute cache
 - Cache is automatically refreshed on data mutations
-- Requires owner role for access
+- Requires admin or owner role for access
 
 ---
 

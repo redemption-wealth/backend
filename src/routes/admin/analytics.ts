@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import { requireAdmin, type AuthEnv } from "../../middleware/auth.js";
 import {
   getSummaryStats,
   getRedemptionsOverTime,
@@ -12,8 +12,8 @@ import { prisma } from "../../db.js";
 
 const adminAnalytics = new Hono<AuthEnv>();
 
-// All analytics require owner
-adminAnalytics.use("/*", requireOwner);
+// All analytics require admin or owner
+adminAnalytics.use("/*", requireAdmin);
 
 // GET /api/admin/analytics/summary
 adminAnalytics.get("/summary", async (c) => {
@@ -46,11 +46,11 @@ adminAnalytics.get("/recent-activity", async (c) => {
 adminAnalytics.get("/redemptions-over-time", async (c) => {
   const period = (c.req.query("period") || "daily") as
     | "daily"
-    | "weekly"
+    | "yearly"
     | "monthly";
 
-  if (!["daily", "weekly", "monthly"].includes(period)) {
-    return c.json({ error: "Invalid period. Use: daily, weekly, or monthly" }, 400);
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
   }
 
   const data = await getRedemptionsOverTime(period);
@@ -67,11 +67,11 @@ adminAnalytics.get("/merchant-categories", async (c) => {
 adminAnalytics.get("/wealth-volume", async (c) => {
   const period = (c.req.query("period") || "monthly") as
     | "daily"
-    | "weekly"
+    | "yearly"
     | "monthly";
 
-  if (!["daily", "weekly", "monthly"].includes(period)) {
-    return c.json({ error: "Invalid period. Use: daily, weekly, or monthly" }, 400);
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
   }
 
   const data = await getWealthVolumeOverTime(period);
