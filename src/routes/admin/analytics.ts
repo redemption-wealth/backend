@@ -67,11 +67,11 @@ adminAnalytics.get("/merchant-categories", async (c) => {
 adminAnalytics.get("/wealth-volume", async (c) => {
   const period = (c.req.query("period") || "monthly") as
     | "daily"
-    | "weekly"
+    | "yearly"
     | "monthly";
 
-  if (!["daily", "weekly", "monthly"].includes(period)) {
-    return c.json({ error: "Invalid period. Use: daily, weekly, or monthly" }, 400);
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
   }
 
   const data = await getWealthVolumeOverTime(period);
