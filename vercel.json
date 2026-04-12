@@ -1,15 +1,10 @@
 {
-  "version": 2,
-  "builds": [
+  "buildCommand": "pnpm run vercel-build",
+  "installCommand": "pnpm install && pnpm exec prisma generate",
+  "rewrites": [
     {
-      "src": "api/index.ts",
-      "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/api/index.ts"
+      "source": "/(.*)",
+      "destination": "/api"
     }
   ]
 }
