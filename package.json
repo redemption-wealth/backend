@@ -1,0 +1,47 @@
+{
+  "name": "wealth-redemption-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "test": "vitest",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:e2e": "vitest run --project e2e",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest --watch"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.3",
+    "@prisma/adapter-pg": "^7.7.0",
+    "@prisma/client": "^7.7.0",
+    "@privy-io/server-auth": "^1.32.5",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^16.5.0",
+    "hono": "^4.7.11",
+    "jose": "^6.2.2",
+    "pg": "^8.20.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^11.14.0",
+    "@types/bcryptjs": "^3.0.0",
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.20.0",
+    "@vitest/coverage-v8": "^4.1.4",
+    "prisma": "^7.7.0",
+    "testcontainers": "^11.14.0",
+    "tsx": "^4.21.0",
+    "typescript": "~6.0.2",
+    "vitest": "^4.1.4",
+    "vitest-mock-extended": "^4.0.0"
+  }
+}

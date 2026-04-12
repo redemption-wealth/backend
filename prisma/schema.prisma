@@ -1,0 +1,194 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum AdminRole {
+  admin
+  owner
+}
+
+enum MerchantCategory {
+  kuliner
+  hiburan
+  event
+  kesehatan
+  lifestyle
+  travel
+}
+
+enum QrStatus {
+  available
+  assigned
+  used
+}
+
+enum RedemptionStatus {
+  pending
+  confirmed
+  failed
+}
+
+enum TransactionType {
+  deposit
+  withdrawal
+  redeem
+}
+
+enum TransactionStatus {
+  pending
+  confirmed
+  failed
+}
+
+// ─── Models ─────────────────────────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  privyUserId   String   @unique @map("privy_user_id")
+  walletAddress String?  @map("wallet_address")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  redemptions  Redemption[]
+  transactions Transaction[]
+  assignedQrs  QrCode[]
+
+  @@map("users")
+}
+
+model Admin {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  role         AdminRole @default(admin)
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  merchants Merchant[]
+
+  @@map("admins")
+}
+
+model Merchant {
+  id          String           @id @default(uuid())
+  name        String
+  logoUrl     String?          @map("logo_url")
+  description String?          @db.Text
+  category    MerchantCategory
+  isActive    Boolean          @default(true) @map("is_active")
+  createdBy   String?          @map("created_by")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  creator  Admin?    @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  vouchers Voucher[]
+
+  @@map("merchants")
+}
+
+model Voucher {
+  id             String   @id @default(uuid())
+  merchantId     String   @map("merchant_id")
+  title          String
+  description    String?  @db.Text
+  startDate      DateTime @map("start_date") @db.Date
+  endDate        DateTime @map("end_date") @db.Date
+  totalStock     Int      @map("total_stock")
+  remainingStock Int      @map("remaining_stock")
+  priceIdr       Int      @map("price_idr")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  merchant    Merchant     @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  qrCodes     QrCode[]
+  redemptions Redemption[]
+
+  @@index([merchantId])
+  @@map("vouchers")
+}
+
+model QrCode {
+  id               String    @id @default(uuid())
+  voucherId        String    @map("voucher_id")
+  imageUrl         String    @map("image_url")
+  imageHash        String    @unique @map("image_hash")
+  status           QrStatus  @default(available)
+  assignedToUserId String?   @map("assigned_to_user_id")
+  assignedAt       DateTime? @map("assigned_at")
+  usedAt           DateTime? @map("used_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  voucher    Voucher     @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  assignedTo User?       @relation(fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  redemption Redemption?
+
+  @@index([voucherId, status])
+  @@index([assignedToUserId])
+  @@map("qr_codes")
+}
+
+model Redemption {
+  id                     String           @id @default(uuid())
+  userId                 String           @map("user_id")
+  voucherId              String           @map("voucher_id")
+  qrCodeId               String           @unique @map("qr_code_id")
+  wealthAmount           Decimal          @map("wealth_amount") @db.Decimal(36, 18)
+  priceIdrAtRedeem       Int              @map("price_idr_at_redeem")
+  wealthPriceIdrAtRedeem Decimal          @map("wealth_price_idr_at_redeem") @db.Decimal(18, 4)
+  devCutAmount           Decimal          @map("dev_cut_amount") @db.Decimal(36, 18)
+  txHash                 String?          @unique @map("tx_hash")
+  idempotencyKey         String           @unique @map("idempotency_key")
+  status                 RedemptionStatus @default(pending)
+  redeemedAt             DateTime         @default(now()) @map("redeemed_at")
+  confirmedAt            DateTime?        @map("confirmed_at")
+  createdAt              DateTime         @default(now()) @map("created_at")
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  voucher     Voucher      @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  qrCode      QrCode       @relation(fields: [qrCodeId], references: [id], onDelete: Restrict)
+  transaction Transaction?
+
+  @@index([userId, status])
+  @@index([voucherId])
+  @@map("redemptions")
+}
+
+model Transaction {
+  id           String            @id @default(uuid())
+  userId       String            @map("user_id")
+  redemptionId String?           @unique @map("redemption_id")
+  type         TransactionType
+  amountWealth Decimal           @map("amount_wealth") @db.Decimal(36, 18)
+  txHash       String?           @unique @map("tx_hash")
+  status       TransactionStatus @default(pending)
+  createdAt    DateTime          @default(now()) @map("created_at")
+  confirmedAt  DateTime?         @map("confirmed_at")
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  redemption Redemption? @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([type])
+  @@index([createdAt])
+  @@map("transactions")
+}
+
+model AppSettings {
+  id                    String   @id @default("singleton")
+  devCutPercentage      Decimal  @default(3) @map("dev_cut_percentage") @db.Decimal(5, 2)
+  tokenContractAddress  String?  @map("token_contract_address")
+  treasuryWalletAddress String?  @map("treasury_wallet_address")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
