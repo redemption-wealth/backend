@@ -13,15 +13,6 @@ enum AdminRole {
   owner
 }
 
-enum MerchantCategory {
-  kuliner
-  hiburan
-  event
-  kesehatan
-  lifestyle
-  travel
-}
-
 enum QrStatus {
   available
   assigned
@@ -78,19 +69,21 @@ model Admin {
 }
 
 model Merchant {
-  id          String           @id @default(uuid())
+  id          String   @id @default(uuid())
   name        String
-  logoUrl     String?          @map("logo_url")
-  description String?          @db.Text
-  category    MerchantCategory
-  isActive    Boolean          @default(true) @map("is_active")
-  createdBy   String?          @map("created_by")
-  createdAt   DateTime         @default(now()) @map("created_at")
-  updatedAt   DateTime         @updatedAt @map("updated_at")
+  logoUrl     String?  @map("logo_url")
+  description String?  @db.Text
+  categoryId  String   @map("category_id")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdBy   String?  @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   creator  Admin?    @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  category Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   vouchers Voucher[]
 
+  @@index([categoryId])
   @@map("merchants")
 }
 
@@ -205,4 +198,16 @@ model FeeSetting {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("fee_settings")
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  merchants Merchant[]
+
+  @@map("categories")
 }

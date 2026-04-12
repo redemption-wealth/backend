@@ -16,9 +16,15 @@ describe("Full Redemption Flow E2E", () => {
     const adminToken = await createTestAdminToken({ id: admin.id, email: admin.email });
 
     // 1. Create merchant
+    const category = await testPrisma.category.upsert({
+      where: { name: "kuliner" },
+      update: {},
+      create: { name: "kuliner", isActive: true },
+    });
+
     const merchantRes = await jsonPost("/api/admin/merchants", {
       name: "E2E Merchant",
-      category: "kuliner",
+      categoryId: category.id,
     }, adminToken);
     expect(merchantRes.status).toBe(201);
     const { merchant } = await merchantRes.json();

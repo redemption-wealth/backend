@@ -26,8 +26,16 @@ auth.post("/login", async (c) => {
 
   const admin = await prisma.admin.findUnique({ where: { email } });
 
-  if (!admin || !admin.isActive || !admin.passwordHash) {
+  if (!admin || !admin.isActive) {
     return c.json({ error: "Invalid credentials" }, 401);
+  }
+
+  // Check if password not set (first-login flow)
+  if (!admin.passwordHash) {
+    return c.json(
+      { error: "Password belum diset", code: "PASSWORD_NOT_SET" },
+      403
+    );
   }
 
   const isValid = await bcryptjs.compare(password, admin.passwordHash);

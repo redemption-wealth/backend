@@ -80,6 +80,23 @@ describe("POST /api/auth/login", () => {
     expect(body.admin.role).toBe("admin");
     expect(body.admin.id).toBeDefined();
   });
+
+  test("returns 403 with PASSWORD_NOT_SET code when admin has no password", async () => {
+    await fixtures.createAdmin({
+      email: "no-password@test.com",
+      password: null,
+      role: "admin",
+    });
+
+    const res = await jsonPost("/api/auth/login", {
+      email: "no-password@test.com",
+      password: "any-password",
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe("PASSWORD_NOT_SET");
+    expect(body.error).toBe("Password belum diset");
+  });
 });
 
 describe("GET /api/auth/me", () => {

@@ -1,6 +1,23 @@
 import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../setup.integration.js";
 
+// Helper to create merchant with category
+async function createMerchantWithCategory(adminId: string) {
+  const category = await testPrisma.category.upsert({
+    where: { name: "kuliner" },
+    update: {},
+    create: { name: "kuliner", isActive: true },
+  });
+
+  return testPrisma.merchant.create({
+    data: {
+      name: `Test-${Date.now()}`,
+      categoryId: category.id,
+      createdBy: adminId,
+    },
+  });
+}
+
 describe("Schema Migration - Phase 2 Changes", () => {
   // --- Admin: nullable passwordHash ---
   test("Admin can be created with passwordHash = null (first-login flow)", async () => {
@@ -31,9 +48,7 @@ describe("Schema Migration - Phase 2 Changes", () => {
     const admin = await testPrisma.admin.create({
       data: { email: "admin@test.com", passwordHash: "hash", role: "admin" },
     });
-    const merchant = await testPrisma.merchant.create({
-      data: { name: "Test", category: "kuliner", createdBy: admin.id },
-    });
+    const merchant = await createMerchantWithCategory(admin.id);
     const voucher = await testPrisma.voucher.create({
       data: {
         merchantId: merchant.id,
@@ -53,9 +68,7 @@ describe("Schema Migration - Phase 2 Changes", () => {
     const admin = await testPrisma.admin.create({
       data: { email: "admin2@test.com", passwordHash: "hash", role: "admin" },
     });
-    const merchant = await testPrisma.merchant.create({
-      data: { name: "Test2", category: "kuliner", createdBy: admin.id },
-    });
+    const merchant = await createMerchantWithCategory(admin.id);
     const voucher = await testPrisma.voucher.create({
       data: {
         merchantId: merchant.id,
@@ -76,9 +89,7 @@ describe("Schema Migration - Phase 2 Changes", () => {
     const admin = await testPrisma.admin.create({
       data: { email: "admin3@test.com", passwordHash: "hash", role: "admin" },
     });
-    const merchant = await testPrisma.merchant.create({
-      data: { name: "Test3", category: "kuliner", createdBy: admin.id },
-    });
+    const merchant = await createMerchantWithCategory(admin.id);
     const voucher = await testPrisma.voucher.create({
       data: {
         merchantId: merchant.id,
@@ -109,9 +120,7 @@ describe("Schema Migration - Phase 2 Changes", () => {
     const admin = await testPrisma.admin.create({
       data: { email: "admin4@test.com", passwordHash: "hash", role: "admin" },
     });
-    const merchant = await testPrisma.merchant.create({
-      data: { name: "M", category: "kuliner", createdBy: admin.id },
-    });
+    const merchant = await createMerchantWithCategory(admin.id);
     const voucher = await testPrisma.voucher.create({
       data: {
         merchantId: merchant.id,
@@ -147,9 +156,7 @@ describe("Schema Migration - Phase 2 Changes", () => {
     const admin = await testPrisma.admin.create({
       data: { email: "admin5@test.com", passwordHash: "hash", role: "admin" },
     });
-    const merchant = await testPrisma.merchant.create({
-      data: { name: "M2", category: "kuliner", createdBy: admin.id },
-    });
+    const merchant = await createMerchantWithCategory(admin.id);
     const voucher = await testPrisma.voucher.create({
       data: {
         merchantId: merchant.id,
