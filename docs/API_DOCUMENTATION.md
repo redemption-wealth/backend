@@ -10,6 +10,13 @@
 
 1. [Authentication](#authentication)
 2. [Public Routes (App)](#public-routes-app)
+   - [Auth](#-auth)
+   - [Merchants](#-merchants)
+   - [Vouchers](#-vouchers)
+   - [Redemptions](#-redemptions)
+   - [Transactions](#-transactions)
+   - [Price](#-price)
+   - [Categories](#️-categories)
 3. [Admin Routes (Back-office)](#admin-routes-back-office)
 4. [Common Patterns](#common-patterns)
 5. [Error Responses](#error-responses)
@@ -371,6 +378,97 @@ Get current $WEALTH price in IDR from CoinGecko.
 - Cached for 60 seconds
 - Returns stale cache if CoinGecko fails
 - `stale: true` means cached data used because API failed
+
+---
+
+### 🏷️ Categories
+
+#### `GET /api/categories`
+Get all active merchant categories.
+
+**Response:** `200 OK`
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "name": "kuliner",
+      "displayName": "Kuliner",
+      "description": "Restoran, kafe, dan tempat makan",
+      "icon": "🍔",
+      "sortOrder": 1
+    },
+    {
+      "id": "uuid",
+      "name": "hiburan",
+      "displayName": "Hiburan",
+      "description": "Bioskop, konser, dan hiburan lainnya",
+      "icon": "🎬",
+      "sortOrder": 2
+    },
+    {
+      "id": "uuid",
+      "name": "event",
+      "displayName": "Event",
+      "description": "Konferensi, workshop, dan acara khusus",
+      "icon": "🎉",
+      "sortOrder": 3
+    },
+    {
+      "id": "uuid",
+      "name": "kesehatan",
+      "displayName": "Kesehatan",
+      "description": "Klinik, gym, spa, dan wellness",
+      "icon": "💪",
+      "sortOrder": 4
+    },
+    {
+      "id": "uuid",
+      "name": "lifestyle",
+      "displayName": "Lifestyle",
+      "description": "Fashion, kecantikan, dan gaya hidup",
+      "icon": "✨",
+      "sortOrder": 5
+    },
+    {
+      "id": "uuid",
+      "name": "travel",
+      "displayName": "Travel",
+      "description": "Hotel, transportasi, dan wisata",
+      "icon": "✈️",
+      "sortOrder": 6
+    }
+  ]
+}
+```
+
+**Notes:**
+- Returns only active categories
+- Categories are sorted by `sortOrder` (ascending)
+- Use `name` field for filtering merchants by category
+- Use `displayName` for UI display
+- Icons are emoji characters
+
+#### `GET /api/categories/:id`
+Get a specific category by ID.
+
+**Response:** `200 OK`
+```json
+{
+  "data": {
+    "id": "uuid",
+    "name": "kuliner",
+    "displayName": "Kuliner",
+    "description": "Restoran, kafe, dan tempat makan",
+    "icon": "🍔",
+    "sortOrder": 1,
+    "isActive": true
+  }
+}
+```
+
+**Errors:**
+- `404` - Category not found
 
 ---
 
@@ -967,9 +1065,12 @@ Redemption creation uses `idempotencyKey` to prevent duplicate redemptions:
 **MerchantCategory:**
 - `"kuliner"`
 - `"hiburan"`
+- `"event"`
+- `"kesehatan"`
+- `"lifestyle"`
 - `"travel"`
-- `"fashion"`
-- `"lainnya"`
+
+**Note:** Categories are also available via the `/api/categories` endpoint for dynamic fetching with display names, descriptions, and icons.
 
 **QrStatus:**
 - `"available"` - Ready for redemption

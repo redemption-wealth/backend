@@ -1,10 +1,14 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import pg from "pg";
 import bcryptjs from "bcryptjs";
 
-const prisma = new PrismaClient({
-  datasourceUrl: process.env.DATABASE_URL,
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
 });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 async function main() {
   const email = process.env.INITIAL_OWNER_EMAIL || "owner@wealthcrypto.fund";
@@ -47,9 +51,64 @@ async function main() {
     });
   }
 
+  // Seed categories
+  const categories = [
+    {
+      name: "kuliner",
+      displayName: "Kuliner",
+      description: "Restoran, kafe, dan tempat makan",
+      icon: "🍔",
+      sortOrder: 1,
+    },
+    {
+      name: "hiburan",
+      displayName: "Hiburan",
+      description: "Bioskop, konser, dan hiburan lainnya",
+      icon: "🎬",
+      sortOrder: 2,
+    },
+    {
+      name: "event",
+      displayName: "Event",
+      description: "Konferensi, workshop, dan acara khusus",
+      icon: "🎉",
+      sortOrder: 3,
+    },
+    {
+      name: "kesehatan",
+      displayName: "Kesehatan",
+      description: "Klinik, gym, spa, dan wellness",
+      icon: "💪",
+      sortOrder: 4,
+    },
+    {
+      name: "lifestyle",
+      displayName: "Lifestyle",
+      description: "Fashion, kecantikan, dan gaya hidup",
+      icon: "✨",
+      sortOrder: 5,
+    },
+    {
+      name: "travel",
+      displayName: "Travel",
+      description: "Hotel, transportasi, dan wisata",
+      icon: "✈️",
+      sortOrder: 6,
+    },
+  ];
+
+  for (const category of categories) {
+    await prisma.category.upsert({
+      where: { name: category.name },
+      update: {},
+      create: category,
+    });
+  }
+
   console.log(`Seeded owner account: ${email}`);
   console.log("Seeded app settings (singleton)");
   console.log("Seeded default fee setting");
+  console.log(`Seeded ${categories.length} categories`);
 }
 
 main()
