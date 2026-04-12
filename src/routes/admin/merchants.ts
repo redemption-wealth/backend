@@ -1,15 +1,31 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
 import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import {
+  createMerchantSchema,
+  updateMerchantSchema,
+  merchantQuerySchema,
+} from "../../schemas/merchant.js";
 
 const adminMerchants = new Hono<AuthEnv>();
 
 // GET /api/admin/merchants — List all merchants (including inactive)
 adminMerchants.get("/", async (c) => {
-  const category = c.req.query("category");
-  const search = c.req.query("search");
-  const page = parseInt(c.req.query("page") ?? "1");
-  const limit = parseInt(c.req.query("limit") ?? "20");
+  const query = merchantQuerySchema.safeParse({
+    category: c.req.query("category") || undefined,
+    search: c.req.query("search") || undefined,
+    page: c.req.query("page"),
+    limit: c.req.query("limit"),
+  });
+
+  if (!query.success) {
+    return c.json(
+      { error: "Validation failed", details: query.error.flatten() },
+      400
+    );
+  }
+
+  const { category, search, page, limit } = query.data;
 
   const where = {
     ...(category && { category: category as never }),
@@ -43,14 +59,19 @@ adminMerchants.get("/", async (c) => {
 // POST /api/admin/merchants — Create merchant
 adminMerchants.post("/", async (c) => {
   const admin = c.get("adminAuth");
-  const { name, description, category, logoUrl } = await c.req.json();
+  const body = await c.req.json();
+
+  const parsed = createMerchantSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Validation failed", details: parsed.error.flatten() },
+      400
+    );
+  }
 
   const merchant = await prisma.merchant.create({
     data: {
-      name,
-      description,
-      category,
-      logoUrl,
+      ...parsed.data,
       createdBy: admin.adminId,
     },
   });
@@ -61,22 +82,43 @@ adminMerchants.post("/", async (c) => {
 // PUT /api/admin/merchants/:id — Update merchant
 adminMerchants.put("/:id", async (c) => {
   const id = c.req.param("id");
-  const { name, description, category, logoUrl, isActive } =
-    await c.req.json();
+  const body = await c.req.json();
 
-  const merchant = await prisma.merchant.update({
-    where: { id },
-    data: { name, description, category, logoUrl, isActive },
-  });
+  const parsed = updateMerchantSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Validation failed", details: parsed.error.flatten() },
+      400
+    );
+  }
 
-  return c.json({ merchant });
+  try {
+    const merchant = await prisma.merchant.update({
+      where: { id },
+      data: parsed.data,
+    });
+    return c.json({ merchant });
+  } catch {
+    return c.json({ error: "Merchant not found" }, 404);
+  }
 });
 
 // DELETE /api/admin/merchants/:id — Delete merchant (owner only)
 adminMerchants.delete("/:id", requireOwner, async (c) => {
   const id = c.req.param("id");
-  await prisma.merchant.delete({ where: { id } });
-  return c.json({ ok: true });
+  try {
+    await prisma.merchant.delete({ where: { id } });
+    return c.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("Foreign key constraint")) {
+      return c.json(
+        { error: "Cannot delete merchant with existing vouchers" },
+        400
+      );
+    }
+    return c.json({ error: "Merchant not found" }, 404);
+  }
 });
 
 export default adminMerchants;

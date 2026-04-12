@@ -7,20 +7,26 @@ import {
   requireAdmin,
   privyClient,
 } from "../middleware/auth.js";
+import { loginSchema, setPasswordSchema } from "../schemas/auth.js";
 
 const auth = new Hono();
 
 // POST /api/auth/login — Admin login
 auth.post("/login", async (c) => {
-  const { email, password } = await c.req.json();
-
-  if (!email || !password) {
-    return c.json({ error: "Email and password required" }, 400);
+  const body = await c.req.json();
+  const parsed = loginSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Validation failed", details: parsed.error.flatten() },
+      400
+    );
   }
+
+  const { email, password } = parsed.data;
 
   const admin = await prisma.admin.findUnique({ where: { email } });
 
-  if (!admin || !admin.isActive) {
+  if (!admin || !admin.isActive || !admin.passwordHash) {
     return c.json({ error: "Invalid credentials" }, 401);
   }
 
@@ -48,6 +54,39 @@ auth.post("/login", async (c) => {
   });
 });
 
+// POST /api/auth/set-password — First-login password flow
+auth.post("/set-password", async (c) => {
+  const body = await c.req.json();
+  const parsed = setPasswordSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Validation failed", details: parsed.error.flatten() },
+      400
+    );
+  }
+
+  const { email, password } = parsed.data;
+
+  const admin = await prisma.admin.findUnique({ where: { email } });
+
+  if (!admin) {
+    return c.json({ error: "Invalid credentials" }, 401);
+  }
+
+  if (admin.passwordHash) {
+    return c.json({ error: "Password already set" }, 409);
+  }
+
+  const passwordHash = await bcryptjs.hash(password, 12);
+
+  await prisma.admin.update({
+    where: { id: admin.id },
+    data: { passwordHash },
+  });
+
+  return c.json({ message: "Password set successfully" });
+});
+
 // GET /api/auth/me — Get current admin
 auth.get("/me", requireAdmin, (c) => {
   const admin = c.get("adminAuth");
@@ -55,7 +94,6 @@ auth.get("/me", requireAdmin, (c) => {
 });
 
 // POST /api/auth/user-sync — Sync Privy user to database
-// No requireUser middleware here — first-time users don't exist in DB yet
 auth.post("/user-sync", async (c) => {
   const authHeader = c.req.header("authorization");
   if (!authHeader?.startsWith("Bearer ")) {

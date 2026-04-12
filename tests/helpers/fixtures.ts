@@ -80,6 +80,7 @@ export function createFixtures(prisma: PrismaClient) {
           totalStock: stock,
           remainingStock: stock,
           priceIdr: overrides?.priceIdr ?? 25000,
+          qrPerRedemption: overrides?.qrPerRedemption ?? 1,
           isActive: overrides?.isActive ?? true,
         },
       });
@@ -109,7 +110,7 @@ export function createFixtures(prisma: PrismaClient) {
         where: { id: "singleton" },
         update: {
           ...(overrides?.appFeePercentage !== undefined && {
-            devCutPercentage: overrides.appFeePercentage,
+            appFeePercentage: overrides.appFeePercentage,
           }),
           ...(overrides?.tokenContractAddress !== undefined && {
             tokenContractAddress: overrides.tokenContractAddress,
@@ -120,9 +121,23 @@ export function createFixtures(prisma: PrismaClient) {
         },
         create: {
           id: "singleton",
-          devCutPercentage: overrides?.appFeePercentage ?? 3,
+          appFeePercentage: overrides?.appFeePercentage ?? 3,
           tokenContractAddress: overrides?.tokenContractAddress,
           treasuryWalletAddress: overrides?.treasuryWalletAddress,
+        },
+      });
+    },
+
+    async createFeeSetting(overrides?: Partial<{
+      label: string;
+      amountIdr: number;
+      isActive: boolean;
+    }>) {
+      return prisma.feeSetting.create({
+        data: {
+          label: overrides?.label ?? "Gas Fee",
+          amountIdr: overrides?.amountIdr ?? 5000,
+          isActive: overrides?.isActive ?? false,
         },
       });
     },
@@ -137,6 +152,7 @@ export function createFixtures(prisma: PrismaClient) {
       await prisma.user.deleteMany();
       await prisma.admin.deleteMany();
       await prisma.appSettings.deleteMany();
+      await prisma.feeSetting.deleteMany();
     },
   };
 }

@@ -53,3 +53,28 @@ export async function createTokenWithWrongSecret() {
     .setExpirationTime("1h")
     .sign(wrongSecret);
 }
+
+/**
+ * Create a mock Privy token for testing user authentication
+ * Returns a simple token string that the mocked Privy client will recognize
+ */
+export function createTestUserToken(overrides?: {
+  privyUserId?: string;
+  email?: string;
+}) {
+  // Return a simple token - the mock will be configured to recognize it
+  const privyUserId = overrides?.privyUserId ?? "test-privy-user-id";
+  const email = overrides?.email ?? "user@test.com";
+  return `mock-privy-token-${privyUserId}-${email}`;
+}
+
+/**
+ * Setup Privy mock to return specific user claims for a token
+ * Call this in tests before making authenticated user requests
+ */
+export function mockPrivyVerification(privyUserId: string, email: string) {
+  return {
+    userId: privyUserId,
+    email,
+  };
+}

@@ -21,7 +21,7 @@ redemptions.get("/", requireUser, async (c) => {
       where,
       include: {
         voucher: { include: { merchant: true } },
-        qrCode: true,
+        qrCodes: true,
       },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
@@ -50,7 +50,7 @@ redemptions.get("/:id", requireUser, async (c) => {
     where: { id, userId: user.userId },
     include: {
       voucher: { include: { merchant: true } },
-      qrCode: true,
+      qrCodes: true,
       transaction: true,
     },
   });
@@ -60,6 +60,49 @@ redemptions.get("/:id", requireUser, async (c) => {
   }
 
   return c.json({ redemption });
+});
+
+// PATCH /api/redemptions/:id/submit-tx — User: submit txHash
+redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
+  const id = c.req.param("id");
+  const user = c.get("userAuth");
+  const { txHash } = await c.req.json();
+
+  if (!txHash || typeof txHash !== "string") {
+    return c.json({ error: "txHash is required" }, 400);
+  }
+
+  // Validate txHash format (0x-prefixed hex, 66 chars)
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    return c.json({ error: "Invalid txHash format" }, 400);
+  }
+
+  const redemption = await prisma.redemption.findFirst({
+    where: { id, userId: user.userId },
+  });
+
+  if (!redemption) {
+    return c.json({ error: "Redemption not found" }, 404);
+  }
+
+  if (redemption.status !== "pending") {
+    return c.json({ error: "Redemption is not pending" }, 400);
+  }
+
+  // Check txHash uniqueness
+  const existingTx = await prisma.redemption.findUnique({
+    where: { txHash },
+  });
+  if (existingTx) {
+    return c.json({ error: "txHash already used" }, 400);
+  }
+
+  const updated = await prisma.redemption.update({
+    where: { id: redemption.id },
+    data: { txHash },
+  });
+
+  return c.json({ redemption: updated });
 });
 
 export default redemptions;

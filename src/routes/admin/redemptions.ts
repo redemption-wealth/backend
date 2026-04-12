@@ -20,7 +20,7 @@ adminRedemptions.get("/", async (c) => {
       include: {
         user: { select: { email: true, walletAddress: true } },
         voucher: { include: { merchant: true } },
-        qrCode: true,
+        qrCodes: true,
       },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
@@ -49,7 +49,7 @@ adminRedemptions.get("/:id", async (c) => {
     include: {
       user: { select: { email: true, walletAddress: true } },
       voucher: { include: { merchant: true } },
-      qrCode: true,
+      qrCodes: true,
       transaction: true,
     },
   });

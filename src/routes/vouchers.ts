@@ -2,16 +2,28 @@ import { Hono } from "hono";
 import { prisma } from "../db.js";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { initiateRedemption } from "../services/redemption.js";
+import { redeemVoucherSchema, voucherQuerySchema } from "../schemas/voucher.js";
 
 const vouchers = new Hono<AuthEnv>();
 
 // GET /api/vouchers — Public: list active vouchers
 vouchers.get("/", async (c) => {
-  const merchantId = c.req.query("merchantId");
-  const category = c.req.query("category");
-  const search = c.req.query("search");
-  const page = parseInt(c.req.query("page") ?? "1");
-  const limit = parseInt(c.req.query("limit") ?? "20");
+  const query = voucherQuerySchema.safeParse({
+    merchantId: c.req.query("merchantId"),
+    category: c.req.query("category") || undefined,
+    search: c.req.query("search") || undefined,
+    page: c.req.query("page"),
+    limit: c.req.query("limit"),
+  });
+
+  if (!query.success) {
+    return c.json(
+      { error: "Validation failed", details: query.error.flatten() },
+      400
+    );
+  }
+
+  const { merchantId, category, search, page, limit } = query.data;
 
   const where = {
     isActive: true,
@@ -68,14 +80,17 @@ vouchers.get("/:id", async (c) => {
 vouchers.post("/:id/redeem", requireUser, async (c) => {
   const voucherId = c.req.param("id");
   const user = c.get("userAuth");
-  const { idempotencyKey, wealthPriceIdr } = await c.req.json();
+  const body = await c.req.json();
 
-  if (!idempotencyKey || !wealthPriceIdr) {
+  const parsed = redeemVoucherSchema.safeParse(body);
+  if (!parsed.success) {
     return c.json(
-      { error: "idempotencyKey and wealthPriceIdr are required" },
+      { error: "Validation failed", details: parsed.error.flatten() },
       400
     );
   }
+
+  const { idempotencyKey, wealthPriceIdr } = parsed.data;
 
   try {
     const { redemption, alreadyExists } = await initiateRedemption({

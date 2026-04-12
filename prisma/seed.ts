@@ -29,12 +29,27 @@ async function main() {
     update: {},
     create: {
       id: "singleton",
-      devCutPercentage: 3,
+      appFeePercentage: 3,
     },
   });
 
+  // Create default fee setting
+  const existingFee = await prisma.feeSetting.findFirst({
+    where: { isActive: true },
+  });
+  if (!existingFee) {
+    await prisma.feeSetting.create({
+      data: {
+        label: "Standard Gas Fee",
+        amountIdr: 5000,
+        isActive: true,
+      },
+    });
+  }
+
   console.log(`Seeded owner account: ${email}`);
   console.log("Seeded app settings (singleton)");
+  console.log("Seeded default fee setting");
 }
 
 main()

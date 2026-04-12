@@ -20,6 +20,7 @@ import adminQrCodeRoutes from "./routes/admin/qr-codes.js";
 import adminRedemptionRoutes from "./routes/admin/redemptions.js";
 import adminAdminRoutes from "./routes/admin/admins.js";
 import adminAnalyticsRoutes from "./routes/admin/analytics.js";
+import adminFeeSettingsRoutes from "./routes/admin/fee-settings.js";
 import adminSettingsRoutes from "./routes/admin/settings.js";
 
 const app = new Hono();
@@ -60,6 +61,7 @@ admin.route("/qr-codes", adminQrCodeRoutes);
 admin.route("/redemptions", adminRedemptionRoutes);
 admin.route("/admins", adminAdminRoutes);
 admin.route("/analytics", adminAnalyticsRoutes);
+admin.route("/fee-settings", adminFeeSettingsRoutes);
 admin.route("/settings", adminSettingsRoutes);
 app.route("/api/admin", admin);
 
