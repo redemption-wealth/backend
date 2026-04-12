@@ -38,9 +38,15 @@ describe("First-Login Admin Flow E2E", () => {
     expect(meRes.status).toBe(200);
 
     // 5. Admin can create a merchant
+    const category = await testPrisma.category.upsert({
+      where: { name: "kuliner" },
+      update: {},
+      create: { name: "kuliner", isActive: true },
+    });
+
     const merchantRes = await jsonPost("/api/admin/merchants", {
       name: "First Login Merchant",
-      category: "kuliner",
+      categoryId: category.id,
     }, token);
     expect(merchantRes.status).toBe(201);
   });

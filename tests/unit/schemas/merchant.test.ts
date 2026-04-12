@@ -6,10 +6,12 @@ import {
 } from "@/schemas/merchant.js";
 
 describe("createMerchantSchema", () => {
+  const mockCategoryId = "123e4567-e89b-12d3-a456-426614174000";
+
   test("valid merchant data passes", () => {
     const result = createMerchantSchema.safeParse({
       name: "Test Merchant",
-      category: "kuliner",
+      categoryId: mockCategoryId,
     });
     expect(result.success).toBe(true);
   });
@@ -17,7 +19,7 @@ describe("createMerchantSchema", () => {
   test("valid with all optional fields", () => {
     const result = createMerchantSchema.safeParse({
       name: "Test Merchant",
-      category: "kuliner",
+      categoryId: mockCategoryId,
       description: "A great merchant",
       logoUrl: "https://example.com/logo.png",
     });
@@ -27,7 +29,7 @@ describe("createMerchantSchema", () => {
   test("name too short fails", () => {
     const result = createMerchantSchema.safeParse({
       name: "A",
-      category: "kuliner",
+      categoryId: mockCategoryId,
     });
     expect(result.success).toBe(false);
   });
@@ -35,15 +37,15 @@ describe("createMerchantSchema", () => {
   test("name too long fails", () => {
     const result = createMerchantSchema.safeParse({
       name: "A".repeat(201),
-      category: "kuliner",
+      categoryId: mockCategoryId,
     });
     expect(result.success).toBe(false);
   });
 
-  test("invalid category enum fails", () => {
+  test("invalid categoryId format fails", () => {
     const result = createMerchantSchema.safeParse({
       name: "Test",
-      category: "invalid_category",
+      categoryId: "not-a-uuid",
     });
     expect(result.success).toBe(false);
   });
@@ -51,36 +53,33 @@ describe("createMerchantSchema", () => {
   test("invalid URL format for logoUrl fails", () => {
     const result = createMerchantSchema.safeParse({
       name: "Test",
-      category: "kuliner",
+      categoryId: mockCategoryId,
       logoUrl: "not-a-url",
     });
     expect(result.success).toBe(false);
   });
 
-  test("all valid categories pass", () => {
-    const categories = [
-      "kuliner",
-      "hiburan",
-      "event",
-      "kesehatan",
-      "lifestyle",
-      "travel",
+  test("valid categoryId UUID passes", () => {
+    const validUUIDs = [
+      "123e4567-e89b-12d3-a456-426614174000",
+      "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "550e8400-e29b-41d4-a716-446655440000",
     ];
-    for (const category of categories) {
+    for (const categoryId of validUUIDs) {
       const result = createMerchantSchema.safeParse({
         name: "Test",
-        category,
+        categoryId,
       });
       expect(result.success).toBe(true);
     }
   });
 
   test("missing name fails", () => {
-    const result = createMerchantSchema.safeParse({ category: "kuliner" });
+    const result = createMerchantSchema.safeParse({ categoryId: mockCategoryId });
     expect(result.success).toBe(false);
   });
 
-  test("missing category fails", () => {
+  test("missing categoryId fails", () => {
     const result = createMerchantSchema.safeParse({ name: "Test" });
     expect(result.success).toBe(false);
   });
@@ -113,8 +112,10 @@ describe("merchantQuerySchema", () => {
     }
   });
 
-  test("valid category filter passes", () => {
-    const result = merchantQuerySchema.safeParse({ category: "kuliner" });
+  test("valid categoryId filter passes", () => {
+    const result = merchantQuerySchema.safeParse({
+      categoryId: "123e4567-e89b-12d3-a456-426614174000"
+    });
     expect(result.success).toBe(true);
   });
 

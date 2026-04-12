@@ -40,15 +40,23 @@ export function createFixtures(prisma: PrismaClient) {
 
     async createMerchant(adminId?: string, overrides?: Partial<{
       name: string;
-      category: string;
+      categoryName: string;
       isActive: boolean;
       description: string;
       logoUrl: string;
     }>) {
+      // Get or create category
+      const categoryName = overrides?.categoryName ?? "kuliner";
+      const category = await prisma.category.upsert({
+        where: { name: categoryName },
+        update: {},
+        create: { name: categoryName, isActive: true },
+      });
+
       return prisma.merchant.create({
         data: {
           name: overrides?.name ?? `Test Merchant ${Date.now()}`,
-          category: (overrides?.category ?? "kuliner") as never,
+          categoryId: category.id,
           isActive: overrides?.isActive ?? true,
           description: overrides?.description,
           logoUrl: overrides?.logoUrl,
@@ -149,6 +157,7 @@ export function createFixtures(prisma: PrismaClient) {
       await prisma.qrCode.deleteMany();
       await prisma.voucher.deleteMany();
       await prisma.merchant.deleteMany();
+      await prisma.category.deleteMany();
       await prisma.user.deleteMany();
       await prisma.admin.deleteMany();
       await prisma.appSettings.deleteMany();

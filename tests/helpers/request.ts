@@ -30,6 +30,12 @@ export function jsonPatch(path: string, body: unknown, token?: string) {
   });
 }
 
+export function jsonGet(path: string) {
+  return app.request(path, {
+    method: "GET",
+  });
+}
+
 export function authGet(path: string, token: string) {
   return app.request(path, {
     headers: new Headers({ Authorization: `Bearer ${token}` }),

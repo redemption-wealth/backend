@@ -28,8 +28,9 @@ describe("GET /api/admin/analytics/summary", () => {
     const res = await authGet("/api/admin/analytics/summary", token);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.totalMerchants).toBeDefined();
-    expect(body.totalVouchers).toBeDefined();
+    expect(body.summary).toBeDefined();
+    expect(body.summary.totalMerchants).toBeDefined();
+    expect(body.summary.totalVouchers).toBeDefined();
   });
 
   test("returns zeros when no data", async () => {
@@ -37,7 +38,8 @@ describe("GET /api/admin/analytics/summary", () => {
     const res = await authGet("/api/admin/analytics/summary", token);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.totalRedemptions).toBe(0);
+    expect(body.summary).toBeDefined();
+    expect(body.summary.totalRedemptions).toBe(0);
   });
 });
 
@@ -54,6 +56,6 @@ describe("GET /api/admin/analytics/recent-activity", () => {
     const res = await authGet("/api/admin/analytics/recent-activity?limit=5", token);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.activity).toBeDefined();
+    expect(body.activities).toBeDefined();
   });
 });

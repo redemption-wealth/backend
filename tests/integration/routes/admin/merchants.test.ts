@@ -35,9 +35,17 @@ describe("GET /api/admin/merchants", () => {
 describe("POST /api/admin/merchants", () => {
   test("creates merchant with valid data", async () => {
     const { token } = await createAdminWithToken();
+
+    // Create category first
+    const category = await testPrisma.category.upsert({
+      where: { name: "kuliner" },
+      update: {},
+      create: { name: "kuliner", isActive: true },
+    });
+
     const res = await jsonPost("/api/admin/merchants", {
       name: "New Merchant",
-      category: "kuliner",
+      categoryId: category.id,
     }, token);
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -46,9 +54,16 @@ describe("POST /api/admin/merchants", () => {
 
   test("returns 400 for invalid data", async () => {
     const { token } = await createAdminWithToken();
+
+    const category = await testPrisma.category.upsert({
+      where: { name: "kuliner" },
+      update: {},
+      create: { name: "kuliner", isActive: true },
+    });
+
     const res = await jsonPost("/api/admin/merchants", {
       name: "A", // too short
-      category: "kuliner",
+      categoryId: category.id,
     }, token);
     expect(res.status).toBe(400);
   });
