@@ -22,7 +22,12 @@
     "test:e2e": "vitest run --project e2e",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:watch": "vitest --watch"
+    "test:watch": "vitest --watch",
+    "test:auth": "vitest run tests/integration/routes/auth.test.ts",
+    "test:redemption": "vitest run tests/integration/routes/redemptions/ tests/e2e/redemption-flow.test.ts",
+    "test:admin": "vitest run tests/integration/routes/admin/",
+    "test:qr": "vitest run tests/integration/routes/admin/qr-codes.test.ts tests/e2e/multi-qr-flow.test.ts",
+    "test:critical": "vitest run tests/integration/routes/auth.test.ts tests/integration/routes/redemptions/ tests/integration/routes/webhook.test.ts tests/e2e/"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1029.0",
