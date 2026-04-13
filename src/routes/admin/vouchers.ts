@@ -33,7 +33,16 @@ adminVouchers.get("/", async (c) => {
   const [vouchersList, total] = await Promise.all([
     prisma.voucher.findMany({
       where,
-      include: { merchant: true },
+      include: {
+        merchant: true,
+        _count: {
+          select: {
+            qrCodes: {
+              where: { status: "available" }
+            }
+          }
+        }
+      },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
       take: limit,
@@ -41,8 +50,33 @@ adminVouchers.get("/", async (c) => {
     prisma.voucher.count({ where }),
   ]);
 
+  // Calculate stock breakdown (QR pool status)
+  const vouchersWithStock = vouchersList.map((v) => {
+    const availableQrCount = v._count.qrCodes;
+    const availableStock = Math.floor(availableQrCount / v.qrPerRedemption);
+
+    const totalQrCodes = v.totalStock * v.qrPerRedemption;
+    const usedQrCodes = v.usedStock * v.qrPerRedemption;
+    const assignedQrCount = totalQrCodes - usedQrCodes - availableQrCount;
+    const assignedStock = Math.floor(assignedQrCount / v.qrPerRedemption);
+
+    return {
+      ...v,
+      availableStock,
+      assignedStock,
+      usedStock: v.usedStock,
+      totalStock: v.totalStock,
+      qrPoolStatus: {
+        availableQr: availableQrCount,
+        assignedQr: assignedQrCount,
+        usedQr: usedQrCodes,
+        totalQr: totalQrCodes,
+      },
+    };
+  });
+
   return c.json({
-    vouchers: vouchersList,
+    vouchers: vouchersWithStock,
     pagination: {
       page,
       limit,
