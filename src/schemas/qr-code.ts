@@ -3,8 +3,9 @@ import { paginationSchema } from "./common.js";
 
 export const createQrCodeSchema = z.object({
   voucherId: z.string().uuid(),
-  imageUrl: z.string().url(),
-  imageHash: z.string().min(1),
+  token: z.string().min(1),
+  imageUrl: z.string().url().optional(),
+  imageHash: z.string().min(1).optional(),
 });
 
 export const scanQrSchema = z.object({

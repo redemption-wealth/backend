@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { prisma } from "../db.js";
 import { Prisma } from "@prisma/client";
-import { generateQrCode, deleteQrFiles } from "./qr-generator.js";
+import { deleteQrFiles, generateAndUploadQrImage, deleteQrImage } from "./qr-generator.js";
 
 interface InitiateRedemptionParams {
   userId: string;
@@ -16,139 +16,163 @@ export async function initiateRedemption({
   idempotencyKey,
   wealthPriceIdr,
 }: InitiateRedemptionParams) {
-  // Check idempotency (scoped to user)
+  // 1. Check idempotency (scoped to user)
   const existing = await prisma.redemption.findFirst({
     where: { idempotencyKey, userId },
+    include: { qrCodes: true },
   });
   if (existing) {
-    return { redemption: existing, alreadyExists: true };
+    return { redemption: existing, qrCodes: existing.qrCodes, alreadyExists: true };
   }
 
-  // Fetch app settings for app fee
+  // 2. Lock and validate voucher
+  const voucher = await prisma.voucher.findUnique({
+    where: { id: voucherId },
+  });
+
+  if (!voucher) throw new Error("Voucher not found");
+  if (!voucher.isActive) throw new Error("Voucher is not active");
+  if (new Date() > voucher.endDate) throw new Error("Voucher has expired");
+
+  // 3. Check available QR codes
+  const availableQrCount = await prisma.qrCode.count({
+    where: { voucherId, status: "available" }
+  });
+
+  const requiredQr = voucher.qrPerRedemption;
+
+  if (availableQrCount < requiredQr) {
+    throw new Error(
+      `Not enough QR codes available. Required: ${requiredQr}, Available: ${availableQrCount}`
+    );
+  }
+
+  // 4. Calculate pricing (3-component: base + app fee + gas fee)
   const settings = await prisma.appSettings.findUnique({
     where: { id: "singleton" },
   });
   const appFeePercentage = settings?.appFeePercentage ?? new Prisma.Decimal(3);
 
-  // Fetch active gas fee setting
   const activeFee = await prisma.feeSetting.findFirst({
     where: { isActive: true },
   });
   const gasFeeIdr = activeFee?.amountIdr ?? 0;
 
-  // Pre-generate redemptionId so we can use it for QR R2 keys before the transaction
-  const redemptionId = randomUUID();
+  const priceIdr = new Prisma.Decimal(voucher.priceIdr);
+  const appFee = priceIdr.mul(appFeePercentage).div(100);
+  const gasFee = new Prisma.Decimal(gasFeeIdr);
+  const totalIdr = priceIdr.add(appFee).add(gasFee);
 
-  // --- Transaction with row-level locking ---
-  // We generate QR images outside the DB transaction (R2 is not transactional),
-  // then insert everything atomically. On DB failure, we clean up R2 files.
-  let uploadedImageUrls: string[] = [];
+  const wealthPriceDecimal = new Prisma.Decimal(wealthPriceIdr);
+  const wealthAmount = totalIdr.div(wealthPriceDecimal);
+  const appFeeAmount = appFee.div(wealthPriceDecimal);
+  const gasFeeAmount = gasFee.div(wealthPriceDecimal);
 
-  try {
-    const redemption = await prisma.$transaction(async (tx) => {
-      // Lock voucher row
-      const [voucher] = await tx.$queryRawUnsafe<
-        Array<{
-          id: string;
-          remaining_stock: number;
-          is_active: boolean;
-          end_date: Date;
-          price_idr: number;
-          qr_per_redemption: number;
-        }>
-      >(
-        `SELECT id, remaining_stock, is_active, end_date, price_idr, qr_per_redemption FROM vouchers WHERE id = $1 FOR UPDATE`,
-        voucherId
-      );
-
-      if (!voucher) throw new Error("Voucher not found");
-      if (!voucher.is_active) throw new Error("Voucher is not active");
-      if (voucher.remaining_stock <= 0) throw new Error("Voucher out of stock");
-      if (new Date(voucher.end_date) < new Date()) throw new Error("Voucher expired");
-
-      const qrPerRedemption = voucher.qr_per_redemption;
-
-      // 3-component pricing: base + app fee + gas fee
-      const priceIdr = new Prisma.Decimal(voucher.price_idr);
-      const appFee = priceIdr.mul(appFeePercentage).div(100);
-      const gasFee = new Prisma.Decimal(gasFeeIdr);
-      const totalIdr = priceIdr.add(appFee).add(gasFee);
-
-      const wealthPriceDecimal = new Prisma.Decimal(wealthPriceIdr);
-      const wealthAmount = totalIdr.div(wealthPriceDecimal);
-      const appFeeAmount = appFee.div(wealthPriceDecimal);
-      const gasFeeAmount = gasFee.div(wealthPriceDecimal);
-
-      // Generate QR codes (R2 uploads happen inside the tx callback but are not rolled back
-      // by Prisma — we handle cleanup ourselves in the catch block below)
-      const qrData = await Promise.all(
-        Array.from({ length: qrPerRedemption }, (_, i) =>
-          generateQrCode(redemptionId, i + 1)
-        )
-      );
-      uploadedImageUrls = qrData.map((q) => q.imageUrl);
-
-      // Create redemption with pre-generated ID
-      const newRedemption = await tx.redemption.create({
-        data: {
-          id: redemptionId,
-          userId,
-          voucherId,
-          wealthAmount,
-          priceIdrAtRedeem: voucher.price_idr,
-          wealthPriceIdrAtRedeem: wealthPriceDecimal,
-          appFeeAmount,
-          gasFeeAmount,
-          idempotencyKey,
-          status: "pending",
-        },
-      });
-
-      // Insert QR code records
-      await tx.qrCode.createMany({
-        data: qrData.map((q) => ({
-          voucherId,
-          redemptionId: newRedemption.id,
-          token: q.token,
-          imageUrl: q.imageUrl,
-          imageHash: q.imageHash,
-          status: "assigned" as const,
-          assignedToUserId: userId,
-          assignedAt: new Date(),
-        })),
-      });
-
-      return newRedemption;
+  // 5. Transaction: Create redemption + Assign QR codes
+  const result = await prisma.$transaction(async (tx) => {
+    // Create redemption
+    const redemption = await tx.redemption.create({
+      data: {
+        userId,
+        voucherId,
+        status: "pending",
+        wealthAmount,
+        appFeeAmount,
+        gasFeeAmount,
+        priceIdrAtRedeem: voucher.priceIdr,
+        wealthPriceIdrAtRedeem: wealthPriceDecimal,
+        idempotencyKey,
+      },
     });
 
-    return { redemption, alreadyExists: false };
-  } catch (err) {
-    // Compensating action: delete R2 files if any were uploaded before the DB failed
-    if (uploadedImageUrls.length > 0) {
-      await deleteQrFiles(uploadedImageUrls);
-    }
-    throw err;
-  }
+    // Find available QR codes (FIFO)
+    const qrCodes = await tx.qrCode.findMany({
+      where: { voucherId, status: "available" },
+      take: requiredQr,
+      orderBy: { createdAt: "asc" },
+    });
+
+    // Assign QR codes to user
+    await tx.qrCode.updateMany({
+      where: { id: { in: qrCodes.map(qr => qr.id) } },
+      data: {
+        status: "assigned",
+        assignedToUserId: userId,
+        redemptionId: redemption.id,
+        assignedAt: new Date(),
+      },
+    });
+
+    return { redemption, qrCodes };
+  });
+
+  // 6. Lazy-load: Generate QR images (outside transaction, can retry on failure)
+  const qrCodesWithImages = await Promise.all(
+    result.qrCodes.map(async (qr) => {
+      try {
+        const { imageUrl, imageHash } = await generateAndUploadQrImage(
+          voucherId,
+          qr.id,
+          qr.token
+        );
+
+        await prisma.qrCode.update({
+          where: { id: qr.id },
+          data: { imageUrl, imageHash },
+        });
+
+        return { ...qr, imageUrl, imageHash };
+      } catch (err) {
+        console.error(`[initiateRedemption] Image generation failed for QR ${qr.id}:`, err);
+        // Return QR without image (can be retried later)
+        return qr;
+      }
+    })
+  );
+
+  // 7. Return redemption data
+  const treasuryAddress = settings?.treasuryWalletAddress;
+  const tokenAddress = settings?.tokenContractAddress;
+
+  return {
+    redemption: result.redemption,
+    qrCodes: qrCodesWithImages,
+    alreadyExists: false,
+    txDetails: {
+      tokenContractAddress: tokenAddress,
+      treasuryWalletAddress: treasuryAddress,
+      wealthAmount: wealthAmount.toString(),
+    },
+  };
 }
 
 export async function confirmRedemption(txHash: string) {
-  return prisma.$transaction(async (tx) => {
-    const redemption = await tx.redemption.findFirst({
-      where: { txHash, status: "pending" },
-    });
+  const redemption = await prisma.redemption.findFirst({
+    where: { txHash, status: "pending" },
+  });
 
-    if (!redemption) throw new Error("Redemption not found or already processed");
+  if (!redemption) return; // Idempotent: already processed
 
-    const updated = await tx.redemption.update({
+  await prisma.$transaction(async (tx) => {
+    // Update redemption status
+    await tx.redemption.update({
       where: { id: redemption.id },
-      data: { status: "confirmed", confirmedAt: new Date() },
+      data: {
+        status: "confirmed",
+        confirmedAt: new Date(),
+      },
     });
 
+    // Increment voucher usedStock (track confirmed redemptions)
     await tx.voucher.update({
       where: { id: redemption.voucherId },
-      data: { remainingStock: { decrement: 1 } },
+      data: {
+        usedStock: { increment: 1 },
+        remainingStock: { decrement: 1 }
+      },
     });
 
+    // Create transaction record
     await tx.transaction.create({
       data: {
         userId: redemption.userId,
@@ -160,38 +184,41 @@ export async function confirmRedemption(txHash: string) {
         confirmedAt: new Date(),
       },
     });
-
-    return updated;
   });
 }
 
 export async function failRedemption(txHash: string) {
-  // Load QR records outside transaction so we have imageUrls for R2 cleanup
   const redemption = await prisma.redemption.findFirst({
     where: { txHash, status: "pending" },
-    include: { qrCodes: { select: { id: true, imageUrl: true } } },
+    include: { qrCodes: true },
   });
 
-  if (!redemption) throw new Error("Redemption not found");
+  if (!redemption) return; // Idempotent: already processed
 
-  // Attempt R2 cleanup first (best-effort — don't let R2 errors block DB update)
-  const imageUrls = redemption.qrCodes.map((q) => q.imageUrl).filter(Boolean);
-  if (imageUrls.length > 0) {
-    try {
-      await deleteQrFiles(imageUrls);
-    } catch (err) {
-      console.error("[failRedemption] R2 cleanup failed, continuing:", err);
-    }
-  }
+  // Delete QR images from R2 (best-effort, non-blocking)
+  await Promise.all(
+    redemption.qrCodes.map(async (qr) => {
+      if (qr.imageUrl) {
+        await deleteQrImage(qr.imageUrl);
+      }
+    })
+  );
 
-  // DB transaction: delete QR records + mark redemption as failed
-  return prisma.$transaction(async (tx) => {
-    const qrIds = redemption.qrCodes.map((q) => q.id);
-    if (qrIds.length > 0) {
-      await tx.qrCode.deleteMany({ where: { id: { in: qrIds } } });
-    }
+  // Recycle QR codes: assigned → available
+  await prisma.$transaction(async (tx) => {
+    await tx.qrCode.updateMany({
+      where: { redemptionId: redemption.id },
+      data: {
+        status: "available",
+        assignedToUserId: null,
+        redemptionId: null,
+        assignedAt: null,
+        imageUrl: null,
+        imageHash: null,
+      },
+    });
 
-    return tx.redemption.update({
+    await tx.redemption.update({
       where: { id: redemption.id },
       data: { status: "failed" },
     });

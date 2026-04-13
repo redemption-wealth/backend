@@ -102,6 +102,7 @@ model Voucher {
   endDate         DateTime @map("end_date") @db.Date
   totalStock      Int      @map("total_stock")
   remainingStock  Int      @map("remaining_stock")
+  usedStock       Int      @default(0) @map("used_stock")
   priceIdr        Int      @map("price_idr")
   qrPerRedemption Int      @default(1) @map("qr_per_redemption")
   isActive        Boolean  @default(true) @map("is_active")
@@ -120,9 +121,9 @@ model QrCode {
   id               String    @id @default(uuid())
   voucherId        String    @map("voucher_id")
   redemptionId     String?   @map("redemption_id")
-  imageUrl         String    @map("image_url")
-  imageHash        String    @unique @map("image_hash")
-  token            String?   @unique @map("token")
+  imageUrl         String?   @map("image_url")
+  imageHash        String?   @map("image_hash")
+  token            String    @unique @map("token")
   status           QrStatus  @default(available)
   assignedToUserId String?   @map("assigned_to_user_id")
   assignedAt       DateTime? @map("assigned_at")
@@ -137,6 +138,7 @@ model QrCode {
   scannedBy    Admin?      @relation("QrCodeScanner", fields: [scannedByAdminId], references: [id], onDelete: SetNull)
 
   @@index([voucherId, status])
+  @@index([status])
   @@index([assignedToUserId])
   @@index([redemptionId])
   @@map("qr_codes")

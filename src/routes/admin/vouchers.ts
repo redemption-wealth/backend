@@ -5,6 +5,7 @@ import {
   createVoucherSchema,
   updateVoucherSchema,
 } from "../../schemas/voucher.js";
+import { generateQrTokensForVoucher } from "../../services/qr-generator.js";
 
 const adminVouchers = new Hono<AuthEnv>();
 
@@ -32,7 +33,16 @@ adminVouchers.get("/", async (c) => {
   const [vouchersList, total] = await Promise.all([
     prisma.voucher.findMany({
       where,
-      include: { merchant: true },
+      include: {
+        merchant: true,
+        _count: {
+          select: {
+            qrCodes: {
+              where: { status: "available" }
+            }
+          }
+        }
+      },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
       take: limit,
@@ -40,8 +50,33 @@ adminVouchers.get("/", async (c) => {
     prisma.voucher.count({ where }),
   ]);
 
+  // Calculate stock breakdown (QR pool status)
+  const vouchersWithStock = vouchersList.map((v) => {
+    const availableQrCount = v._count.qrCodes;
+    const availableStock = Math.floor(availableQrCount / v.qrPerRedemption);
+
+    const totalQrCodes = v.totalStock * v.qrPerRedemption;
+    const usedQrCodes = v.usedStock * v.qrPerRedemption;
+    const assignedQrCount = totalQrCodes - usedQrCodes - availableQrCount;
+    const assignedStock = Math.floor(assignedQrCount / v.qrPerRedemption);
+
+    return {
+      ...v,
+      availableStock,
+      assignedStock,
+      usedStock: v.usedStock,
+      totalStock: v.totalStock,
+      qrPoolStatus: {
+        availableQr: availableQrCount,
+        assignedQr: assignedQrCount,
+        usedQr: usedQrCodes,
+        totalQr: totalQrCodes,
+      },
+    };
+  });
+
   return c.json({
-    vouchers: vouchersList,
+    vouchers: vouchersWithStock,
     pagination: {
       page,
       limit,
@@ -93,6 +128,10 @@ adminVouchers.post("/", async (c) => {
   const { title, description, startDate, endDate, totalStock, priceIdr, qrPerRedemption } =
     parsed.data;
 
+  // Calculate total QR codes needed
+  const totalQrCodes = totalStock * qrPerRedemption;
+
+  // Create voucher
   const voucher = await prisma.voucher.create({
     data: {
       merchantId,
@@ -107,7 +146,10 @@ adminVouchers.post("/", async (c) => {
     },
   });
 
-  return c.json({ voucher }, 201);
+  // Generate QR tokens (no images yet, just tokens)
+  await generateQrTokensForVoucher(prisma, voucher.id, totalQrCodes);
+
+  return c.json({ voucher, qrCodesGenerated: totalQrCodes }, 201);
 });
 
 // PUT /api/admin/vouchers/:id — Update voucher
@@ -116,16 +158,13 @@ adminVouchers.put("/:id", async (c) => {
   const adminAuth = c.get("adminAuth");
   const body = await c.req.json();
 
+  // Fetch existing voucher
+  const voucher = await prisma.voucher.findUnique({ where: { id } });
+  if (!voucher) return c.json({ error: "Voucher not found" }, 404);
+
   // Admin role: check ownership before update
-  if (adminAuth.role === "admin") {
-    const existing = await prisma.voucher.findUnique({
-      where: { id },
-      select: { merchantId: true },
-    });
-    if (!existing) return c.json({ error: "Voucher not found" }, 404);
-    if (existing.merchantId !== adminAuth.merchantId) {
-      return c.json({ error: "Access denied" }, 403);
-    }
+  if (adminAuth.role === "admin" && voucher.merchantId !== adminAuth.merchantId) {
+    return c.json({ error: "Access denied" }, 403);
   }
 
   const parsed = updateVoucherSchema.safeParse(body);
@@ -136,13 +175,57 @@ adminVouchers.put("/:id", async (c) => {
     );
   }
 
+  // Handle stock changes
+  if (parsed.data.totalStock !== undefined && parsed.data.totalStock !== voucher.totalStock) {
+    const oldStock = voucher.totalStock;
+    const newStock = parsed.data.totalStock;
+    const qrPerRedemption = voucher.qrPerRedemption; // Immutable after creation
+
+    const oldQrCount = oldStock * qrPerRedemption;
+    const newQrCount = newStock * qrPerRedemption;
+
+    if (newQrCount > oldQrCount) {
+      // INCREASE: Generate additional QR codes
+      const additionalQr = newQrCount - oldQrCount;
+      await generateQrTokensForVoucher(prisma, voucher.id, additionalQr);
+
+    } else if (newQrCount < oldQrCount) {
+      // DECREASE: Validate available QR count
+      const excessQr = oldQrCount - newQrCount;
+
+      const availableQrCount = await prisma.qrCode.count({
+        where: { voucherId: voucher.id, status: "available" }
+      });
+
+      if (availableQrCount < excessQr) {
+        return c.json({
+          error: `Cannot reduce stock. Only ${availableQrCount} available QR codes. ` +
+                 `Need to remove ${excessQr}. Wait for pending redemptions to complete.`
+        }, 400);
+      }
+
+      // Delete excess available QR codes (FIFO)
+      const qrsToDelete = await prisma.qrCode.findMany({
+        where: { voucherId: voucher.id, status: "available" },
+        orderBy: { createdAt: "asc" },
+        take: excessQr,
+        select: { id: true },
+      });
+
+      await prisma.qrCode.deleteMany({
+        where: { id: { in: qrsToDelete.map(q => q.id) } }
+      });
+    }
+  }
+
+  // Update voucher
   const data = { ...parsed.data } as Record<string, unknown>;
   if (data.startDate) data.startDate = new Date(data.startDate as string);
   if (data.endDate) data.endDate = new Date(data.endDate as string);
 
   try {
-    const voucher = await prisma.voucher.update({ where: { id }, data });
-    return c.json({ voucher });
+    const updated = await prisma.voucher.update({ where: { id }, data });
+    return c.json({ voucher: updated });
   } catch {
     return c.json({ error: "Voucher not found" }, 404);
   }
