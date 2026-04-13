@@ -64,25 +64,6 @@ export async function generateAndUploadQrImage(
   return { imageUrl: key, imageHash };
 }
 
-/**
- * Legacy function for backward compatibility.
- * Generate a QR code PNG, upload to R2, and return token + metadata.
- * @deprecated Use generateQrTokensForVoucher() + generateAndUploadQrImage() instead
- */
-export async function generateQrCode(
-  redemptionId: string,
-  index: number
-): Promise<{ token: string; imageUrl: string; imageHash: string }> {
-  const token = randomBytes(16).toString("hex");
-
-  const buffer = await QRCode.toBuffer(token, { type: "png" });
-  const imageHash = createHash("sha256").update(buffer).digest("hex");
-  const key = `qr-codes/${redemptionId}/${index}.png`;
-
-  await uploadFile({ bucket: QR_BUCKET, key, body: buffer, contentType: "image/png" });
-
-  return { token, imageUrl: key, imageHash };
-}
 
 /**
  * Delete a single QR image from R2.

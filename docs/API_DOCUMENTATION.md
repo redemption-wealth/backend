@@ -2,7 +2,7 @@
 
 **Version:** 2.0.0
 **Base URL:** `https://your-api-domain.com/api`
-**Last Updated:** 2026-04-13
+**Last Updated:** 2026-04-14
 
 ---
 
@@ -172,8 +172,12 @@ List active, in-stock, non-expired vouchers.
       "title": "Voucher Title",
       "priceIdr": 25000,
       "qrPerRedemption": 1,
-      "remainingStock": 50,
+      "availableStock": 48,
+      "assignedStock": 2,
+      "usedStock": 50,
       "totalStock": 100,
+      "remainingStock": 50,
+      "isAvailable": true,
       "startDate": "2026-01-01T00:00:00Z",
       "endDate": "2026-12-31T00:00:00Z",
       "isActive": true,
@@ -186,6 +190,13 @@ List active, in-stock, non-expired vouchers.
   "pagination": { ... }
 }
 ```
+
+**Stock Fields:**
+- `availableStock` - Vouchers ready to redeem (QR codes with status='available')
+- `assignedStock` - Vouchers pending confirmation (QR codes with status='assigned')
+- `usedStock` - Completed redemptions (incremented on blockchain confirmation)
+- `totalStock` - Total vouchers created
+- `isAvailable` - True if availableStock > 0
 
 #### `GET /api/vouchers/:id`
 Get voucher details.
@@ -635,9 +646,12 @@ Create voucher. **Requires admin auth.**
     "remainingStock": 100,
     "totalStock": 100,
     "qrPerRedemption": 1
-  }
+  },
+  "qrCodesGenerated": 100
 }
 ```
+
+**Note:** QR tokens are pre-generated with status='available'. Images are generated lazily when users redeem.
 
 **Validation:**
 - `priceIdr` >= 1000

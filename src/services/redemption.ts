@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { prisma } from "../db.js";
 import { Prisma } from "@prisma/client";
-import { generateQrCode, deleteQrFiles, generateAndUploadQrImage, deleteQrImage } from "./qr-generator.js";
+import { deleteQrFiles, generateAndUploadQrImage, deleteQrImage } from "./qr-generator.js";
 
 interface InitiateRedemptionParams {
   userId: string;
