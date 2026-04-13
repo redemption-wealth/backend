@@ -175,7 +175,9 @@ export async function failRedemption(txHash: string) {
   if (!redemption) throw new Error("Redemption not found");
 
   // Attempt R2 cleanup first (best-effort — don't let R2 errors block DB update)
-  const imageUrls = redemption.qrCodes.map((q) => q.imageUrl).filter(Boolean);
+  const imageUrls = redemption.qrCodes
+    .map((q) => q.imageUrl)
+    .filter((url): url is string => Boolean(url));
   if (imageUrls.length > 0) {
     try {
       await deleteQrFiles(imageUrls);
