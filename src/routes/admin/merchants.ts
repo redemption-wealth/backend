@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
-import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import { requireOwner, requireManager, type AuthEnv } from "../../middleware/auth.js";
 import {
   createMerchantSchema,
   updateMerchantSchema,
@@ -9,7 +9,7 @@ import {
 
 const adminMerchants = new Hono<AuthEnv>();
 
-// GET /api/admin/merchants — List all merchants (including inactive)
+// GET /api/admin/merchants — List all merchants (any authenticated admin)
 adminMerchants.get("/", async (c) => {
   const query = merchantQuerySchema.safeParse({
     categoryId: c.req.query("categoryId") || undefined,
@@ -59,8 +59,8 @@ adminMerchants.get("/", async (c) => {
   });
 });
 
-// POST /api/admin/merchants — Create merchant
-adminMerchants.post("/", async (c) => {
+// POST /api/admin/merchants — Create merchant (manager+ only)
+adminMerchants.post("/", requireManager, async (c) => {
   const admin = c.get("adminAuth");
   const body = await c.req.json();
 
@@ -82,8 +82,8 @@ adminMerchants.post("/", async (c) => {
   return c.json({ merchant }, 201);
 });
 
-// PUT /api/admin/merchants/:id — Update merchant
-adminMerchants.put("/:id", async (c) => {
+// PUT /api/admin/merchants/:id — Update merchant (manager+ only)
+adminMerchants.put("/:id", requireManager, async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json();
 

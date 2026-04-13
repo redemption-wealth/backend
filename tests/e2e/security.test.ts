@@ -15,12 +15,14 @@ describe("Security Hardening", () => {
   });
 
   test("admin cannot access owner-only routes", async () => {
-    const token = await createTestAdminToken({ role: "admin" });
+    // Create actual admin in DB — requireAdmin now does a live DB check
+    const admin = await fixtures.createAdmin({ role: "admin", email: "owner-check-admin@test.com" });
+    const token = await createTestAdminToken({ id: admin.id, email: admin.email });
 
+    // Only check genuinely owner-only routes
     const routes = [
       "/api/admin/admins",
-      "/api/admin/analytics/summary",
-      "/api/admin/analytics/recent-activity",
+      "/api/admin/settings",
     ];
 
     for (const route of routes) {
@@ -48,8 +50,8 @@ describe("Security Hardening", () => {
   });
 
   test("XSS in merchant name is rejected by Zod (too short or valid)", async () => {
-    // Create actual admin in DB first
-    const admin = await fixtures.createAdmin({ email: "xss-test@test.com" });
+    // Create manager in DB — POST /api/admin/merchants requires requireManager
+    const admin = await fixtures.createAdmin({ email: "xss-test@test.com", role: "manager" });
     const token = await createTestAdminToken({ id: admin.id, email: admin.email });
 
     // This should either pass (Zod doesn't block XSS by default but Prisma escapes)
@@ -77,7 +79,9 @@ describe("Security Hardening", () => {
   });
 
   test("settings update requires owner, not admin", async () => {
-    const adminToken = await createTestAdminToken({ role: "admin" });
+    // Create admin in DB — requireAdmin does a live DB check
+    const admin = await fixtures.createAdmin({ role: "admin", email: "settings-check-admin@test.com" });
+    const adminToken = await createTestAdminToken({ id: admin.id, email: admin.email });
     const res = await app.request("/api/admin/settings", {
       method: "PUT",
       headers: {

@@ -1,8 +1,8 @@
 # WEALTH Redemption Backend - API Documentation
 
-**Version:** 1.0.0
+**Version:** 2.0.0
 **Base URL:** `https://your-api-domain.com/api`
-**Last Updated:** 2026-04-12
+**Last Updated:** 2026-04-13
 
 ---
 
@@ -41,7 +41,8 @@ Authorization: Bearer <jwt_token>
 **Token Claims:**
 - `id` - Admin ID
 - `email` - Admin email
-- `role` - "admin" | "owner"
+- `role` - "owner" | "manager" | "admin"
+- `merchantId` - (admin role only) linked merchant UUID
 - Expires in 24 hours
 
 ### User Authentication (Privy)
@@ -438,6 +439,23 @@ Get a specific category by ID.
 
 All admin routes require JWT authentication via `Authorization: Bearer <token>`.
 
+### Role Permission Matrix
+
+| Capability | owner | manager | admin |
+|---|:---:|:---:|:---:|
+| Manage admin accounts | ✓ | — | — |
+| App / fee settings (write) | ✓ | ✓ | — |
+| Merchants (create/edit) | ✓ | ✓ | — |
+| Merchants (delete) | ✓ | — | — |
+| Vouchers (create/edit) | ✓ | ✓ | ✓ (own merchant) |
+| QR management (list) | ✓ | ✓ | ✓ (own merchant) |
+| Scan QR | ✓ (any) | ✓ (any) | ✓ (own merchant) |
+| Analytics | ✓ (all) | ✓ (all) | ✓ (own merchant) |
+| Redemptions (view) | ✓ (all) | ✓ (all) | ✓ (own merchant) |
+| App settings (read) | ✓ | — | — |
+
+> **Note:** Every authenticated request re-validates the admin record from the database. Deactivating an admin account immediately invalidates their existing JWT tokens.
+
 ### 🔐 Admin Auth
 
 #### `POST /api/auth/login`
@@ -458,7 +476,8 @@ Admin login.
   "admin": {
     "id": "uuid",
     "email": "admin@example.com",
-    "role": "admin",
+    "role": "owner | manager | admin",
+    "merchantId": "uuid or null",
     "isActive": true
   }
 }
@@ -653,7 +672,7 @@ Delete voucher. **Requires owner auth.**
 ### 🎨 Admin - QR Codes
 
 #### `GET /api/admin/qr-codes`
-List QR codes. **Requires admin auth.**
+List QR codes. **Requires admin auth.** Admin role sees only their merchant's QR codes.
 
 **Query Parameters:**
 - `voucherId` (optional) - Filter by voucher
@@ -699,22 +718,34 @@ Create QR code. **Requires admin auth.**
 **Errors:**
 - `400` - Duplicate `imageHash` or invalid `voucherId`
 
-#### `POST /api/admin/qr-codes/:id/mark-used`
-Mark QR code as used. **Requires admin auth.**
+#### `POST /api/admin/qr-codes/scan`
+Scan a QR token to validate and mark as used. **Requires admin auth.** Rate limited to 60 requests/minute per admin.
+
+**Body:**
+```json
+{
+  "token": "32-char-hex-string"
+}
+```
 
 **Response:** `200 OK`
 ```json
 {
-  "qrCode": {
-    "id": "uuid",
-    "status": "used",
-    "usedAt": "2026-01-01T12:00:00Z"
-  }
+  "success": true,
+  "voucherId": "uuid",
+  "usedAt": "2026-01-01T12:00:00Z",
+  "scannedByAdminId": "uuid"
 }
 ```
 
 **Errors:**
-- `400` - QR not in "assigned" status
+- `404` - `{ "error": "NOT_FOUND" }` — token not in DB
+- `403` - `{ "error": "WRONG_MERCHANT" }` — admin role scanning QR for different merchant
+- `409` - `{ "error": "ALREADY_USED" }` — QR already scanned
+- `422` - QR not in assignable state
+- `429` - Rate limit exceeded
+
+> **Removed:** `POST /api/admin/qr-codes/:id/mark-used` has been removed. Use `/scan` instead.
 
 ---
 
@@ -864,9 +895,11 @@ List all admins. **Requires owner auth.**
     {
       "id": "uuid",
       "email": "admin@example.com",
-      "role": "admin",
+      "role": "owner | manager | admin",
+      "merchantId": "uuid or null",
       "isActive": true,
-      "createdAt": "2026-01-01T00:00:00Z"
+      "createdAt": "2026-01-01T00:00:00Z",
+      "assignedMerchant": { "id": "uuid", "name": "Merchant Name" }
     }
   ]
 }
@@ -879,24 +912,43 @@ Create admin. **Requires owner auth.**
 ```json
 {
   "email": "newadmin@example.com",
-  "password": "password123", // optional, null for first-login flow
-  "role": "admin"
+  "password": "password123",
+  "role": "owner | manager | admin",
+  "merchantId": "uuid"
 }
 ```
 
+> - `role` defaults to `"manager"`.
+> - `merchantId` is **required** when `role` is `"admin"`, **forbidden** for `"owner"` and `"manager"`.
+> - Returns `404` if `merchantId` does not exist.
+
 **Response:** `201 Created`
 
+**Errors:**
+- `400` - Validation failed (missing merchantId for admin, or merchantId provided for non-admin)
+- `404` - Merchant not found
+- `403` - Not owner
+
 #### `PUT /api/admin/admins/:id`
-Update admin (toggle active status). **Requires owner auth.**
+Update admin. **Requires owner auth.**
 
 **Body:**
 ```json
 {
-  "isActive": false
+  "isActive": false,
+  "merchantId": "uuid or null"
 }
 ```
 
+> - `merchantId` can only be updated on `admin`-role accounts. Returns `400` if target is owner/manager.
+> - Set `merchantId: null` to unlink admin from their merchant.
+
 **Response:** `200 OK`
+
+**Errors:**
+- `400` - merchantId update attempted on non-admin role
+- `404` - Admin or merchant not found
+- `403` - Not owner
 
 #### `DELETE /api/admin/admins/:id`
 Delete admin. **Requires owner auth.**
@@ -1083,15 +1135,15 @@ Get treasury wallet balance (stub for blockchain integration). **Requires owner 
 
 **Notes:**
 - All analytics endpoints use 5-minute cache
-- Cache is automatically refreshed on data mutations
-- Requires admin or owner role for access
+- Admin role receives merchant-scoped data automatically (no query param needed)
+- Owner/manager receive platform-wide data
 
 ---
 
 ### 📤 Admin - File Upload
 
 #### `POST /api/admin/upload/logo`
-Upload merchant logo to R2 storage. **Requires admin auth.**
+Upload merchant logo to R2 storage. **Requires manager or owner auth.**
 
 **Content-Type:** `multipart/form-data`
 
@@ -1119,50 +1171,7 @@ Upload merchant logo to R2 storage. **Requires admin auth.**
 - Returns public URL immediately accessible
 - UUID filename prevents collisions
 
-#### `POST /api/admin/vouchers/:id/upload-qr`
-Upload QR codes as ZIP file for a voucher. **Requires admin auth.**
-
-**Content-Type:** `multipart/form-data`
-
-**Body:**
-- `file` - ZIP file containing PNG images
-
-**Validation:**
-- All files must be PNG format
-- Flat structure (no subdirectories)
-- File count must match: `totalStock × qrPerRedemption`
-- No duplicate image hashes
-
-**Response:** `200 OK`
-```json
-{
-  "voucher": {
-    "id": "uuid",
-    "title": "Voucher Title",
-    "totalQrCodes": 10
-  },
-  "qrCodes": [
-    {
-      "id": "uuid",
-      "imageUrl": "https://r2.dev/...",
-      "status": "available"
-    }
-  ]
-}
-```
-
-**Errors:**
-- `400` - Invalid ZIP structure
-- `400` - Wrong number of files
-- `400` - Non-PNG files found
-- `400` - Duplicate image hash
-- `409` - Voucher already has QR codes
-- `404` - Voucher not found
-
-**Notes:**
-- Transaction-safe: Auto-rollback on failure
-- Files stored in private R2 bucket with signed URLs
-- Image hashes prevent duplicates
+> **Removed:** `POST /api/admin/vouchers/:id/upload-qr` has been removed. QR codes are now auto-generated at redemption time — no manual ZIP upload needed.
 
 ---
 
@@ -1250,8 +1259,9 @@ Redemption creation uses `idempotencyKey` to prevent duplicate redemptions:
 ### Enums
 
 **AdminRole:**
-- `"admin"` - Standard admin access
-- `"owner"` - Full access including user management
+- `"owner"` - Full platform access including admin management and settings
+- `"manager"` - Platform-level access (merchants, vouchers, analytics, fee settings). Cannot manage admin accounts.
+- `"admin"` - Merchant-scoped access. Must be linked to a specific merchant. Can only see/manage that merchant's vouchers, QR codes, redemptions, and analytics.
 
 **MerchantCategory:**
 - `"kuliner"`

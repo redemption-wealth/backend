@@ -8,7 +8,9 @@ const fixtures = createFixtures(testPrisma);
 
 describe("First-Login Admin Flow E2E", () => {
   test("owner creates admin → set-password → login → CRUD", async () => {
-    const ownerToken = await createTestOwnerToken();
+    // Create owner in DB — requireAdmin does a live DB check on every request
+    const owner = await fixtures.createAdmin({ role: "owner", email: "first-login-owner@test.com" });
+    const ownerToken = await createTestOwnerToken({ id: owner.id, email: owner.email });
 
     // 1. Owner creates admin with no password
     const createRes = await jsonPost("/api/admin/admins", {

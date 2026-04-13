@@ -16,9 +16,13 @@ adminAdmins.get("/", async (c) => {
       id: true,
       email: true,
       role: true,
+      merchantId: true,
       isActive: true,
       createdAt: true,
       updatedAt: true,
+      assignedMerchant: {
+        select: { id: true, name: true },
+      },
     },
     orderBy: { createdAt: "desc" },
   });
@@ -26,7 +30,7 @@ adminAdmins.get("/", async (c) => {
   return c.json({ admins });
 });
 
-// POST /api/admin/admins — Create admin
+// POST /api/admin/admins — Create admin (owner only)
 adminAdmins.post("/", async (c) => {
   const body = await c.req.json();
 
@@ -38,18 +42,29 @@ adminAdmins.post("/", async (c) => {
     );
   }
 
-  const { email, password, role } = parsed.data;
-  const passwordHash = password
-    ? await bcryptjs.hash(password, 12)
-    : null;
+  const { email, password, role, merchantId } = parsed.data;
+
+  // Verify merchant exists if merchantId provided
+  if (merchantId) {
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { id: true },
+    });
+    if (!merchant) {
+      return c.json({ error: "Merchant not found" }, 404);
+    }
+  }
+
+  const passwordHash = password ? await bcryptjs.hash(password, 12) : null;
 
   try {
     const admin = await prisma.admin.create({
-      data: { email, passwordHash, role },
+      data: { email, passwordHash, role, merchantId: merchantId ?? null },
       select: {
         id: true,
         email: true,
         role: true,
+        merchantId: true,
         isActive: true,
         createdAt: true,
         updatedAt: true,
@@ -65,7 +80,7 @@ adminAdmins.post("/", async (c) => {
   }
 });
 
-// PUT /api/admin/admins/:id — Update admin
+// PUT /api/admin/admins/:id — Update admin (owner only)
 adminAdmins.put("/:id", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json();
@@ -78,14 +93,46 @@ adminAdmins.put("/:id", async (c) => {
     );
   }
 
+  const { isActive, merchantId } = parsed.data;
+
+  // Validate merchantId updates
+  if (merchantId !== undefined) {
+    const target = await prisma.admin.findUnique({
+      where: { id },
+      select: { role: true },
+    });
+    if (!target) {
+      return c.json({ error: "Admin not found" }, 404);
+    }
+    if (target.role !== "admin") {
+      return c.json({ error: "merchantId can only be set for admin role" }, 400);
+    }
+
+    // Verify merchant exists if setting a non-null value
+    if (merchantId !== null) {
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: merchantId },
+        select: { id: true },
+      });
+      if (!merchant) {
+        return c.json({ error: "Merchant not found" }, 404);
+      }
+    }
+  }
+
   try {
+    const updateData: Record<string, unknown> = {};
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (merchantId !== undefined) updateData.merchantId = merchantId;
+
     const admin = await prisma.admin.update({
       where: { id },
-      data: { isActive: parsed.data.isActive },
+      data: updateData,
       select: {
         id: true,
         email: true,
         role: true,
+        merchantId: true,
         isActive: true,
         createdAt: true,
         updatedAt: true,
@@ -97,7 +144,7 @@ adminAdmins.put("/:id", async (c) => {
   }
 });
 
-// DELETE /api/admin/admins/:id — Delete admin
+// DELETE /api/admin/admins/:id — Delete admin (owner only)
 adminAdmins.delete("/:id", async (c) => {
   const id = c.req.param("id");
   const currentAdmin = c.get("adminAuth");
@@ -106,7 +153,6 @@ adminAdmins.delete("/:id", async (c) => {
     return c.json({ error: "Cannot delete yourself" }, 400);
   }
 
-  // Prevent deleting last owner
   const target = await prisma.admin.findUnique({ where: { id } });
   if (!target) {
     return c.json({ error: "Admin not found" }, 404);

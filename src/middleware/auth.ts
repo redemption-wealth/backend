@@ -4,6 +4,12 @@ import { PrivyClient } from "@privy-io/server-auth";
 import * as jose from "jose";
 import { prisma } from "../db.js";
 
+// --- Startup assertion: fail fast if secret is missing ---
+
+if (!process.env.ADMIN_JWT_SECRET) {
+  throw new Error("ADMIN_JWT_SECRET environment variable is required");
+}
+
 // --- Types ---
 
 export type UserAuth = {
@@ -17,7 +23,8 @@ export type AdminAuth = {
   type: "admin";
   adminId: string;
   email: string;
-  role: "admin" | "owner";
+  role: "owner" | "manager" | "admin";
+  merchantId?: string;
 };
 
 export type AuthContext = UserAuth | AdminAuth;
@@ -41,16 +48,15 @@ export { privyClient };
 
 // --- JWT helpers ---
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.ADMIN_JWT_SECRET || "change-me"
-);
+const JWT_SECRET = new TextEncoder().encode(process.env.ADMIN_JWT_SECRET);
 
 export async function createAdminToken(payload: {
   id: string;
   email: string;
-  role: string;
+  role: "owner" | "manager" | "admin";
+  merchantId?: string;
 }) {
-  return new jose.SignJWT(payload)
+  return new jose.SignJWT(payload as Record<string, unknown>)
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("24h")
     .sign(JWT_SECRET);
@@ -62,7 +68,8 @@ async function verifyAdminToken(token: string) {
     return payload as unknown as {
       id: string;
       email: string;
-      role: "admin" | "owner";
+      role: "owner" | "manager" | "admin";
+      merchantId?: string;
     };
   } catch {
     return null;
@@ -114,7 +121,7 @@ export const requireUser = createMiddleware<AuthEnv>(async (c, next) => {
   await next();
 });
 
-// --- Middleware: require admin auth (JWT) ---
+// --- Middleware: require admin auth (JWT + live DB validation) ---
 
 export const requireAdmin = createMiddleware<AuthEnv>(async (c, next) => {
   const authHeader = c.req.header("authorization");
@@ -128,18 +135,27 @@ export const requireAdmin = createMiddleware<AuthEnv>(async (c, next) => {
     throw new HTTPException(401, { message: "Invalid token" });
   }
 
-  c.set("auth", {
-    type: "admin",
-    adminId: decoded.id,
-    email: decoded.email,
-    role: decoded.role,
+  // DB check on every request — ensures deactivation and reassignment take effect instantly
+  const admin = await prisma.admin.findUnique({
+    where: { id: decoded.id },
+    select: { id: true, email: true, role: true, merchantId: true, isActive: true },
   });
-  c.set("adminAuth", {
+
+  if (!admin || !admin.isActive) {
+    throw new HTTPException(401, { message: "Unauthorized" });
+  }
+
+  // Populate context from DB record (not JWT payload)
+  const adminAuth: AdminAuth = {
     type: "admin",
-    adminId: decoded.id,
-    email: decoded.email,
-    role: decoded.role,
-  });
+    adminId: admin.id,
+    email: admin.email,
+    role: admin.role as "owner" | "manager" | "admin",
+    ...(admin.merchantId ? { merchantId: admin.merchantId } : {}),
+  };
+
+  c.set("auth", adminAuth);
+  c.set("adminAuth", adminAuth);
 
   await next();
 });
@@ -150,6 +166,16 @@ export const requireOwner = createMiddleware<AuthEnv>(async (c, next) => {
   const admin = c.get("adminAuth");
   if (!admin || admin.role !== "owner") {
     throw new HTTPException(403, { message: "Owner access required" });
+  }
+  await next();
+});
+
+// --- Middleware: require manager or owner role ---
+
+export const requireManager = createMiddleware<AuthEnv>(async (c, next) => {
+  const admin = c.get("adminAuth");
+  if (!admin || (admin.role !== "owner" && admin.role !== "manager")) {
+    throw new HTTPException(403, { message: "Manager access required" });
   }
   await next();
 });

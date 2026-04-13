@@ -106,7 +106,8 @@ describe("GET /api/auth/me", () => {
   });
 
   test("returns admin context with valid token", async () => {
-    const token = await createTestAdminToken();
+    const admin = await fixtures.createAdmin({ email: "me-test@test.com", role: "admin" });
+    const token = await createTestAdminToken({ id: admin.id, email: admin.email, role: "admin" });
     const res = await authGet("/api/auth/me", token);
     expect(res.status).toBe(200);
     const body = await res.json();

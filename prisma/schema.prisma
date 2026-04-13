@@ -9,8 +9,9 @@ datasource db {
 // ─── Enums ──────────────────────────────────────────────────────────────────
 
 enum AdminRole {
-  admin
   owner
+  manager
+  admin
 }
 
 enum QrStatus {
@@ -58,13 +59,17 @@ model Admin {
   id           String    @id @default(uuid())
   email        String    @unique
   passwordHash String?   @map("password_hash")
-  role         AdminRole @default(admin)
+  role         AdminRole @default(manager)
+  merchantId   String?   @map("merchant_id")
   isActive     Boolean   @default(true) @map("is_active")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  merchants Merchant[]
+  createdMerchants Merchant[]  @relation("MerchantCreator")
+  assignedMerchant Merchant?   @relation("AdminMerchantAssignment", fields: [merchantId], references: [id], onDelete: SetNull)
+  scannedQrCodes   QrCode[]    @relation("QrCodeScanner")
 
+  @@index([merchantId])
   @@map("admins")
 }
 
@@ -79,9 +84,10 @@ model Merchant {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  creator  Admin?    @relation(fields: [createdBy], references: [id], onDelete: SetNull)
-  category Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  vouchers Voucher[]
+  creator       Admin?    @relation("MerchantCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  category      Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  vouchers      Voucher[]
+  assignedAdmins Admin[]  @relation("AdminMerchantAssignment")
 
   @@index([categoryId])
   @@map("merchants")
@@ -116,16 +122,19 @@ model QrCode {
   redemptionId     String?   @map("redemption_id")
   imageUrl         String    @map("image_url")
   imageHash        String    @unique @map("image_hash")
+  token            String?   @unique @map("token")
   status           QrStatus  @default(available)
   assignedToUserId String?   @map("assigned_to_user_id")
   assignedAt       DateTime? @map("assigned_at")
   usedAt           DateTime? @map("used_at")
+  scannedByAdminId String?   @map("scanned_by_admin_id")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  voucher    Voucher     @relation(fields: [voucherId], references: [id], onDelete: Restrict)
-  assignedTo User?       @relation(fields: [assignedToUserId], references: [id], onDelete: SetNull)
-  redemption Redemption? @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
+  voucher      Voucher     @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  assignedTo   User?       @relation(fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  redemption   Redemption? @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
+  scannedBy    Admin?      @relation("QrCodeScanner", fields: [scannedByAdminId], references: [id], onDelete: SetNull)
 
   @@index([voucherId, status])
   @@index([assignedToUserId])

@@ -1,11 +1,30 @@
 import { z } from "zod";
 
-export const createAdminSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8).max(128).optional(),
-  role: z.enum(["admin", "owner"]).default("admin"),
-});
+export const createAdminSchema = z
+  .object({
+    email: z.string().email(),
+    password: z.string().min(8).max(128).optional(),
+    role: z.enum(["owner", "manager", "admin"]).default("manager"),
+    merchantId: z.string().uuid().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.role === "admin" && !data.merchantId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "merchantId is required for admin role",
+        path: ["merchantId"],
+      });
+    }
+    if (data.role !== "admin" && data.merchantId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "merchantId is only allowed for admin role",
+        path: ["merchantId"],
+      });
+    }
+  });
 
 export const updateAdminSchema = z.object({
-  isActive: z.boolean(),
+  isActive: z.boolean().optional(),
+  merchantId: z.string().uuid().nullable().optional(),
 });

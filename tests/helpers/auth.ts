@@ -7,14 +7,19 @@ const TEST_JWT_SECRET = new TextEncoder().encode(
 export async function createTestAdminToken(overrides?: {
   id?: string;
   email?: string;
-  role?: "admin" | "owner";
+  role?: "admin" | "owner" | "manager";
+  merchantId?: string;
   expiresIn?: string;
 }) {
-  const payload = {
+  const payload: Record<string, unknown> = {
     id: overrides?.id ?? "test-admin-id",
     email: overrides?.email ?? "admin@test.com",
     role: overrides?.role ?? "admin",
   };
+
+  if (overrides?.merchantId) {
+    payload.merchantId = overrides.merchantId;
+  }
 
   return new jose.SignJWT(payload)
     .setProtectedHeader({ alg: "HS256" })
@@ -32,6 +37,19 @@ export async function createTestOwnerToken(overrides?: {
     role: "owner",
     id: overrides?.id ?? "test-owner-id",
     email: overrides?.email ?? "owner@test.com",
+  });
+}
+
+export async function createTestManagerToken(overrides?: {
+  id?: string;
+  email?: string;
+  expiresIn?: string;
+}) {
+  return createTestAdminToken({
+    ...overrides,
+    role: "manager",
+    id: overrides?.id ?? "test-manager-id",
+    email: overrides?.email ?? "manager@test.com",
   });
 }
 
@@ -56,13 +74,11 @@ export async function createTokenWithWrongSecret() {
 
 /**
  * Create a mock Privy token for testing user authentication
- * Returns a simple token string that the mocked Privy client will recognize
  */
 export function createTestUserToken(overrides?: {
   privyUserId?: string;
   email?: string;
 }) {
-  // Return a simple token - the mock will be configured to recognize it
   const privyUserId = overrides?.privyUserId ?? "test-privy-user-id";
   const email = overrides?.email ?? "user@test.com";
   return `mock-privy-token-${privyUserId}-${email}`;
@@ -70,7 +86,6 @@ export function createTestUserToken(overrides?: {
 
 /**
  * Setup Privy mock to return specific user claims for a token
- * Call this in tests before making authenticated user requests
  */
 export function mockPrivyVerification(privyUserId: string, email: string) {
   return {

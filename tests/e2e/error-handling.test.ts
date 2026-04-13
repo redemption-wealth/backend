@@ -1,6 +1,10 @@
 import { describe, test, expect } from "vitest";
 import app from "@/app.js";
+import { testPrisma } from "../setup.integration.js";
+import { createFixtures } from "../helpers/fixtures.js";
 import { createTestAdminToken } from "../helpers/auth.js";
+
+const fixtures = createFixtures(testPrisma);
 
 describe("Error Handling", () => {
   test("non-UUID IDs return 400 or 404, not 500", async () => {
@@ -16,7 +20,9 @@ describe("Error Handling", () => {
   });
 
   test("invalid JSON body returns error, not 500", async () => {
-    const token = await createTestAdminToken();
+    // Create manager in DB — requireAdmin does a live DB check; POST merchants needs manager role
+    const admin = await fixtures.createAdmin({ role: "manager", email: "invalid-json-test@test.com" });
+    const token = await createTestAdminToken({ id: admin.id, email: admin.email });
     const res = await app.request("/api/admin/merchants", {
       method: "POST",
       headers: {
