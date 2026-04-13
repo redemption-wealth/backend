@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from "crypto";
-import qrcode from "qrcode";
+import QRCode from "qrcode";
 import { uploadFile, deleteFiles } from "./r2.js";
 
 const QR_BUCKET = process.env.R2_QR_BUCKET_NAME || "wealth-qr-codes";
@@ -14,7 +14,7 @@ export async function generateQrCode(
 ): Promise<{ token: string; imageUrl: string; imageHash: string }> {
   const token = randomBytes(16).toString("hex");
 
-  const buffer = await qrcode.toBuffer(token, { type: "png" });
+  const buffer = await QRCode.toBuffer(token, { type: "png" });
   const imageHash = createHash("sha256").update(buffer).digest("hex");
   const key = `qr-codes/${redemptionId}/${index}.png`;
 

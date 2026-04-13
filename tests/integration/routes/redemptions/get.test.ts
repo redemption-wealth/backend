@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach } from "vitest";
-import { testPrisma } from "../../../setup.integration.js";
+import { testPrisma, mockVerifyAuthToken } from "../../../setup.integration.js";
 import { createTestScenarios } from "../../../helpers/scenarios.js";
 import { authGet } from "../../../helpers/request.js";
+import { mockPrivyVerification } from "../../../helpers/auth.js";
 
 const scenarios = createTestScenarios(testPrisma);
 
@@ -15,6 +16,11 @@ describe("GET /api/redemptions/:id", () => {
     const { user, token, voucher } = await scenarios.redemptionReady(5);
     userToken = token;
     userId = user.id;
+
+    // Mock Privy token verification
+    mockVerifyAuthToken.mockResolvedValue(
+      mockPrivyVerification(user.privyUserId, user.email)
+    );
 
     // Create a redemption
     const redemption = await testPrisma.redemption.create({
