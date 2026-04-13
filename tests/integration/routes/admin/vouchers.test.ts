@@ -6,7 +6,7 @@ import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/aut
 
 const fixtures = createFixtures(testPrisma);
 
-async function createAdminWithToken(role: "admin" | "owner" = "admin") {
+async function createAdminWithToken(role: "admin" | "owner" = "owner") {
   const admin = await fixtures.createAdmin({ role });
   const token = role === "owner"
     ? await createTestOwnerToken({ id: admin.id, email: admin.email })

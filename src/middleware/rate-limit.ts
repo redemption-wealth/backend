@@ -76,3 +76,13 @@ export const userSyncLimiter = createRateLimiter({
     return `user-sync:${ip}`;
   },
 });
+
+export const qrScanLimiter = createRateLimiter({
+  maxAttempts: 60,
+  windowMs: 60 * 1000, // 1 minute
+  keyFn: (c) => {
+    // Requires requireAdmin to have run first — keyed by adminId
+    const auth = (c as unknown as { get: (key: string) => { adminId?: string } | undefined }).get("adminAuth");
+    return `qr-scan:${auth?.adminId ?? "unknown"}`;
+  },
+});

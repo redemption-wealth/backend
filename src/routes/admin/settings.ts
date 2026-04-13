@@ -5,8 +5,8 @@ import { updateSettingsSchema } from "../../schemas/settings.js";
 
 const adminSettings = new Hono<AuthEnv>();
 
-// GET /api/admin/settings — Get app settings
-adminSettings.get("/", async (c) => {
+// GET /api/admin/settings — Get app settings (owner only — exposes treasury wallet)
+adminSettings.get("/", requireOwner, async (c) => {
   let settings = await prisma.appSettings.findUnique({
     where: { id: "singleton" },
   });

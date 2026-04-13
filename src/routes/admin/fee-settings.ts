@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
-import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import { requireOwner, requireManager, type AuthEnv } from "../../middleware/auth.js";
 import {
   createFeeSettingSchema,
   updateFeeSettingSchema,
@@ -8,7 +8,7 @@ import {
 
 const adminFeeSettings = new Hono<AuthEnv>();
 
-// GET /api/admin/fee-settings — List all fee settings
+// GET /api/admin/fee-settings — List all fee settings (any authenticated admin)
 adminFeeSettings.get("/", async (c) => {
   const feeSettings = await prisma.feeSetting.findMany({
     orderBy: { createdAt: "desc" },
@@ -16,8 +16,8 @@ adminFeeSettings.get("/", async (c) => {
   return c.json({ feeSettings });
 });
 
-// POST /api/admin/fee-settings — Create fee setting
-adminFeeSettings.post("/", async (c) => {
+// POST /api/admin/fee-settings — Create fee setting (manager+ only)
+adminFeeSettings.post("/", requireManager, async (c) => {
   const body = await c.req.json();
 
   const parsed = createFeeSettingSchema.safeParse(body);
@@ -35,8 +35,8 @@ adminFeeSettings.post("/", async (c) => {
   return c.json({ feeSetting }, 201);
 });
 
-// PUT /api/admin/fee-settings/:id — Update fee setting
-adminFeeSettings.put("/:id", async (c) => {
+// PUT /api/admin/fee-settings/:id — Update fee setting (manager+ only)
+adminFeeSettings.put("/:id", requireManager, async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json();
 
@@ -68,7 +68,6 @@ adminFeeSettings.post("/:id/activate", requireOwner, async (c) => {
     return c.json({ error: "Fee setting not found" }, 404);
   }
 
-  // Deactivate all, then activate this one (atomic)
   await prisma.$transaction([
     prisma.feeSetting.updateMany({
       where: { isActive: true },

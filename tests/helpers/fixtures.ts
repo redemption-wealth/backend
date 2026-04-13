@@ -6,8 +6,9 @@ export function createFixtures(prisma: PrismaClient) {
     async createAdmin(overrides?: Partial<{
       email: string;
       password: string | null;
-      role: "admin" | "owner";
+      role: "admin" | "owner" | "manager";
       isActive: boolean;
+      merchantId: string;
     }>) {
       const password = overrides?.password;
       const passwordHash = password === null
@@ -19,6 +20,7 @@ export function createFixtures(prisma: PrismaClient) {
           passwordHash,
           role: overrides?.role ?? "admin",
           isActive: overrides?.isActive ?? true,
+          merchantId: overrides?.merchantId,
         },
       });
     },

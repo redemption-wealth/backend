@@ -2,14 +2,20 @@ import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
 import { jsonPost, jsonPut, authGet, authDelete } from "../../../helpers/request.js";
-import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/auth.js";
+import { createTestAdminToken, createTestOwnerToken, createTestManagerToken } from "../../../helpers/auth.js";
 
 const fixtures = createFixtures(testPrisma);
 
 async function createAdminWithToken() {
-  const admin = await fixtures.createAdmin();
-  const token = await createTestAdminToken({ id: admin.id, email: admin.email });
+  const admin = await fixtures.createAdmin({ role: "admin" });
+  const token = await createTestAdminToken({ id: admin.id, email: admin.email, role: "admin" });
   return { admin, token };
+}
+
+async function createManagerWithToken() {
+  const manager = await fixtures.createAdmin({ role: "manager" });
+  const token = await createTestManagerToken({ id: manager.id, email: manager.email });
+  return { manager, token };
 }
 
 async function createOwnerWithToken() {
@@ -33,7 +39,7 @@ describe("GET /api/admin/fee-settings", () => {
 
 describe("POST /api/admin/fee-settings", () => {
   test("creates fee setting (isActive=false by default)", async () => {
-    const { token } = await createAdminWithToken();
+    const { token } = await createManagerWithToken();
     const res = await jsonPost("/api/admin/fee-settings", {
       label: "New Fee",
       amountIdr: 5000,
@@ -44,7 +50,7 @@ describe("POST /api/admin/fee-settings", () => {
   });
 
   test("validates data with Zod", async () => {
-    const { token } = await createAdminWithToken();
+    const { token } = await createManagerWithToken();
     const res = await jsonPost("/api/admin/fee-settings", {
       label: "A",
       amountIdr: -1,
@@ -56,7 +62,7 @@ describe("POST /api/admin/fee-settings", () => {
 describe("PUT /api/admin/fee-settings/:id", () => {
   test("updates label and amountIdr", async () => {
     const fee = await fixtures.createFeeSetting({ label: "Old", amountIdr: 3000 });
-    const { token } = await createAdminWithToken();
+    const { token } = await createManagerWithToken();
 
     const res = await jsonPut(`/api/admin/fee-settings/${fee.id}`, {
       label: "Updated Fee",

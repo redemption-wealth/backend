@@ -4,14 +4,18 @@ import type { AuthEnv } from "../../middleware/auth.js";
 
 const adminRedemptions = new Hono<AuthEnv>();
 
-// GET /api/admin/redemptions — List all redemptions
+// GET /api/admin/redemptions — List redemptions (merchant-scoped for admin role)
 adminRedemptions.get("/", async (c) => {
+  const adminAuth = c.get("adminAuth");
   const status = c.req.query("status");
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "20");
 
   const where = {
     ...(status && { status: status as never }),
+    ...(adminAuth.role === "admin" && adminAuth.merchantId && {
+      voucher: { merchantId: adminAuth.merchantId },
+    }),
   };
 
   const [redemptionsList, total] = await Promise.all([
@@ -43,6 +47,7 @@ adminRedemptions.get("/", async (c) => {
 // GET /api/admin/redemptions/:id — Get redemption detail
 adminRedemptions.get("/:id", async (c) => {
   const id = c.req.param("id");
+  const adminAuth = c.get("adminAuth");
 
   const redemption = await prisma.redemption.findUnique({
     where: { id },
@@ -56,6 +61,14 @@ adminRedemptions.get("/:id", async (c) => {
 
   if (!redemption) {
     return c.json({ error: "Redemption not found" }, 404);
+  }
+
+  // Admin role: enforce merchant ownership
+  if (
+    adminAuth.role === "admin" &&
+    redemption.voucher.merchantId !== adminAuth.merchantId
+  ) {
+    return c.json({ error: "Access denied" }, 403);
   }
 
   return c.json({ redemption });

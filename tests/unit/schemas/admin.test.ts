@@ -17,13 +17,13 @@ describe("createAdminSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  test("defaults role to admin", () => {
+  test("defaults role to manager", () => {
     const result = createAdminSchema.safeParse({
       email: "admin@test.com",
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.role).toBe("admin");
+      expect(result.data.role).toBe("manager");
     }
   });
 
@@ -70,9 +70,9 @@ describe("updateAdminSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  test("missing isActive fails", () => {
+  test("empty update body passes (both fields optional)", () => {
     const result = updateAdminSchema.safeParse({});
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   test("non-boolean isActive fails", () => {

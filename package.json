@@ -40,6 +40,7 @@
     "jose": "^6.2.2",
     "node-cache": "^5.1.2",
     "pg": "^8.20.0",
+    "qrcode": "^1.5.4",
     "viem": "^2.47.12",
     "zod": "^4.3.6"
   },
@@ -49,6 +50,7 @@
     "@types/bcryptjs": "^3.0.0",
     "@types/node": "^22.15.0",
     "@types/pg": "^8.20.0",
+    "@types/qrcode": "^1.5.6",
     "@vitest/coverage-v8": "^4.1.4",
     "prisma": "^7.7.0",
     "testcontainers": "^11.14.0",

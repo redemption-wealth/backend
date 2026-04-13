@@ -1,22 +1,18 @@
 import { describe, test, expect } from "vitest";
 import { testPrisma } from "../setup.integration.js";
 import { createFixtures } from "../helpers/fixtures.js";
-import { jsonPost } from "../helpers/request.js";
-import { createTestAdminToken, createTestOwnerToken } from "../helpers/auth.js";
 
 const fixtures = createFixtures(testPrisma);
 
 describe("Multi-QR Redemption Flow E2E", () => {
   test("voucher with qrPerRedemption=2 assigns 2 QR codes", async () => {
-    const adminToken = await createTestAdminToken();
-    const ownerToken = await createTestOwnerToken();
-
     // Create merchant + voucher with qrPerRedemption=2
+    // QR codes are now generated on-demand by initiateRedemption — no pre-upload needed
     const admin = await fixtures.createAdmin();
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher, qrCodes } = await fixtures.createVoucherWithQrCodes(
+    const { voucher } = await fixtures.createVoucherWithQrCodes(
       merchant.id,
-      4,
+      0,  // no pre-created QR codes
       { qrPerRedemption: 2, totalStock: 2 }
     );
 
@@ -36,18 +32,12 @@ describe("Multi-QR Redemption Flow E2E", () => {
       wealthPriceIdr: 850,
     });
 
-    // Verify 2 QR codes assigned
+    // Verify 2 QR codes were generated and assigned to this redemption
     const assignedQrs = await testPrisma.qrCode.findMany({
       where: { redemptionId: redemption.id },
     });
     expect(assignedQrs.length).toBe(2);
     expect(assignedQrs.every((qr) => qr.status === "assigned")).toBe(true);
-
-    // Verify 2 remain available
-    const availableQrs = await testPrisma.qrCode.findMany({
-      where: { voucherId: voucher.id, status: "available" },
-    });
-    expect(availableQrs.length).toBe(2);
 
     // Confirm via webhook
     const txHash = "0x" + "b".repeat(64);

@@ -10,7 +10,7 @@ describe("Full Redemption Flow E2E", () => {
   test("complete flow: create merchant → voucher → QR → redeem → confirm → mark used", async () => {
     // Create actual admin records in DB first
     const owner = await fixtures.createAdmin({ role: "owner", email: "owner@test.com" });
-    const admin = await fixtures.createAdmin({ role: "admin", email: "admin@test.com" });
+    const admin = await fixtures.createAdmin({ role: "manager", email: "admin@test.com" });
 
     const ownerToken = await createTestOwnerToken({ id: owner.id, email: owner.email });
     const adminToken = await createTestAdminToken({ id: admin.id, email: admin.email });
@@ -101,15 +101,15 @@ describe("Full Redemption Flow E2E", () => {
     expect(qrCodes.length).toBe(1);
     expect(qrCodes[0].status).toBe("assigned");
 
-    // 12. Mark QR as used
+    // 12. Mark QR as used via scan endpoint (/:id/mark-used was removed)
     const markRes = await jsonPost(
-      `/api/admin/qr-codes/${qrCodes[0].id}/mark-used`,
-      {},
+      `/api/admin/qr-codes/scan`,
+      { token: qrCodes[0].token },
       adminToken
     );
     expect(markRes.status).toBe(200);
     const markBody = await markRes.json();
-    expect(markBody.qrCode.status).toBe("used");
+    expect(markBody.success).toBe(true);
 
     // 13. Verify transaction created
     const transaction = await testPrisma.transaction.findFirst({

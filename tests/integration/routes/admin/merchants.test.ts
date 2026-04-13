@@ -2,15 +2,20 @@ import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
 import { jsonPost, jsonPut, authGet, authDelete } from "../../../helpers/request.js";
-import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/auth.js";
+import { createTestAdminToken, createTestOwnerToken, createTestManagerToken } from "../../../helpers/auth.js";
 
 const fixtures = createFixtures(testPrisma);
 
-async function createAdminWithToken(role: "admin" | "owner" = "admin") {
+async function createAdminWithToken(role: "admin" | "owner" | "manager" = "manager") {
   const admin = await fixtures.createAdmin({ role });
-  const token = role === "owner"
-    ? await createTestOwnerToken({ id: admin.id, email: admin.email })
-    : await createTestAdminToken({ id: admin.id, email: admin.email });
+  let token: string;
+  if (role === "owner") {
+    token = await createTestOwnerToken({ id: admin.id, email: admin.email });
+  } else if (role === "manager") {
+    token = await createTestManagerToken({ id: admin.id, email: admin.email });
+  } else {
+    token = await createTestAdminToken({ id: admin.id, email: admin.email, role: "admin" });
+  }
   return { admin, token };
 }
 
@@ -21,7 +26,7 @@ describe("GET /api/admin/merchants", () => {
   });
 
   test("returns all merchants including inactive", async () => {
-    const { admin, token } = await createAdminWithToken();
+    const { admin, token } = await createAdminWithToken("manager");
     await fixtures.createMerchant(admin.id, { isActive: true });
     await fixtures.createMerchant(admin.id, { isActive: false });
 
@@ -33,10 +38,9 @@ describe("GET /api/admin/merchants", () => {
 });
 
 describe("POST /api/admin/merchants", () => {
-  test("creates merchant with valid data", async () => {
-    const { token } = await createAdminWithToken();
+  test("creates merchant with valid data (manager)", async () => {
+    const { token } = await createAdminWithToken("manager");
 
-    // Create category first
     const category = await testPrisma.category.upsert({
       where: { name: "kuliner" },
       update: {},
@@ -52,8 +56,24 @@ describe("POST /api/admin/merchants", () => {
     expect(body.merchant.name).toBe("New Merchant");
   });
 
+  test("returns 403 for admin role (merchant-scoped)", async () => {
+    const { token } = await createAdminWithToken("admin");
+
+    const category = await testPrisma.category.upsert({
+      where: { name: "kuliner" },
+      update: {},
+      create: { name: "kuliner", isActive: true },
+    });
+
+    const res = await jsonPost("/api/admin/merchants", {
+      name: "New Merchant",
+      categoryId: category.id,
+    }, token);
+    expect(res.status).toBe(403);
+  });
+
   test("returns 400 for invalid data", async () => {
-    const { token } = await createAdminWithToken();
+    const { token } = await createAdminWithToken("manager");
 
     const category = await testPrisma.category.upsert({
       where: { name: "kuliner" },
@@ -69,7 +89,7 @@ describe("POST /api/admin/merchants", () => {
   });
 
   test("returns 400 for invalid category", async () => {
-    const { token } = await createAdminWithToken();
+    const { token } = await createAdminWithToken("manager");
     const res = await jsonPost("/api/admin/merchants", {
       name: "Valid Name",
       category: "invalid",
@@ -79,8 +99,8 @@ describe("POST /api/admin/merchants", () => {
 });
 
 describe("PUT /api/admin/merchants/:id", () => {
-  test("updates merchant fields", async () => {
-    const { admin, token } = await createAdminWithToken();
+  test("updates merchant fields (manager)", async () => {
+    const { admin, token } = await createAdminWithToken("manager");
     const merchant = await fixtures.createMerchant(admin.id);
 
     const res = await jsonPut(`/api/admin/merchants/${merchant.id}`, {
@@ -91,8 +111,19 @@ describe("PUT /api/admin/merchants/:id", () => {
     expect(body.merchant.name).toBe("Updated Name");
   });
 
+  test("returns 403 for admin role (merchant-scoped)", async () => {
+    const { admin: ownerAdmin } = await createAdminWithToken("owner");
+    const merchant = await fixtures.createMerchant(ownerAdmin.id);
+    const { token: adminToken } = await createAdminWithToken("admin");
+
+    const res = await jsonPut(`/api/admin/merchants/${merchant.id}`, {
+      name: "Updated",
+    }, adminToken);
+    expect(res.status).toBe(403);
+  });
+
   test("returns 404 for non-existent merchant", async () => {
-    const { token } = await createAdminWithToken();
+    const { token } = await createAdminWithToken("manager");
     const res = await jsonPut("/api/admin/merchants/550e8400-e29b-41d4-a716-446655440000", {
       name: "Updated",
     }, token);

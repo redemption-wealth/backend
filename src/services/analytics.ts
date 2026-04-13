@@ -50,14 +50,15 @@ export function formatDateLabel(date: Date, period: "daily" | "yearly" | "monthl
       return date.toISOString().split("T")[0];
     case "yearly":
       return date.getFullYear().toString();
-    case "monthly":
+    case "monthly": {
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, "0");
       return year + "-" + month;
+    }
   }
 }
 
-export async function getSummaryStats(): Promise<{
+export async function getSummaryStats(merchantId?: string): Promise<{
   totalMerchants: number;
   totalVouchers: number;
   totalRedemptions: number;
@@ -67,7 +68,13 @@ export async function getSummaryStats(): Promise<{
   avgWealthPerRedeem: string;
   totalValueIdr: number;
 }> {
-  return getCachedOrCalculate("summary-stats", async () => {
+  const cacheKey = merchantId ? `summary-stats:${merchantId}` : "summary-stats";
+  return getCachedOrCalculate(cacheKey, async () => {
+    const redemptionWhere = merchantId
+      ? { voucher: { merchantId } }
+      : {};
+    const voucherWhere = merchantId ? { merchantId } : {};
+
     const [
       totalMerchants,
       totalVouchers,
@@ -78,21 +85,23 @@ export async function getSummaryStats(): Promise<{
       avgWealthResult,
       totalValueIdrResult,
     ] = await Promise.all([
-      prisma.merchant.count({ where: { isActive: true } }),
-      prisma.voucher.count({ where: { isActive: true } }),
-      prisma.redemption.count(),
-      prisma.redemption.count({ where: { status: "confirmed" } }),
+      merchantId
+        ? prisma.merchant.count({ where: { id: merchantId, isActive: true } })
+        : prisma.merchant.count({ where: { isActive: true } }),
+      prisma.voucher.count({ where: { isActive: true, ...voucherWhere } }),
+      prisma.redemption.count({ where: redemptionWhere }),
+      prisma.redemption.count({ where: { status: "confirmed", ...redemptionWhere } }),
       prisma.redemption.aggregate({
-        where: { status: "confirmed" },
+        where: { status: "confirmed", ...redemptionWhere },
         _sum: { wealthAmount: true },
       }),
-      prisma.user.count(),
+      merchantId ? Promise.resolve(0) : prisma.user.count(),
       prisma.redemption.aggregate({
-        where: { status: "confirmed" },
+        where: { status: "confirmed", ...redemptionWhere },
         _avg: { wealthAmount: true },
       }),
       prisma.redemption.aggregate({
-        where: { status: "confirmed" },
+        where: { status: "confirmed", ...redemptionWhere },
         _sum: { priceIdrAtRedeem: true },
       }),
     ]);
@@ -110,24 +119,26 @@ export async function getSummaryStats(): Promise<{
   });
 }
 
-export async function getRedemptionsOverTime(period: "daily" | "yearly" | "monthly"): Promise<
-  Array<{ label: string; count: number }>
-> {
-  return getCachedOrCalculate("redemptions-over-time-" + period, async () => {
+export async function getRedemptionsOverTime(
+  period: "daily" | "yearly" | "monthly",
+  merchantId?: string
+): Promise<Array<{ label: string; count: number }>> {
+  const cacheKey = merchantId
+    ? `redemptions-over-time-${period}:${merchantId}`
+    : `redemptions-over-time-${period}`;
+  return getCachedOrCalculate(cacheKey, async () => {
     const { startDate } = getDateRange(period);
 
     const redemptions = await prisma.redemption.findMany({
       where: {
         redeemedAt: { gte: startDate },
+        ...(merchantId && { voucher: { merchantId } }),
       },
-      select: {
-        redeemedAt: true,
-      },
+      select: { redeemedAt: true },
       orderBy: { redeemedAt: "asc" },
     });
 
     const grouped = new Map<string, number>();
-
     redemptions.forEach((r) => {
       const label = formatDateLabel(r.redeemedAt, period);
       grouped.set(label, (grouped.get(label) || 0) + 1);
@@ -139,18 +150,18 @@ export async function getRedemptionsOverTime(period: "daily" | "yearly" | "month
   });
 }
 
-export async function getMerchantCategoryDistribution(): Promise<
+export async function getMerchantCategoryDistribution(merchantId?: string): Promise<
   Array<{ category: string; count: number; percentage: number }>
 > {
-  return getCachedOrCalculate("merchant-categories", async () => {
+  const cacheKey = merchantId ? `merchant-categories:${merchantId}` : "merchant-categories";
+  return getCachedOrCalculate(cacheKey, async () => {
     const merchants = await prisma.merchant.findMany({
-      where: { isActive: true },
+      where: { isActive: true, ...(merchantId && { id: merchantId }) },
       include: { category: true },
     });
 
     const total = merchants.length;
     const grouped = new Map<string, number>();
-
     merchants.forEach((m) => {
       const categoryName = m.category.name;
       grouped.set(categoryName, (grouped.get(categoryName) || 0) + 1);
@@ -166,44 +177,43 @@ export async function getMerchantCategoryDistribution(): Promise<
   });
 }
 
-export async function getWealthVolumeOverTime(period: "daily" | "yearly" | "monthly"): Promise<
-  Array<{ label: string; volume: string }>
-> {
-  return getCachedOrCalculate("wealth-volume-" + period, async () => {
+export async function getWealthVolumeOverTime(
+  period: "daily" | "yearly" | "monthly",
+  merchantId?: string
+): Promise<Array<{ label: string; volume: string }>> {
+  const cacheKey = merchantId
+    ? `wealth-volume-${period}:${merchantId}`
+    : `wealth-volume-${period}`;
+  return getCachedOrCalculate(cacheKey, async () => {
     const { startDate } = getDateRange(period);
 
     const redemptions = await prisma.redemption.findMany({
       where: {
         status: "confirmed",
         confirmedAt: { gte: startDate },
+        ...(merchantId && { voucher: { merchantId } }),
       },
-      select: {
-        confirmedAt: true,
-        wealthAmount: true,
-      },
+      select: { confirmedAt: true, wealthAmount: true },
       orderBy: { confirmedAt: "asc" },
     });
 
     const grouped = new Map<string, number>();
-
     redemptions.forEach((r) => {
       if (!r.confirmedAt) return;
-
       const label = formatDateLabel(r.confirmedAt, period);
-      const currentSum = grouped.get(label) || 0;
-      grouped.set(label, currentSum + Number(r.wealthAmount));
+      grouped.set(label, (grouped.get(label) || 0) + Number(r.wealthAmount));
     });
 
     return Array.from(grouped.entries())
-      .map(([label, volume]) => ({
-        label,
-        volume: volume.toFixed(3),
-      }))
+      .map(([label, volume]) => ({ label, volume: volume.toFixed(3) }))
       .sort((a, b) => a.label.localeCompare(b.label));
   });
 }
 
-export async function getTopMerchants(limit: number = 3): Promise<
+export async function getTopMerchants(
+  limit: number = 3,
+  merchantId?: string
+): Promise<
   Array<{
     id: string;
     name: string;
@@ -212,27 +222,21 @@ export async function getTopMerchants(limit: number = 3): Promise<
     wealthVolume: string;
   }>
 > {
-  return getCachedOrCalculate("top-merchants-" + limit, async () => {
+  const cacheKey = merchantId
+    ? `top-merchants-${limit}:${merchantId}`
+    : `top-merchants-${limit}`;
+  return getCachedOrCalculate(cacheKey, async () => {
     const redemptions = await prisma.redemption.findMany({
-      where: { status: "confirmed" },
-      include: {
-        voucher: {
-          include: {
-            merchant: true,
-          },
-        },
+      where: {
+        status: "confirmed",
+        ...(merchantId && { voucher: { merchantId } }),
       },
+      include: { voucher: { include: { merchant: true } } },
     });
 
     const merchantStats = new Map<
       string,
-      {
-        id: string;
-        name: string;
-        logoUrl: string | null;
-        redeemCount: number;
-        wealthVolume: number;
-      }
+      { id: string; name: string; logoUrl: string | null; redeemCount: number; wealthVolume: number }
     >();
 
     redemptions.forEach((r) => {
@@ -244,24 +248,22 @@ export async function getTopMerchants(limit: number = 3): Promise<
         redeemCount: 0,
         wealthVolume: 0,
       };
-
       stats.redeemCount++;
       stats.wealthVolume += Number(r.wealthAmount);
-
       merchantStats.set(merchant.id, stats);
     });
 
     return Array.from(merchantStats.values())
-      .map((m) => ({
-        ...m,
-        wealthVolume: m.wealthVolume.toFixed(2),
-      }))
+      .map((m) => ({ ...m, wealthVolume: m.wealthVolume.toFixed(2) }))
       .sort((a, b) => b.redeemCount - a.redeemCount)
       .slice(0, limit);
   });
 }
 
-export async function getTopVouchers(limit: number = 3): Promise<
+export async function getTopVouchers(
+  limit: number = 3,
+  merchantId?: string
+): Promise<
   Array<{
     id: string;
     title: string;
@@ -270,27 +272,21 @@ export async function getTopVouchers(limit: number = 3): Promise<
     wealthVolume: string;
   }>
 > {
-  return getCachedOrCalculate("top-vouchers-" + limit, async () => {
+  const cacheKey = merchantId
+    ? `top-vouchers-${limit}:${merchantId}`
+    : `top-vouchers-${limit}`;
+  return getCachedOrCalculate(cacheKey, async () => {
     const redemptions = await prisma.redemption.findMany({
-      where: { status: "confirmed" },
-      include: {
-        voucher: {
-          include: {
-            merchant: true,
-          },
-        },
+      where: {
+        status: "confirmed",
+        ...(merchantId && { voucher: { merchantId } }),
       },
+      include: { voucher: { include: { merchant: true } } },
     });
 
     const voucherStats = new Map<
       string,
-      {
-        id: string;
-        title: string;
-        merchantName: string;
-        redeemCount: number;
-        wealthVolume: number;
-      }
+      { id: string; title: string; merchantName: string; redeemCount: number; wealthVolume: number }
     >();
 
     redemptions.forEach((r) => {
@@ -302,18 +298,13 @@ export async function getTopVouchers(limit: number = 3): Promise<
         redeemCount: 0,
         wealthVolume: 0,
       };
-
       stats.redeemCount++;
       stats.wealthVolume += Number(r.wealthAmount);
-
       voucherStats.set(voucher.id, stats);
     });
 
     return Array.from(voucherStats.values())
-      .map((v) => ({
-        ...v,
-        wealthVolume: v.wealthVolume.toFixed(2),
-      }))
+      .map((v) => ({ ...v, wealthVolume: v.wealthVolume.toFixed(2) }))
       .sort((a, b) => b.redeemCount - a.redeemCount)
       .slice(0, limit);
   });

@@ -19,8 +19,8 @@ async function createOwnerWithToken() {
 }
 
 describe("GET /api/admin/settings", () => {
-  test("returns settings for any admin", async () => {
-    const { token } = await createAdminWithToken();
+  test("returns settings for owner", async () => {
+    const { token } = await createOwnerWithToken();
     const res = await authGet("/api/admin/settings", token);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -28,11 +28,17 @@ describe("GET /api/admin/settings", () => {
   });
 
   test("auto-creates singleton if missing", async () => {
-    const { token } = await createAdminWithToken();
+    const { token } = await createOwnerWithToken();
     const res = await authGet("/api/admin/settings", token);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.settings.id).toBe("singleton");
+  });
+
+  test("returns 403 for non-owner admin", async () => {
+    const { token } = await createAdminWithToken();
+    const res = await authGet("/api/admin/settings", token);
+    expect(res.status).toBe(403);
   });
 });
 

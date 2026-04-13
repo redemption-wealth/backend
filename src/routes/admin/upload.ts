@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { type AuthEnv } from "../../middleware/auth.js";
+import { requireManager, type AuthEnv } from "../../middleware/auth.js";
 import { uploadFile, getPublicUrl } from "../../services/r2.js";
 import { randomUUID } from "crypto";
 import { fileTypeFromBuffer } from "file-type";
@@ -8,9 +8,9 @@ const uploadRoutes = new Hono<AuthEnv>();
 
 /**
  * POST /api/admin/upload/logo
- * Upload merchant logo to R2 (public bucket)
+ * Upload merchant logo to R2 (public bucket) — manager+ only
  */
-uploadRoutes.post("/logo", async (c) => {
+uploadRoutes.post("/logo", requireManager, async (c) => {
   try {
     // Parse multipart form data
     const body = await c.req.parseBody();

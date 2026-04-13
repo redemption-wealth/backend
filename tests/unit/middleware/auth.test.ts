@@ -1,5 +1,26 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 import app from "@/app.js";
+
+// Mock prisma for unit tests — requireAdmin now does a DB lookup on every request
+vi.mock("@/db.js", () => {
+  const admins: Record<string, object> = {
+    "test-admin-id": { id: "test-admin-id", email: "admin@test.com", role: "admin", merchantId: null, isActive: true },
+    "test-owner-id": { id: "test-owner-id", email: "owner@test.com", role: "owner", merchantId: null, isActive: true },
+    "test-manager-id": { id: "test-manager-id", email: "manager@test.com", role: "manager", merchantId: null, isActive: true },
+  };
+  return {
+    prisma: {
+      admin: {
+        findUnique: vi.fn(({ where }: { where: { id?: string } }) =>
+          Promise.resolve(where?.id ? (admins[where.id] ?? null) : null)
+        ),
+        findMany: vi.fn(() => Promise.resolve([])),
+        count: vi.fn(() => Promise.resolve(0)),
+      },
+      user: { findUnique: vi.fn(() => Promise.resolve(null)) },
+    },
+  };
+});
 import {
   createTestAdminToken,
   createTestOwnerToken,
