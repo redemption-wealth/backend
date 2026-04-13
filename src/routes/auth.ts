@@ -7,7 +7,7 @@ import {
   requireAdmin,
   privyClient,
 } from "../middleware/auth.js";
-import { loginSchema, setPasswordSchema } from "../schemas/auth.js";
+import { loginSchema, setPasswordSchema, changePasswordSchema } from "../schemas/auth.js";
 
 const auth = new Hono();
 
@@ -99,6 +99,46 @@ auth.post("/set-password", async (c) => {
 auth.get("/me", requireAdmin, (c) => {
   const admin = c.get("adminAuth");
   return c.json({ admin });
+});
+
+// PUT /api/auth/change-password — Change admin password
+auth.put("/change-password", requireAdmin, async (c) => {
+  const adminAuth = c.get("adminAuth");
+  const body = await c.req.json();
+
+  const parsed = changePasswordSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Validation failed", details: parsed.error.flatten() },
+      400
+    );
+  }
+
+  const { currentPassword, newPassword } = parsed.data;
+
+  // Fetch admin with passwordHash
+  const admin = await prisma.admin.findUnique({
+    where: { id: adminAuth.adminId },
+  });
+
+  if (!admin || !admin.passwordHash) {
+    return c.json({ error: "Admin not found or password not set" }, 404);
+  }
+
+  // Verify current password
+  const isValid = await bcryptjs.compare(currentPassword, admin.passwordHash);
+  if (!isValid) {
+    return c.json({ error: "Current password is incorrect" }, 401);
+  }
+
+  // Hash and update new password
+  const newPasswordHash = await bcryptjs.hash(newPassword, 12);
+  await prisma.admin.update({
+    where: { id: admin.id },
+    data: { passwordHash: newPasswordHash },
+  });
+
+  return c.json({ message: "Password changed successfully" });
 });
 
 // POST /api/auth/user-sync — Sync Privy user to database
