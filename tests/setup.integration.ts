@@ -38,8 +38,10 @@ beforeEach(async () => {
   await testPrisma.transaction.deleteMany();
   await testPrisma.redemption.deleteMany();
   await testPrisma.qrCode.deleteMany();
+  await testPrisma.redemptionSlot.deleteMany();
   await testPrisma.voucher.deleteMany();
   await testPrisma.merchant.deleteMany();
+  await testPrisma.category.deleteMany();
   await testPrisma.user.deleteMany();
   await testPrisma.admin.deleteMany();
   await testPrisma.appSettings.deleteMany();
