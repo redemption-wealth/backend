@@ -4,7 +4,7 @@ import { updateSettingsSchema } from "@/schemas/settings.js";
 describe("updateSettingsSchema", () => {
   test("valid settings pass", () => {
     const result = updateSettingsSchema.safeParse({
-      appFeePercentage: 5,
+      appFeeRate: 5,
     });
     expect(result.success).toBe(true);
   });
@@ -14,48 +14,57 @@ describe("updateSettingsSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  test("appFeePercentage > 100 fails", () => {
+  test("appFeeRate > 50 fails", () => {
     const result = updateSettingsSchema.safeParse({
-      appFeePercentage: 101,
+      appFeeRate: 51,
     });
     expect(result.success).toBe(false);
   });
 
-  test("appFeePercentage negative fails", () => {
+  test("appFeeRate negative fails", () => {
     const result = updateSettingsSchema.safeParse({
-      appFeePercentage: -1,
+      appFeeRate: -1,
     });
     expect(result.success).toBe(false);
   });
 
-  test("appFeePercentage=0 passes", () => {
+  test("appFeeRate=0 passes", () => {
     const result = updateSettingsSchema.safeParse({
-      appFeePercentage: 0,
+      appFeeRate: 0,
     });
     expect(result.success).toBe(true);
   });
 
-  test("appFeePercentage=100 passes", () => {
+  test("appFeeRate=50 passes", () => {
     const result = updateSettingsSchema.safeParse({
-      appFeePercentage: 100,
+      appFeeRate: 50,
     });
     expect(result.success).toBe(true);
   });
 
-  test("all fields passes", () => {
+  test("all fields with valid wallet address passes", () => {
     const result = updateSettingsSchema.safeParse({
-      appFeePercentage: 3,
-      tokenContractAddress: "0x1234567890abcdef",
-      treasuryWalletAddress: "0xabcdef1234567890",
+      appFeeRate: 3,
+      wealthContractAddress: "0x1234567890abcdef1234567890abcdef12345678",
+      devWalletAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
+      alchemyRpcUrl: "https://eth-mainnet.g.alchemy.com/v2/key",
+      coingeckoApiKey: "CG-test-key",
     });
     expect(result.success).toBe(true);
   });
 
   test("null address values pass", () => {
     const result = updateSettingsSchema.safeParse({
-      tokenContractAddress: null,
-      treasuryWalletAddress: null,
+      wealthContractAddress: null,
+      devWalletAddress: null,
     });
     expect(result.success).toBe(true);
+  });
+
+  test("invalid wallet address fails", () => {
+    const result = updateSettingsSchema.safeParse({
+      devWalletAddress: "not-a-wallet",
+    });
+    expect(result.success).toBe(false);
   });
 });

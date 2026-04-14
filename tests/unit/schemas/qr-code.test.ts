@@ -5,6 +5,8 @@ describe("createQrCodeSchema", () => {
   test("valid QR data passes", () => {
     const result = createQrCodeSchema.safeParse({
       voucherId: "550e8400-e29b-41d4-a716-446655440000",
+      slotId: "660e8400-e29b-41d4-a716-446655440000",
+      qrNumber: 1,
       imageUrl: "https://example.com/qr.png",
       imageHash: "abc123hash",
     });
@@ -14,6 +16,8 @@ describe("createQrCodeSchema", () => {
   test("non-UUID voucherId fails", () => {
     const result = createQrCodeSchema.safeParse({
       voucherId: "not-a-uuid",
+      slotId: "660e8400-e29b-41d4-a716-446655440000",
+      qrNumber: 1,
       imageUrl: "https://example.com/qr.png",
       imageHash: "abc123hash",
     });
@@ -23,6 +27,8 @@ describe("createQrCodeSchema", () => {
   test("invalid URL for imageUrl fails", () => {
     const result = createQrCodeSchema.safeParse({
       voucherId: "550e8400-e29b-41d4-a716-446655440000",
+      slotId: "660e8400-e29b-41d4-a716-446655440000",
+      qrNumber: 1,
       imageUrl: "not-a-url",
       imageHash: "abc123hash",
     });
@@ -32,6 +38,8 @@ describe("createQrCodeSchema", () => {
   test("empty imageHash fails", () => {
     const result = createQrCodeSchema.safeParse({
       voucherId: "550e8400-e29b-41d4-a716-446655440000",
+      slotId: "660e8400-e29b-41d4-a716-446655440000",
+      qrNumber: 1,
       imageUrl: "https://example.com/qr.png",
       imageHash: "",
     });
