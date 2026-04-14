@@ -11,19 +11,81 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
-  const email = process.env.INITIAL_OWNER_EMAIL || "owner@wealthcrypto.fund";
-  const password =
-    process.env.INITIAL_OWNER_PASSWORD || "change-me-on-first-login";
+  // Seed categories first (required for merchant FK)
+  const categories = [
+    { name: "kuliner" },
+    { name: "hiburan" },
+    { name: "event" },
+    { name: "kesehatan" },
+    { name: "lifestyle" },
+    { name: "travel" },
+  ];
 
-  const passwordHash = await bcryptjs.hash(password, 12);
+  for (const category of categories) {
+    await prisma.category.upsert({
+      where: { name: category.name },
+      update: {},
+      create: category,
+    });
+  }
 
-  await prisma.admin.upsert({
-    where: { email },
+  // Owner account
+  const ownerEmail = process.env.INITIAL_OWNER_EMAIL || "owner@wealthcrypto.fund";
+  const ownerPassword = process.env.INITIAL_OWNER_PASSWORD || "change-me-on-first-login";
+  const ownerPasswordHash = await bcryptjs.hash(ownerPassword, 12);
+
+  const owner = await prisma.admin.upsert({
+    where: { email: ownerEmail },
     update: {},
     create: {
-      email,
-      passwordHash,
+      email: ownerEmail,
+      passwordHash: ownerPasswordHash,
       role: "owner",
+    },
+  });
+
+  // Create test merchant for manager/admin testing
+  const testMerchant = await prisma.merchant.upsert({
+    where: { name: "Test Merchant" },
+    update: {},
+    create: {
+      name: "Test Merchant",
+      address: "Jl. Test No. 123, Jakarta",
+      phone: "+6281234567890",
+      categoryId: "kuliner",
+      createdBy: owner.id,
+    },
+  });
+
+  // Manager account (assigned to test merchant)
+  const managerEmail = "manager@wealthcrypto.fund";
+  const managerPassword = "manager-test-password";
+  const managerPasswordHash = await bcryptjs.hash(managerPassword, 12);
+
+  await prisma.admin.upsert({
+    where: { email: managerEmail },
+    update: {},
+    create: {
+      email: managerEmail,
+      passwordHash: managerPasswordHash,
+      role: "manager",
+      merchantId: testMerchant.id,
+    },
+  });
+
+  // Admin account (assigned to test merchant)
+  const adminEmail = "admin@wealthcrypto.fund";
+  const adminPassword = "admin-test-password";
+  const adminPasswordHash = await bcryptjs.hash(adminPassword, 12);
+
+  await prisma.admin.upsert({
+    where: { email: adminEmail },
+    update: {},
+    create: {
+      email: adminEmail,
+      passwordHash: adminPasswordHash,
+      role: "admin",
+      merchantId: testMerchant.id,
     },
   });
 
@@ -53,28 +115,14 @@ async function main() {
     });
   }
 
-  // Seed categories
-  const categories = [
-    { name: "kuliner" },
-    { name: "hiburan" },
-    { name: "event" },
-    { name: "kesehatan" },
-    { name: "lifestyle" },
-    { name: "travel" },
-  ];
-
-  for (const category of categories) {
-    await prisma.category.upsert({
-      where: { name: category.name },
-      update: {},
-      create: category,
-    });
-  }
-
-  console.log(`Seeded owner account: ${email}`);
-  console.log("Seeded app settings (singleton)");
-  console.log("Seeded default fee setting");
-  console.log(`Seeded ${categories.length} categories`);
+  console.log(`\n✅ Seeded test accounts:`);
+  console.log(`   Owner: ${ownerEmail} / ${ownerPassword}`);
+  console.log(`   Manager: manager@wealthcrypto.fund / manager-test-password`);
+  console.log(`   Admin: admin@wealthcrypto.fund / admin-test-password`);
+  console.log(`\n✅ Seeded test merchant: Test Merchant (ID: ${testMerchant.id})`);
+  console.log(`✅ Seeded app settings (singleton)`);
+  console.log(`✅ Seeded default fee setting`);
+  console.log(`✅ Seeded ${categories.length} categories\n`);
 }
 
 main()
