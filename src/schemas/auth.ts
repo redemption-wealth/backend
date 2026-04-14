@@ -15,3 +15,8 @@ export const setPasswordSchema = z
     message: "Passwords do not match",
     path: ["confirmPassword"],
   });
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8).max(128),
+});
