@@ -18,7 +18,7 @@ async function createMerchantWithCategory(adminId: string) {
   });
 }
 
-describe("Schema Migration - Phase 2 Changes", () => {
+describe("Schema Migration - Current Schema State", () => {
   // --- Admin: nullable passwordHash ---
   test("Admin can be created with passwordHash = null (first-login flow)", async () => {
     const admin = await testPrisma.admin.create({
@@ -43,8 +43,8 @@ describe("Schema Migration - Phase 2 Changes", () => {
     expect(admin.passwordHash).toBe("$2a$10$hashedpassword");
   });
 
-  // --- Voucher: qrPerRedemption ---
-  test("Voucher has qrPerRedemption field with default 1", async () => {
+  // --- Voucher: qrPerSlot ---
+  test("Voucher has qrPerSlot field with default 1", async () => {
     const admin = await testPrisma.admin.create({
       data: { email: "admin@test.com", passwordHash: "hash", role: "admin" },
     });
@@ -54,17 +54,20 @@ describe("Schema Migration - Phase 2 Changes", () => {
         merchantId: merchant.id,
         title: "Test Voucher",
         startDate: new Date("2026-01-01"),
-        endDate: new Date("2026-12-31"),
+        expiryDate: new Date("2026-12-31"),
         totalStock: 10,
         remainingStock: 10,
-        priceIdr: 25000,
-        // qrPerRedemption not specified — should default to 1
+        basePrice: 25000,
+        appFeeRate: 3,
+        gasFeeAmount: 5000,
+        totalPrice: 30000,
+        // qrPerSlot not specified — should default to 1
       },
     });
-    expect(voucher.qrPerRedemption).toBe(1);
+    expect(voucher.qrPerSlot).toBe(1);
   });
 
-  test("Voucher can be created with qrPerRedemption = 2", async () => {
+  test("Voucher can be created with qrPerSlot = 2", async () => {
     const admin = await testPrisma.admin.create({
       data: { email: "admin2@test.com", passwordHash: "hash", role: "admin" },
     });
@@ -74,18 +77,21 @@ describe("Schema Migration - Phase 2 Changes", () => {
         merchantId: merchant.id,
         title: "Multi-QR Voucher",
         startDate: new Date("2026-01-01"),
-        endDate: new Date("2026-12-31"),
+        expiryDate: new Date("2026-12-31"),
         totalStock: 10,
         remainingStock: 10,
-        priceIdr: 50000,
-        qrPerRedemption: 2,
+        basePrice: 50000,
+        appFeeRate: 3,
+        gasFeeAmount: 5000,
+        totalPrice: 55000,
+        qrPerSlot: 2,
       },
     });
-    expect(voucher.qrPerRedemption).toBe(2);
+    expect(voucher.qrPerSlot).toBe(2);
   });
 
-  // --- QrCode: redemptionId FK (replaces 1:1) ---
-  test("QrCode has redemptionId nullable FK", async () => {
+  // --- QrCode: redemptionId FK (replaces 1:1) + RedemptionSlot ---
+  test("QrCode has redemptionId nullable FK and belongs to a RedemptionSlot", async () => {
     const admin = await testPrisma.admin.create({
       data: { email: "admin3@test.com", passwordHash: "hash", role: "admin" },
     });
@@ -95,21 +101,33 @@ describe("Schema Migration - Phase 2 Changes", () => {
         merchantId: merchant.id,
         title: "V",
         startDate: new Date("2026-01-01"),
-        endDate: new Date("2026-12-31"),
+        expiryDate: new Date("2026-12-31"),
         totalStock: 10,
         remainingStock: 10,
-        priceIdr: 10000,
+        basePrice: 10000,
+        appFeeRate: 3,
+        gasFeeAmount: 5000,
+        totalPrice: 15000,
+      },
+    });
+    const slot = await testPrisma.redemptionSlot.create({
+      data: {
+        voucherId: voucher.id,
+        slotIndex: 1,
       },
     });
     const qr = await testPrisma.qrCode.create({
       data: {
         voucherId: voucher.id,
+        slotId: slot.id,
+        qrNumber: 1,
         imageUrl: "https://example.com/qr.png",
         imageHash: "hash-unique-1",
         // redemptionId not set — should be null
       },
     });
     expect(qr.redemptionId).toBeNull();
+    expect(qr.slotId).toBe(slot.id);
   });
 
   // --- Redemption: one-to-many QrCodes, appFeeAmount, gasFeeAmount ---
@@ -126,10 +144,13 @@ describe("Schema Migration - Phase 2 Changes", () => {
         merchantId: merchant.id,
         title: "V",
         startDate: new Date("2026-01-01"),
-        endDate: new Date("2026-12-31"),
+        expiryDate: new Date("2026-12-31"),
         totalStock: 10,
         remainingStock: 10,
-        priceIdr: 25000,
+        basePrice: 25000,
+        appFeeRate: 3,
+        gasFeeAmount: 5000,
+        totalPrice: 30000,
       },
     });
     const redemption = await testPrisma.redemption.create({
@@ -162,11 +183,14 @@ describe("Schema Migration - Phase 2 Changes", () => {
         merchantId: merchant.id,
         title: "V2",
         startDate: new Date("2026-01-01"),
-        endDate: new Date("2026-12-31"),
+        expiryDate: new Date("2026-12-31"),
         totalStock: 10,
         remainingStock: 10,
-        priceIdr: 50000,
-        qrPerRedemption: 2,
+        basePrice: 50000,
+        appFeeRate: 3,
+        gasFeeAmount: 5000,
+        totalPrice: 55000,
+        qrPerSlot: 2,
       },
     });
     const redemption = await testPrisma.redemption.create({
@@ -183,13 +207,21 @@ describe("Schema Migration - Phase 2 Changes", () => {
       },
     });
 
-    // Assign 2 QR codes to same redemption
+    // Create slot and assign 2 QR codes to same redemption
+    const slot = await testPrisma.redemptionSlot.create({
+      data: {
+        voucherId: voucher.id,
+        slotIndex: 1,
+      },
+    });
     await testPrisma.qrCode.create({
       data: {
         voucherId: voucher.id,
+        slotId: slot.id,
+        qrNumber: 1,
         imageUrl: "https://example.com/qr1.png",
         imageHash: "multi-qr-hash-1",
-        status: "assigned",
+        status: "redeemed",
         assignedToUserId: user.id,
         redemptionId: redemption.id,
       },
@@ -197,9 +229,11 @@ describe("Schema Migration - Phase 2 Changes", () => {
     await testPrisma.qrCode.create({
       data: {
         voucherId: voucher.id,
+        slotId: slot.id,
+        qrNumber: 2,
         imageUrl: "https://example.com/qr2.png",
         imageHash: "multi-qr-hash-2",
-        status: "assigned",
+        status: "redeemed",
         assignedToUserId: user.id,
         redemptionId: redemption.id,
       },
@@ -212,19 +246,21 @@ describe("Schema Migration - Phase 2 Changes", () => {
     expect(result!.qrCodes).toHaveLength(2);
   });
 
-  // --- AppSettings: appFeePercentage (renamed) ---
-  test("AppSettings uses appFeePercentage field", async () => {
-    const settings = await testPrisma.appSettings.create({
-      data: {
+  // --- AppSettings: appFeeRate (renamed from appFeePercentage) ---
+  test("AppSettings uses appFeeRate field", async () => {
+    const settings = await testPrisma.appSettings.upsert({
+      where: { id: "singleton" },
+      update: { appFeeRate: 3 },
+      create: {
         id: "singleton",
-        appFeePercentage: 3,
+        appFeeRate: 3,
       },
     });
-    expect(settings.appFeePercentage.toString()).toBe("3");
+    expect(settings.appFeeRate.toString()).toBe("3");
   });
 
   // --- FeeSetting: new model ---
-  test("FeeSetting model exists with label, amountIdr, isActive", async () => {
+  test("FeeSetting model exists with label, amountIdr (Decimal), isActive", async () => {
     const fee = await testPrisma.feeSetting.create({
       data: {
         label: "Gas Fee Standard",
@@ -233,7 +269,8 @@ describe("Schema Migration - Phase 2 Changes", () => {
       },
     });
     expect(fee.label).toBe("Gas Fee Standard");
-    expect(fee.amountIdr).toBe(5000);
+    // amountIdr is now Decimal type
+    expect(fee.amountIdr.toString()).toBe("5000");
     expect(fee.isActive).toBe(false);
     expect(fee.id).toBeDefined();
     expect(fee.createdAt).toBeDefined();

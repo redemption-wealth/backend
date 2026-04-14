@@ -6,6 +6,15 @@ import { createTestUserToken, mockPrivyVerification } from "../../helpers/auth.j
 
 const fixtures = createFixtures(testPrisma);
 
+// Helper to create a test voucher with proper schema
+async function createTestVoucher(merchantId: string, qrCount: number = 5) {
+  return fixtures.createVoucherWithQrCodes(merchantId, qrCount, {
+    basePrice: 25000,
+    expiryDate: new Date("2026-12-31"),
+    qrPerSlot: 1,
+  });
+}
+
 describe("GET /api/redemptions", () => {
   let userToken: string;
   let user: Awaited<ReturnType<typeof fixtures.createUser>>;
@@ -30,7 +39,7 @@ describe("GET /api/redemptions", () => {
     // Create test data
     const admin = await fixtures.createAdmin();
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
+    const { voucher } = await createTestVoucher(merchant.id, 5);
 
     // Create redemptions for this user
     await testPrisma.redemption.create({
@@ -84,7 +93,7 @@ describe("GET /api/redemptions", () => {
 
     const admin = await fixtures.createAdmin({ email: "admin2@test.com" });
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
+    const { voucher } = await createTestVoucher(merchant.id, 5);
 
     await testPrisma.redemption.create({
       data: {
@@ -145,7 +154,7 @@ describe("GET /api/redemptions/:id", () => {
 
     const admin = await fixtures.createAdmin();
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
+    const { voucher } = await createTestVoucher(merchant.id, 5);
 
     redemption = await testPrisma.redemption.create({
       data: {
@@ -180,7 +189,7 @@ describe("GET /api/redemptions/:id", () => {
 
     const admin = await fixtures.createAdmin({ email: "admin2@test.com" });
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
+    const { voucher } = await createTestVoucher(merchant.id, 5);
 
     const otherRedemption = await testPrisma.redemption.create({
       data: {
@@ -228,7 +237,7 @@ describe("PATCH /api/redemptions/:id/submit-tx", () => {
 
     const admin = await fixtures.createAdmin();
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
+    const { voucher } = await createTestVoucher(merchant.id, 5);
 
     redemption = await testPrisma.redemption.create({
       data: {
@@ -274,7 +283,7 @@ describe("PATCH /api/redemptions/:id/submit-tx", () => {
 
     const admin = await fixtures.createAdmin({ email: "admin2@test.com" });
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
+    const { voucher } = await createTestVoucher(merchant.id, 5);
 
     const otherRedemption = await testPrisma.redemption.create({
       data: {
@@ -321,7 +330,7 @@ describe("PATCH /api/redemptions/:id/submit-tx", () => {
     // Create another pending redemption
     const admin = await fixtures.createAdmin({ email: "admin3@test.com" });
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
+    const { voucher } = await createTestVoucher(merchant.id, 5);
 
     const redemption2 = await testPrisma.redemption.create({
       data: {

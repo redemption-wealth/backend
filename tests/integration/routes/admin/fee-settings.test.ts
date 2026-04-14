@@ -71,7 +71,7 @@ describe("PUT /api/admin/fee-settings/:id", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.feeSetting.label).toBe("Updated Fee");
-    expect(body.feeSetting.amountIdr).toBe(7000);
+    expect(Number(body.feeSetting.amountIdr)).toBe(7000);
   });
 });
 

@@ -72,68 +72,110 @@ export function createFixtures(prisma: PrismaClient) {
       qrCount: number = 5,
       overrides?: Partial<{
         title: string;
-        priceIdr: number;
+        basePrice: number;
         totalStock: number;
-        qrPerRedemption: number;
+        qrPerSlot: number;
         isActive: boolean;
         startDate: Date;
-        endDate: Date;
+        expiryDate: Date;
+        createdBy: string;
       }>
     ) {
       const stock = overrides?.totalStock ?? qrCount;
+      const qrPerSlot = overrides?.qrPerSlot ?? 1;
+      const basePrice = overrides?.basePrice ?? 25000;
+
+      // Calculate fee snapshot (matching voucher creation logic)
+      const appFeeRate = 3; // Default app fee rate
+      const gasFeeAmount = 500; // Default gas fee
+      const appFeeInIdr = (basePrice * appFeeRate) / 100;
+      const totalPrice = basePrice + appFeeInIdr + gasFeeAmount;
+
       const voucher = await prisma.voucher.create({
         data: {
           merchantId,
           title: overrides?.title ?? `Test Voucher ${Date.now()}`,
           startDate: overrides?.startDate ?? new Date("2026-01-01"),
-          endDate: overrides?.endDate ?? new Date("2026-12-31"),
+          expiryDate: overrides?.expiryDate ?? new Date("2026-12-31"),
           totalStock: stock,
           remainingStock: stock,
-          priceIdr: overrides?.priceIdr ?? 25000,
-          qrPerRedemption: overrides?.qrPerRedemption ?? 1,
+          basePrice,
+          appFeeRate,
+          gasFeeAmount,
+          totalPrice,
+          qrPerSlot,
           isActive: overrides?.isActive ?? true,
+          createdBy: overrides?.createdBy,
         },
       });
 
-      const qrCodes = await Promise.all(
-        Array.from({ length: qrCount }, (_, i) =>
-          prisma.qrCode.create({
+      // Create redemption slots
+      const slots = await Promise.all(
+        Array.from({ length: stock }, (_, i) =>
+          prisma.redemptionSlot.create({
             data: {
               voucherId: voucher.id,
-              imageUrl: `https://example.com/qr-${voucher.id}-${i}.png`,
-              imageHash: `hash-${voucher.id}-${i}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              slotIndex: i + 1,
               status: "available",
             },
           })
         )
       );
 
-      return { voucher, qrCodes };
+      // Create QR codes for each slot
+      const qrCodes = [];
+      for (const slot of slots) {
+        for (let qrNum = 1; qrNum <= qrPerSlot; qrNum++) {
+          const qr = await prisma.qrCode.create({
+            data: {
+              voucherId: voucher.id,
+              slotId: slot.id,
+              qrNumber: qrNum,
+              imageUrl: `https://example.com/qr-${voucher.id}-${slot.slotIndex}-${qrNum}.png`,
+              imageHash: `hash-${voucher.id}-${slot.slotIndex}-${qrNum}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              status: "available",
+            },
+          });
+          qrCodes.push(qr);
+        }
+      }
+
+      return { voucher, qrCodes, slots };
     },
 
     async createAppSettings(overrides?: Partial<{
-      appFeePercentage: number;
-      tokenContractAddress: string;
-      treasuryWalletAddress: string;
+      appFeeRate: number;
+      wealthContractAddress: string;
+      devWalletAddress: string;
+      alchemyRpcUrl: string;
+      coingeckoApiKey: string;
     }>) {
       return prisma.appSettings.upsert({
         where: { id: "singleton" },
         update: {
-          ...(overrides?.appFeePercentage !== undefined && {
-            appFeePercentage: overrides.appFeePercentage,
+          ...(overrides?.appFeeRate !== undefined && {
+            appFeeRate: overrides.appFeeRate,
           }),
-          ...(overrides?.tokenContractAddress !== undefined && {
-            tokenContractAddress: overrides.tokenContractAddress,
+          ...(overrides?.wealthContractAddress !== undefined && {
+            wealthContractAddress: overrides.wealthContractAddress,
           }),
-          ...(overrides?.treasuryWalletAddress !== undefined && {
-            treasuryWalletAddress: overrides.treasuryWalletAddress,
+          ...(overrides?.devWalletAddress !== undefined && {
+            devWalletAddress: overrides.devWalletAddress,
+          }),
+          ...(overrides?.alchemyRpcUrl !== undefined && {
+            alchemyRpcUrl: overrides.alchemyRpcUrl,
+          }),
+          ...(overrides?.coingeckoApiKey !== undefined && {
+            coingeckoApiKey: overrides.coingeckoApiKey,
           }),
         },
         create: {
           id: "singleton",
-          appFeePercentage: overrides?.appFeePercentage ?? 3,
-          tokenContractAddress: overrides?.tokenContractAddress,
-          treasuryWalletAddress: overrides?.treasuryWalletAddress,
+          appFeeRate: overrides?.appFeeRate ?? 3,
+          wealthContractAddress: overrides?.wealthContractAddress,
+          devWalletAddress: overrides?.devWalletAddress,
+          alchemyRpcUrl: overrides?.alchemyRpcUrl,
+          coingeckoApiKey: overrides?.coingeckoApiKey,
         },
       });
     },
@@ -157,6 +199,7 @@ export function createFixtures(prisma: PrismaClient) {
       await prisma.transaction.deleteMany();
       await prisma.redemption.deleteMany();
       await prisma.qrCode.deleteMany();
+      await prisma.redemptionSlot.deleteMany();
       await prisma.voucher.deleteMany();
       await prisma.merchant.deleteMany();
       await prisma.category.deleteMany();

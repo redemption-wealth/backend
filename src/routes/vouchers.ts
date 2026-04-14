@@ -28,7 +28,7 @@ vouchers.get("/", async (c) => {
   const where = {
     isActive: true,
     remainingStock: { gt: 0 },
-    endDate: { gte: new Date() },
+    expiryDate: { gte: new Date() },
     ...(merchantId && { merchantId }),
     ...(category && {
       merchant: { category: category as never },

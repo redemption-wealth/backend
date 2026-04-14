@@ -41,10 +41,12 @@ describe("POST /api/admin/qr-codes", () => {
   test("creates QR code with valid data", async () => {
     const { admin, token } = await createAdminWithToken("owner");
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 0);
+    const { voucher, slots } = await fixtures.createVoucherWithQrCodes(merchant.id, 1);
 
     const res = await jsonPost("/api/admin/qr-codes", {
       voucherId: voucher.id,
+      slotId: slots[0].id,
+      qrNumber: 2,
       imageUrl: "https://example.com/qr-new.png",
       imageHash: `unique-hash-${Date.now()}`,
     }, token);
@@ -55,6 +57,8 @@ describe("POST /api/admin/qr-codes", () => {
     const { token } = await createAdminWithToken("owner");
     const res = await jsonPost("/api/admin/qr-codes", {
       voucherId: "not-a-uuid",
+      slotId: "not-a-uuid",
+      qrNumber: 0, // Invalid: must be >= 1
       imageUrl: "not-a-url",
       imageHash: "",
     }, token);
@@ -64,17 +68,21 @@ describe("POST /api/admin/qr-codes", () => {
   test("returns 409 for duplicate imageHash", async () => {
     const { admin, token } = await createAdminWithToken("owner");
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 0);
+    const { voucher, slots } = await fixtures.createVoucherWithQrCodes(merchant.id, 1);
 
     const hash = `dup-hash-${Date.now()}`;
     await jsonPost("/api/admin/qr-codes", {
       voucherId: voucher.id,
+      slotId: slots[0].id,
+      qrNumber: 2,
       imageUrl: "https://example.com/qr1.png",
       imageHash: hash,
     }, token);
 
     const res = await jsonPost("/api/admin/qr-codes", {
       voucherId: voucher.id,
+      slotId: slots[0].id,
+      qrNumber: 2, // This would conflict with the unique constraint on (slotId, qrNumber)
       imageUrl: "https://example.com/qr2.png",
       imageHash: hash,
     }, token);
@@ -83,21 +91,20 @@ describe("POST /api/admin/qr-codes", () => {
 });
 
 describe("POST /api/admin/qr-codes/scan", () => {
-  test("scans valid assigned QR token (owner)", async () => {
+  test("scans valid redeemed QR token (owner)", async () => {
     const { admin, token } = await createAdminWithToken("owner");
     const user = await fixtures.createUser();
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 0);
+    const { voucher, slots, qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 1);
 
-    // Create a QR with a token in assigned state
-    const qr = await testPrisma.qrCode.create({
+    // Update the existing QR to have a token and be in redeemed state
+    const qr = await testPrisma.qrCode.update({
+      where: { id: qrCodes[0].id },
       data: {
-        voucherId: voucher.id,
-        imageUrl: "https://example.com/qr-scan.png",
-        imageHash: `scan-hash-${Date.now()}`,
         token: `test-token-${Date.now()}`,
-        status: "assigned",
+        status: "redeemed",
         assignedToUserId: user.id,
+        redeemedAt: new Date(),
       },
     });
 
@@ -120,13 +127,12 @@ describe("POST /api/admin/qr-codes/scan", () => {
     const { admin, token } = await createAdminWithToken("owner");
     const user = await fixtures.createUser();
     const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher } = await fixtures.createVoucherWithQrCodes(merchant.id, 0);
+    const { voucher, slots, qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 1);
 
-    const qr = await testPrisma.qrCode.create({
+    // Update the existing QR to have a token and be in used state
+    const qr = await testPrisma.qrCode.update({
+      where: { id: qrCodes[0].id },
       data: {
-        voucherId: voucher.id,
-        imageUrl: "https://example.com/qr-used.png",
-        imageHash: `used-hash-${Date.now()}`,
         token: `used-token-${Date.now()}`,
         status: "used",
         assignedToUserId: user.id,
@@ -156,15 +162,16 @@ describe("POST /api/admin/qr-codes/scan", () => {
     });
 
     // Create QR for merchant2's voucher
-    const { voucher: voucher2 } = await fixtures.createVoucherWithQrCodes(merchant2.id, 0);
-    const qr = await testPrisma.qrCode.create({
+    const { voucher: voucher2, slots: slots2, qrCodes: qrCodes2 } = await fixtures.createVoucherWithQrCodes(merchant2.id, 1);
+
+    // Update the existing QR to have a token and be in redeemed state
+    const qr = await testPrisma.qrCode.update({
+      where: { id: qrCodes2[0].id },
       data: {
-        voucherId: voucher2.id,
-        imageUrl: "https://example.com/qr-wrong.png",
-        imageHash: `wrong-hash-${Date.now()}`,
         token: `wrong-token-${Date.now()}`,
-        status: "assigned",
+        status: "redeemed",
         assignedToUserId: user.id,
+        redeemedAt: new Date(),
       },
     });
 

@@ -46,25 +46,25 @@ describe("PUT /api/admin/settings", () => {
   test("returns 403 for non-owner", async () => {
     const { token } = await createAdminWithToken();
     const res = await jsonPut("/api/admin/settings", {
-      appFeePercentage: 5,
+      appFeeRate: 5,
     }, token);
     expect(res.status).toBe(403);
   });
 
-  test("updates appFeePercentage", async () => {
+  test("updates appFeeRate", async () => {
     const { token } = await createOwnerWithToken();
     const res = await jsonPut("/api/admin/settings", {
-      appFeePercentage: 5,
+      appFeeRate: 5,
     }, token);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Number(body.settings.appFeePercentage)).toBe(5);
+    expect(Number(body.settings.appFeeRate)).toBe(5);
   });
 
-  test("validates appFeePercentage range", async () => {
+  test("validates appFeeRate range", async () => {
     const { token } = await createOwnerWithToken();
     const res = await jsonPut("/api/admin/settings", {
-      appFeePercentage: 101,
+      appFeeRate: 101,
     }, token);
     expect(res.status).toBe(400);
   });

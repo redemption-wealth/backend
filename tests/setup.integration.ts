@@ -34,7 +34,8 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  // Clean all tables between tests (reverse dependency order)
+  // Clean all tables between tests in correct dependency order
+  // Delete child records first to avoid foreign key violations
   await testPrisma.transaction.deleteMany();
   await testPrisma.redemption.deleteMany();
   await testPrisma.qrCode.deleteMany();
