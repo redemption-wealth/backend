@@ -13,6 +13,7 @@ import transactionRoutes from "./routes/transactions.js";
 import priceRoutes from "./routes/price.js";
 import webhookRoutes from "./routes/webhook.js";
 import categoryRoutes from "./routes/categories.js";
+import setupRoutes from "./routes/setup.js";
 
 // Admin routes (require admin JWT)
 import adminMerchantRoutes from "./routes/admin/merchants.js";
@@ -54,6 +55,7 @@ app.route("/api/transactions", transactionRoutes);
 app.route("/api/price", priceRoutes);
 app.route("/api/webhook", webhookRoutes);
 app.route("/api/categories", categoryRoutes);
+app.route("/api/setup", setupRoutes); // One-time setup endpoint
 
 // --- Admin routes (protected) ---
 const admin = new Hono<AuthEnv>();
