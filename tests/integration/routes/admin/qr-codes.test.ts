@@ -1,16 +1,24 @@
 import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
-import { createTestScenarios } from "../../../helpers/scenarios.js";
 import { jsonPost, authGet } from "../../../helpers/request.js";
-import { createTestAdminToken } from "../../../helpers/auth.js";
+import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/auth.js";
 
 const fixtures = createFixtures(testPrisma);
-const scenarios = createTestScenarios(testPrisma);
+
+async function createAdminWithToken(role: "admin" | "owner" = "admin", merchantId?: string) {
+  const admin = await fixtures.createAdmin({ role, merchantId });
+  const token = role === "owner"
+    ? await createTestOwnerToken({ id: admin.id, email: admin.email })
+    : await createTestAdminToken({ id: admin.id, email: admin.email, role, merchantId });
+  return { admin, token };
+}
 
 describe("GET /api/admin/qr-codes", () => {
   test("lists QR codes", async () => {
-    const { token } = await scenarios.merchantWithVoucher(3);
+    const { admin, token } = await createAdminWithToken("owner");
+    const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createVoucherWithQrCodes(merchant.id, 3);
 
     const res = await authGet("/api/admin/qr-codes", token);
     expect(res.status).toBe(200);
@@ -19,7 +27,9 @@ describe("GET /api/admin/qr-codes", () => {
   });
 
   test("filters by status", async () => {
-    const { token } = await scenarios.merchantWithVoucher(3);
+    const { admin, token } = await createAdminWithToken("owner");
+    const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createVoucherWithQrCodes(merchant.id, 3);
 
     const res = await authGet("/api/admin/qr-codes?status=available", token);
     const body = await res.json();
@@ -29,10 +39,14 @@ describe("GET /api/admin/qr-codes", () => {
 
 describe("POST /api/admin/qr-codes", () => {
   test("creates QR code with valid data", async () => {
-    const { token, voucher } = await scenarios.merchantWithVoucher(0);
+    const { admin, token } = await createAdminWithToken("owner");
+    const merchant = await fixtures.createMerchant(admin.id);
+    const { voucher, slots } = await fixtures.createVoucherWithQrCodes(merchant.id, 1);
 
     const res = await jsonPost("/api/admin/qr-codes", {
       voucherId: voucher.id,
+      slotId: slots[0].id,
+      qrNumber: 2,
       imageUrl: "https://example.com/qr-new.png",
       imageHash: `unique-hash-${Date.now()}`,
     }, token);
@@ -40,9 +54,11 @@ describe("POST /api/admin/qr-codes", () => {
   });
 
   test("returns 400 for invalid data", async () => {
-    const { token } = await scenarios.authenticatedAdmin("owner");
+    const { token } = await createAdminWithToken("owner");
     const res = await jsonPost("/api/admin/qr-codes", {
       voucherId: "not-a-uuid",
+      slotId: "not-a-uuid",
+      qrNumber: 0, // Invalid: must be >= 1
       imageUrl: "not-a-url",
       imageHash: "",
     }, token);
@@ -50,17 +66,23 @@ describe("POST /api/admin/qr-codes", () => {
   });
 
   test("returns 409 for duplicate imageHash", async () => {
-    const { token, voucher } = await scenarios.merchantWithVoucher(0);
+    const { admin, token } = await createAdminWithToken("owner");
+    const merchant = await fixtures.createMerchant(admin.id);
+    const { voucher, slots } = await fixtures.createVoucherWithQrCodes(merchant.id, 1);
 
     const hash = `dup-hash-${Date.now()}`;
     await jsonPost("/api/admin/qr-codes", {
       voucherId: voucher.id,
+      slotId: slots[0].id,
+      qrNumber: 2,
       imageUrl: "https://example.com/qr1.png",
       imageHash: hash,
     }, token);
 
     const res = await jsonPost("/api/admin/qr-codes", {
       voucherId: voucher.id,
+      slotId: slots[0].id,
+      qrNumber: 2, // This would conflict with the unique constraint on (slotId, qrNumber)
       imageUrl: "https://example.com/qr2.png",
       imageHash: hash,
     }, token);
@@ -69,19 +91,20 @@ describe("POST /api/admin/qr-codes", () => {
 });
 
 describe("POST /api/admin/qr-codes/scan", () => {
-  test("scans valid assigned QR token (owner)", async () => {
-    const { token, voucher } = await scenarios.merchantWithVoucher(0);
+  test("scans valid redeemed QR token (owner)", async () => {
+    const { admin, token } = await createAdminWithToken("owner");
     const user = await fixtures.createUser();
+    const merchant = await fixtures.createMerchant(admin.id);
+    const { voucher, slots, qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 1);
 
-    // Create a QR with a token in assigned state
-    const qr = await testPrisma.qrCode.create({
+    // Update the existing QR to have a token and be in redeemed state
+    const qr = await testPrisma.qrCode.update({
+      where: { id: qrCodes[0].id },
       data: {
-        voucherId: voucher.id,
-        imageUrl: "https://example.com/qr-scan.png",
-        imageHash: `scan-hash-${Date.now()}`,
         token: `test-token-${Date.now()}`,
-        status: "assigned",
+        status: "redeemed",
         assignedToUserId: user.id,
+        redeemedAt: new Date(),
       },
     });
 
@@ -93,7 +116,7 @@ describe("POST /api/admin/qr-codes/scan", () => {
   });
 
   test("returns 404 for non-existent token", async () => {
-    const { token } = await scenarios.authenticatedAdmin("owner");
+    const { token } = await createAdminWithToken("owner");
     const res = await jsonPost("/api/admin/qr-codes/scan", { token: "nonexistent-token" }, token);
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -101,14 +124,15 @@ describe("POST /api/admin/qr-codes/scan", () => {
   });
 
   test("returns 409 for already-used QR", async () => {
-    const { token, voucher } = await scenarios.merchantWithVoucher(0);
+    const { admin, token } = await createAdminWithToken("owner");
     const user = await fixtures.createUser();
+    const merchant = await fixtures.createMerchant(admin.id);
+    const { voucher, slots, qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 1);
 
-    const qr = await testPrisma.qrCode.create({
+    // Update the existing QR to have a token and be in used state
+    const qr = await testPrisma.qrCode.update({
+      where: { id: qrCodes[0].id },
       data: {
-        voucherId: voucher.id,
-        imageUrl: "https://example.com/qr-used.png",
-        imageHash: `used-hash-${Date.now()}`,
         token: `used-token-${Date.now()}`,
         status: "used",
         assignedToUserId: user.id,
@@ -138,15 +162,16 @@ describe("POST /api/admin/qr-codes/scan", () => {
     });
 
     // Create QR for merchant2's voucher
-    const { voucher: voucher2 } = await fixtures.createVoucherWithQrCodes(merchant2.id, 0);
-    const qr = await testPrisma.qrCode.create({
+    const { voucher: voucher2, slots: slots2, qrCodes: qrCodes2 } = await fixtures.createVoucherWithQrCodes(merchant2.id, 1);
+
+    // Update the existing QR to have a token and be in redeemed state
+    const qr = await testPrisma.qrCode.update({
+      where: { id: qrCodes2[0].id },
       data: {
-        voucherId: voucher2.id,
-        imageUrl: "https://example.com/qr-wrong.png",
-        imageHash: `wrong-hash-${Date.now()}`,
         token: `wrong-token-${Date.now()}`,
-        status: "assigned",
+        status: "redeemed",
         assignedToUserId: user.id,
+        redeemedAt: new Date(),
       },
     });
 

@@ -28,7 +28,7 @@ vouchers.get("/", async (c) => {
   const where = {
     isActive: true,
     remainingStock: { gt: 0 },
-    endDate: { gte: new Date() },
+    expiryDate: { gte: new Date() },
     ...(merchantId && { merchantId }),
     ...(category && {
       merchant: { category: category as never },
@@ -41,16 +41,7 @@ vouchers.get("/", async (c) => {
   const [vouchersList, total] = await Promise.all([
     prisma.voucher.findMany({
       where,
-      include: {
-        merchant: true,
-        _count: {
-          select: {
-            qrCodes: {
-              where: { status: "available" }
-            }
-          }
-        }
-      },
+      include: { merchant: true },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
       take: limit,
@@ -58,28 +49,8 @@ vouchers.get("/", async (c) => {
     prisma.voucher.count({ where }),
   ]);
 
-  // Calculate stock breakdown
-  const vouchersWithStock = vouchersList.map((v) => {
-    const availableQrCount = v._count.qrCodes;
-    const availableStock = Math.floor(availableQrCount / v.qrPerRedemption);
-
-    const totalQrCodes = v.totalStock * v.qrPerRedemption;
-    const usedQrCodes = v.usedStock * v.qrPerRedemption;
-    const assignedQrCount = totalQrCodes - usedQrCodes - availableQrCount;
-    const assignedStock = Math.floor(assignedQrCount / v.qrPerRedemption);
-
-    return {
-      ...v,
-      availableStock,   // e.g., 48 (can be redeemed now)
-      assignedStock,    // e.g., 2 (pending confirmation)
-      usedStock: v.usedStock,  // e.g., 50 (completed)
-      totalStock: v.totalStock, // e.g., 100
-      isAvailable: availableStock > 0,
-    };
-  });
-
   return c.json({
-    vouchers: vouchersWithStock,
+    vouchers: vouchersList,
     pagination: {
       page,
       limit,
@@ -140,8 +111,8 @@ vouchers.post("/:id/redeem", requireUser, async (c) => {
     return c.json({
       redemption,
       txDetails: {
-        tokenContractAddress: settings?.tokenContractAddress,
-        treasuryWalletAddress: settings?.treasuryWalletAddress,
+        tokenContractAddress: settings?.wealthContractAddress,
+        treasuryWalletAddress: settings?.devWalletAddress,
         wealthAmount: redemption.wealthAmount.toString(),
       },
     });

@@ -16,17 +16,7 @@ export const setPasswordSchema = z
     path: ["confirmPassword"],
   });
 
-export const changePasswordSchema = z
-  .object({
-    currentPassword: z.string().min(1),
-    newPassword: z.string().min(8).max(128),
-    confirmPassword: z.string(),
-  })
-  .refine((data) => data.newPassword === data.confirmPassword, {
-    message: "Passwords do not match",
-    path: ["confirmPassword"],
-  })
-  .refine((data) => data.currentPassword !== data.newPassword, {
-    message: "New password must be different from current password",
-    path: ["newPassword"],
-  });
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8).max(128),
+});

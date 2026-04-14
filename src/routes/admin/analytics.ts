@@ -104,22 +104,22 @@ adminAnalytics.get("/treasury-balance", async (c) => {
   const settings = await prisma.appSettings.findUnique({
     where: { id: "singleton" },
     select: {
-      tokenContractAddress: true,
-      treasuryWalletAddress: true,
+      wealthContractAddress: true,
+      devWalletAddress: true,
     },
   });
 
-  if (!settings?.tokenContractAddress || !settings?.treasuryWalletAddress) {
+  if (!settings?.wealthContractAddress || !settings?.devWalletAddress) {
     return c.json(
-      { error: "Treasury addresses not configured. Please set tokenContractAddress and treasuryWalletAddress in settings" },
+      { error: "Treasury addresses not configured. Please set wealthContractAddress and devWalletAddress in settings" },
       400
     );
   }
 
   return c.json({
     balance: "0",
-    tokenAddress: settings.tokenContractAddress,
-    treasuryAddress: settings.treasuryWalletAddress,
+    tokenAddress: settings.wealthContractAddress,
+    treasuryAddress: settings.devWalletAddress,
     note: "Blockchain integration pending. Balance is currently a placeholder.",
   });
 });

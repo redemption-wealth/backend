@@ -7,24 +7,24 @@ export const createVoucherSchema = z
     title: z.string().min(2).max(200),
     description: z.string().max(2000).optional(),
     startDate: z.string().or(z.date()),
-    endDate: z.string().or(z.date()),
+    expiryDate: z.string().or(z.date()),
     totalStock: z.number().int().positive(),
-    priceIdr: z.number().int().min(1000),
-    qrPerRedemption: z.number().int().min(1).max(2).default(1),
+    basePrice: z.number().min(1000),
+    qrPerSlot: z.number().int().min(1).max(2).default(1),
   })
   .refine(
-    (data) => new Date(data.endDate) >= new Date(data.startDate),
-    { message: "endDate must be after startDate", path: ["endDate"] }
+    (data) => new Date(data.expiryDate) >= new Date(data.startDate),
+    { message: "expiryDate must be after startDate", path: ["expiryDate"] }
   );
 
 export const updateVoucherSchema = z.object({
   title: z.string().min(2).max(200).optional(),
   description: z.string().max(2000).optional().nullable(),
   startDate: z.string().or(z.date()).optional(),
-  endDate: z.string().or(z.date()).optional(),
+  expiryDate: z.string().or(z.date()).optional(),
   totalStock: z.number().int().positive().optional(),
-  priceIdr: z.number().int().min(1000).optional(),
   isActive: z.boolean().optional(),
+  // Note: basePrice, appFeeRate, gasFeeAmount, totalPrice, qrPerSlot are read-only after creation
 });
 
 export const redeemVoucherSchema = z.object({

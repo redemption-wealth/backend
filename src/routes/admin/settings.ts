@@ -22,6 +22,7 @@ adminSettings.get("/", requireOwner, async (c) => {
 
 // PUT /api/admin/settings — Update app settings (owner only)
 adminSettings.put("/", requireOwner, async (c) => {
+  const adminAuth = c.get("adminAuth");
   const body = await c.req.json();
 
   const parsed = updateSettingsSchema.safeParse(body);
@@ -32,21 +33,30 @@ adminSettings.put("/", requireOwner, async (c) => {
     );
   }
 
-  const { appFeePercentage, tokenContractAddress, treasuryWalletAddress } =
+  const { appFeeRate, wealthContractAddress, devWalletAddress, alchemyRpcUrl, coingeckoApiKey } =
     parsed.data;
+
+  const updateData: Record<string, unknown> = {};
+  if (appFeeRate !== undefined) {
+    updateData.appFeeRate = appFeeRate;
+    updateData.appFeeUpdatedBy = adminAuth.adminId;
+    updateData.appFeeUpdatedAt = new Date();
+  }
+  if (wealthContractAddress !== undefined) updateData.wealthContractAddress = wealthContractAddress;
+  if (devWalletAddress !== undefined) updateData.devWalletAddress = devWalletAddress;
+  if (alchemyRpcUrl !== undefined) updateData.alchemyRpcUrl = alchemyRpcUrl;
+  if (coingeckoApiKey !== undefined) updateData.coingeckoApiKey = coingeckoApiKey;
 
   const settings = await prisma.appSettings.upsert({
     where: { id: "singleton" },
-    update: {
-      ...(appFeePercentage !== undefined && { appFeePercentage }),
-      ...(tokenContractAddress !== undefined && { tokenContractAddress }),
-      ...(treasuryWalletAddress !== undefined && { treasuryWalletAddress }),
-    },
+    update: updateData,
     create: {
       id: "singleton",
-      appFeePercentage: appFeePercentage ?? 3,
-      tokenContractAddress,
-      treasuryWalletAddress,
+      appFeeRate: appFeeRate ?? 3,
+      wealthContractAddress,
+      devWalletAddress,
+      alchemyRpcUrl,
+      coingeckoApiKey,
     },
   });
 

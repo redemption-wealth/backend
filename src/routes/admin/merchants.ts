@@ -9,6 +9,56 @@ import {
 
 const adminMerchants = new Hono<AuthEnv>();
 
+// Soft delete helper
+const notDeleted = { deletedAt: null };
+
+// GET /api/admin/merchants/select — Get unassigned merchants for dropdown (owner only)
+adminMerchants.get("/select", requireOwner, async (c) => {
+  const merchants = await prisma.merchant.findMany({
+    where: {
+      ...notDeleted,
+      assignedAdmins: {
+        none: {
+          isActive: true,
+          deletedAt: null,
+        },
+      },
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+    orderBy: { name: "asc" },
+  });
+
+  return c.json({ merchants });
+});
+
+// GET /api/admin/merchants/:id — Get merchant detail
+adminMerchants.get("/:id", async (c) => {
+  const id = c.req.param("id");
+  const adminAuth = c.get("adminAuth");
+
+  const merchant = await prisma.merchant.findUnique({
+    where: { id },
+    include: {
+      creator: { select: { email: true } },
+      category: { select: { name: true } },
+    },
+  });
+
+  if (!merchant || merchant.deletedAt) {
+    return c.json({ error: "Merchant not found" }, 404);
+  }
+
+  // Admin role: enforce merchant ownership
+  if (adminAuth.role === "admin" && merchant.id !== adminAuth.merchantId) {
+    return c.json({ error: "Access denied" }, 403);
+  }
+
+  return c.json({ merchant });
+});
+
 // GET /api/admin/merchants — List all merchants (any authenticated admin)
 adminMerchants.get("/", async (c) => {
   const query = merchantQuerySchema.safeParse({
@@ -28,6 +78,7 @@ adminMerchants.get("/", async (c) => {
   const { categoryId, search, page, limit } = query.data;
 
   const where = {
+    ...notDeleted,
     ...(categoryId && { categoryId }),
     ...(search && {
       name: { contains: search, mode: "insensitive" as const },
@@ -106,20 +157,22 @@ adminMerchants.put("/:id", requireManager, async (c) => {
   }
 });
 
-// DELETE /api/admin/merchants/:id — Delete merchant (owner only)
-adminMerchants.delete("/:id", requireOwner, async (c) => {
+// DELETE /api/admin/merchants/:id — Soft delete merchant (manager+ only)
+adminMerchants.delete("/:id", requireManager, async (c) => {
   const id = c.req.param("id");
+
+  const merchant = await prisma.merchant.findUnique({ where: { id } });
+  if (!merchant || merchant.deletedAt) {
+    return c.json({ error: "Merchant not found" }, 404);
+  }
+
   try {
-    await prisma.merchant.delete({ where: { id } });
+    await prisma.merchant.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
     return c.json({ ok: true });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("Foreign key constraint")) {
-      return c.json(
-        { error: "Cannot delete merchant with existing vouchers" },
-        400
-      );
-    }
+  } catch {
     return c.json({ error: "Merchant not found" }, 404);
   }
 });

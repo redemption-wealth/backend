@@ -36,3 +36,24 @@ export function calculatePricing(input: PricingInput): PricingResult {
 
   return { wealthAmount, appFeeAmount, gasFeeAmount, totalIdr };
 }
+
+/**
+ * Calculate total voucher price with fee snapshot
+ * Formula: totalPrice = basePrice + (basePrice × appFeeRate / 100) + gasFeeAmount
+ * Rounding: ROUND_HALF_UP to 2 decimal places
+ */
+export function calcTotalPrice(
+  basePrice: Prisma.Decimal,
+  appFeeRate: Prisma.Decimal,
+  gasFeeAmount: Prisma.Decimal
+): Prisma.Decimal {
+  const base = new Prisma.Decimal(basePrice.toString());
+  const rate = new Prisma.Decimal(appFeeRate.toString());
+  const gas = new Prisma.Decimal(gasFeeAmount.toString());
+
+  const appFeeInIdr = base.mul(rate).div(100);
+  const total = base.add(appFeeInIdr).add(gas);
+
+  // Round to 2 decimal places using ROUND_HALF_UP
+  return total.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+}
