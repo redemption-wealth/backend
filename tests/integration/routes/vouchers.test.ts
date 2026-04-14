@@ -8,12 +8,12 @@ const fixtures = createFixtures(testPrisma);
 describe("GET /api/vouchers", () => {
   beforeEach(async () => {
     const admin = await fixtures.createAdmin();
-    const merchant = await fixtures.createMerchant(admin.id, { name: "M1", category: "kuliner" });
+    const merchant = await fixtures.createMerchant(admin.id, { name: "M1", categoryName: "kuliner" });
     await fixtures.createVoucherWithQrCodes(merchant.id, 5, { title: "Active Voucher" });
     await fixtures.createVoucherWithQrCodes(merchant.id, 5, { title: "Inactive Voucher", isActive: false });
     await fixtures.createVoucherWithQrCodes(merchant.id, 5, {
       title: "Expired Voucher",
-      endDate: new Date("2020-01-01"),
+      expiryDate: new Date("2020-01-01"),
     });
   });
 

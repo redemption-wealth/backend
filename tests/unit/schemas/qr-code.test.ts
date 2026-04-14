@@ -5,17 +5,10 @@ describe("createQrCodeSchema", () => {
   test("valid QR data passes", () => {
     const result = createQrCodeSchema.safeParse({
       voucherId: "550e8400-e29b-41d4-a716-446655440000",
-      token: "abc123token456",
+      slotId: "660e8400-e29b-41d4-a716-446655440000",
+      qrNumber: 1,
       imageUrl: "https://example.com/qr.png",
       imageHash: "abc123hash",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test("valid QR data without image passes (lazy-load)", () => {
-    const result = createQrCodeSchema.safeParse({
-      voucherId: "550e8400-e29b-41d4-a716-446655440000",
-      token: "abc123token456",
     });
     expect(result.success).toBe(true);
   });
@@ -23,7 +16,8 @@ describe("createQrCodeSchema", () => {
   test("non-UUID voucherId fails", () => {
     const result = createQrCodeSchema.safeParse({
       voucherId: "not-a-uuid",
-      token: "abc123token456",
+      slotId: "660e8400-e29b-41d4-a716-446655440000",
+      qrNumber: 1,
       imageUrl: "https://example.com/qr.png",
       imageHash: "abc123hash",
     });
@@ -33,7 +27,8 @@ describe("createQrCodeSchema", () => {
   test("invalid URL for imageUrl fails", () => {
     const result = createQrCodeSchema.safeParse({
       voucherId: "550e8400-e29b-41d4-a716-446655440000",
-      token: "abc123token456",
+      slotId: "660e8400-e29b-41d4-a716-446655440000",
+      qrNumber: 1,
       imageUrl: "not-a-url",
       imageHash: "abc123hash",
     });
@@ -43,22 +38,16 @@ describe("createQrCodeSchema", () => {
   test("empty imageHash fails", () => {
     const result = createQrCodeSchema.safeParse({
       voucherId: "550e8400-e29b-41d4-a716-446655440000",
-      token: "abc123token456",
+      slotId: "660e8400-e29b-41d4-a716-446655440000",
+      qrNumber: 1,
       imageUrl: "https://example.com/qr.png",
       imageHash: "",
     });
     expect(result.success).toBe(false);
   });
 
-  test("missing required fields fails", () => {
+  test("missing fields fails", () => {
     const result = createQrCodeSchema.safeParse({});
-    expect(result.success).toBe(false);
-  });
-
-  test("missing token fails", () => {
-    const result = createQrCodeSchema.safeParse({
-      voucherId: "550e8400-e29b-41d4-a716-446655440000",
-    });
     expect(result.success).toBe(false);
   });
 });

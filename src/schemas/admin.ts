@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { paginationSchema } from "./common.js";
 
 export const createAdminSchema = z
   .object({
@@ -27,4 +28,10 @@ export const createAdminSchema = z
 export const updateAdminSchema = z.object({
   isActive: z.boolean().optional(),
   merchantId: z.string().uuid().nullable().optional(),
+});
+
+export const adminQuerySchema = paginationSchema.extend({
+  role: z.enum(["owner", "manager", "admin"]).optional(),
+  isActive: z.coerce.boolean().optional(),
+  search: z.string().max(100).optional(),
 });

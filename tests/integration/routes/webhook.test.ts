@@ -24,9 +24,9 @@ describe("POST /api/webhook/alchemy", () => {
   beforeEach(async () => {
     appSettings = await testPrisma.appSettings.create({
       data: {
-        appFeePercentage: "3",
-        tokenContractAddress: "0x1234567890123456789012345678901234567890",
-        treasuryWalletAddress: "0x0987654321098765432109876543210987654321",
+        appFeeRate: 3,
+        wealthContractAddress: "0x1234567890123456789012345678901234567890",
+        devWalletAddress: "0x0987654321098765432109876543210987654321",
       },
     });
   });
@@ -83,7 +83,7 @@ describe("POST /api/webhook/alchemy", () => {
     // Assign QR codes
     await testPrisma.qrCode.update({
       where: { id: qrCodes[0].id },
-      data: { redemptionId: redemption.id, status: "assigned" },
+      data: { redemptionId: redemption.id, status: "redeemed", assignedToUserId: user.id, assignedAt: new Date() },
     });
 
     // Simulate Alchemy webhook
@@ -94,7 +94,7 @@ describe("POST /api/webhook/alchemy", () => {
             hash: txHash,
             category: "token",
             typeTraceAddress: "CALL",
-            asset: appSettings.tokenContractAddress,
+            asset: appSettings.wealthContractAddress,
           },
         ],
       },
@@ -190,12 +190,12 @@ describe("POST /api/webhook/alchemy", () => {
 
     await testPrisma.qrCode.update({
       where: { id: qrCodes[0].id },
-      data: { redemptionId: redemption1.id, status: "assigned" },
+      data: { redemptionId: redemption1.id, status: "redeemed", assignedToUserId: user.id, assignedAt: new Date() },
     });
 
     await testPrisma.qrCode.update({
       where: { id: qrCodes[1].id },
-      data: { redemptionId: redemption2.id, status: "assigned" },
+      data: { redemptionId: redemption2.id, status: "redeemed", assignedToUserId: user.id, assignedAt: new Date() },
     });
 
     const payload = {
@@ -256,7 +256,7 @@ describe("POST /api/webhook/alchemy", () => {
 
     await testPrisma.qrCode.update({
       where: { id: qrCodes[0].id },
-      data: { redemptionId: redemption.id, status: "assigned" },
+      data: { redemptionId: redemption.id, status: "redeemed", assignedToUserId: user.id, assignedAt: new Date() },
     });
 
     const payload = {

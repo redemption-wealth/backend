@@ -16,8 +16,14 @@ enum AdminRole {
 
 enum QrStatus {
   available
-  assigned
+  redeemed
   used
+}
+
+enum SlotStatus {
+  available
+  redeemed
+  fully_used
 }
 
 enum RedemptionStatus {
@@ -62,83 +68,120 @@ model Admin {
   role         AdminRole @default(manager)
   merchantId   String?   @map("merchant_id")
   isActive     Boolean   @default(true) @map("is_active")
+  createdBy    String?   @map("created_by")
+  deletedAt    DateTime? @map("deleted_at")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  createdMerchants Merchant[]  @relation("MerchantCreator")
-  assignedMerchant Merchant?   @relation("AdminMerchantAssignment", fields: [merchantId], references: [id], onDelete: SetNull)
-  scannedQrCodes   QrCode[]    @relation("QrCodeScanner")
+  createdMerchants   Merchant[]    @relation("MerchantCreator")
+  assignedMerchant   Merchant?     @relation("AdminMerchantAssignment", fields: [merchantId], references: [id], onDelete: SetNull)
+  scannedQrCodes     QrCode[]      @relation("QrCodeScanner")
+  creator            Admin?        @relation("AdminCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAdmins      Admin[]       @relation("AdminCreator")
+  createdVouchers    Voucher[]     @relation("VoucherCreator")
+  appSettingsFeeUpdates AppSettings[] @relation("AppSettingsFeeUpdater")
 
   @@index([merchantId])
+  // Partial unique index exists in DB: CREATE UNIQUE INDEX admins_merchant_unique ON admins(merchant_id) WHERE merchant_id IS NOT NULL AND deleted_at IS NULL
   @@map("admins")
 }
 
 model Merchant {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   name        String
-  logoUrl     String?  @map("logo_url")
-  description String?  @db.Text
-  categoryId  String   @map("category_id")
-  isActive    Boolean  @default(true) @map("is_active")
-  createdBy   String?  @map("created_by")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  logoUrl     String?   @map("logo_url")
+  description String?   @db.Text
+  categoryId  String    @map("category_id")
+  isActive    Boolean   @default(true) @map("is_active")
+  createdBy   String?   @map("created_by")
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  creator       Admin?    @relation("MerchantCreator", fields: [createdBy], references: [id], onDelete: SetNull)
-  category      Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  vouchers      Voucher[]
-  assignedAdmins Admin[]  @relation("AdminMerchantAssignment")
+  creator        Admin?    @relation("MerchantCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  category       Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  vouchers       Voucher[]
+  assignedAdmins Admin[]   @relation("AdminMerchantAssignment")
 
   @@index([categoryId])
   @@map("merchants")
 }
 
 model Voucher {
-  id              String   @id @default(uuid())
-  merchantId      String   @map("merchant_id")
-  title           String
-  description     String?  @db.Text
-  startDate       DateTime @map("start_date") @db.Date
-  endDate         DateTime @map("end_date") @db.Date
-  totalStock      Int      @map("total_stock")
-  remainingStock  Int      @map("remaining_stock")
-  usedStock       Int      @default(0) @map("used_stock")
-  priceIdr        Int      @map("price_idr")
-  qrPerRedemption Int      @default(1) @map("qr_per_redemption")
-  isActive        Boolean  @default(true) @map("is_active")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id             String    @id @default(uuid())
+  merchantId     String    @map("merchant_id")
+  title          String
+  description    String?   @db.Text
+  startDate      DateTime  @map("start_date") @db.Date
+  expiryDate     DateTime  @map("expiry_date") @db.Date
+  totalStock     Int       @map("total_stock")
+  remainingStock Int       @map("remaining_stock")
+  basePrice      Decimal   @map("base_price") @db.Decimal(15, 2)
+  appFeeRate     Decimal   @map("app_fee_rate") @db.Decimal(5, 2)
+  gasFeeAmount   Decimal   @map("gas_fee_amount") @db.Decimal(15, 2)
+  totalPrice     Decimal   @map("total_price") @db.Decimal(15, 2)
+  qrPerSlot      Int       @default(1) @map("qr_per_slot")
+  isActive       Boolean   @default(true) @map("is_active")
+  createdBy      String?   @map("created_by")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  merchant    Merchant     @relation(fields: [merchantId], references: [id], onDelete: Restrict)
-  qrCodes     QrCode[]
-  redemptions Redemption[]
+  merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  creator          Admin?            @relation("VoucherCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  qrCodes          QrCode[]
+  redemptions      Redemption[]
+  redemptionSlots  RedemptionSlot[]
 
   @@index([merchantId])
   @@map("vouchers")
 }
 
+model RedemptionSlot {
+  id         String     @id @default(uuid())
+  voucherId  String     @map("voucher_id")
+  slotIndex  Int        @map("slot_index")
+  status     SlotStatus @default(available)
+  redeemedAt DateTime?  @map("redeemed_at")
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+
+  voucher Voucher  @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  qrCodes QrCode[]
+
+  @@unique([voucherId, slotIndex])
+  @@index([voucherId, status])
+  @@map("redemption_slots")
+}
+
 model QrCode {
   id               String    @id @default(uuid())
   voucherId        String    @map("voucher_id")
+  slotId           String    @map("slot_id")
+  qrNumber         Int       @map("qr_number") @db.SmallInt
   redemptionId     String?   @map("redemption_id")
-  imageUrl         String?   @map("image_url")
-  imageHash        String?   @map("image_hash")
-  token            String    @unique @map("token")
+  // TODO: deprecate after Phase 2 - kept for current scan endpoint compatibility
+  imageUrl         String    @map("image_url")
+  imageHash        String    @unique @map("image_hash")
+  token            String?   @unique @map("token")
   status           QrStatus  @default(available)
   assignedToUserId String?   @map("assigned_to_user_id")
   assignedAt       DateTime? @map("assigned_at")
+  redeemedAt       DateTime? @map("redeemed_at")
   usedAt           DateTime? @map("used_at")
   scannedByAdminId String?   @map("scanned_by_admin_id")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  voucher      Voucher     @relation(fields: [voucherId], references: [id], onDelete: Restrict)
-  assignedTo   User?       @relation(fields: [assignedToUserId], references: [id], onDelete: SetNull)
-  redemption   Redemption? @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
-  scannedBy    Admin?      @relation("QrCodeScanner", fields: [scannedByAdminId], references: [id], onDelete: SetNull)
+  voucher      Voucher          @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  slot         RedemptionSlot   @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  assignedTo   User?            @relation(fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  redemption   Redemption?      @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
+  scannedBy    Admin?           @relation("QrCodeScanner", fields: [scannedByAdminId], references: [id], onDelete: SetNull)
 
+  @@unique([slotId, qrNumber])
+  @@index([slotId])
   @@index([voucherId, status])
-  @@index([status])
   @@index([assignedToUserId])
   @@index([redemptionId])
   @@map("qr_codes")
@@ -191,11 +234,17 @@ model Transaction {
 }
 
 model AppSettings {
-  id                    String   @id @default("singleton")
-  appFeePercentage      Decimal  @default(3) @map("app_fee_percentage") @db.Decimal(5, 2)
-  tokenContractAddress  String?  @map("token_contract_address")
-  treasuryWalletAddress String?  @map("treasury_wallet_address")
-  updatedAt             DateTime @updatedAt @map("updated_at")
+  id                   String    @id @default("singleton")
+  appFeeRate           Decimal   @default(3) @map("app_fee_rate") @db.Decimal(5, 2)
+  wealthContractAddress String?  @map("wealth_contract_address")
+  devWalletAddress     String?   @map("dev_wallet_address")
+  alchemyRpcUrl        String?   @map("alchemy_rpc_url")
+  coingeckoApiKey      String?   @map("coingecko_api_key")
+  appFeeUpdatedBy      String?   @map("app_fee_updated_by")
+  appFeeUpdatedAt      DateTime? @map("app_fee_updated_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  feeUpdater Admin? @relation("AppSettingsFeeUpdater", fields: [appFeeUpdatedBy], references: [id], onDelete: SetNull)
 
   @@map("app_settings")
 }
@@ -203,7 +252,7 @@ model AppSettings {
 model FeeSetting {
   id        String   @id @default(uuid())
   label     String
-  amountIdr Int      @map("amount_idr")
+  amountIdr Decimal  @map("amount_idr") @db.Decimal(15, 2)
   isActive  Boolean  @default(false) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

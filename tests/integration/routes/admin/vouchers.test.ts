@@ -18,32 +18,37 @@ describe("POST /api/admin/vouchers", () => {
   test("creates voucher with valid data", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createFeeSetting({ isActive: true });
 
     const res = await jsonPost("/api/admin/vouchers", {
       merchantId: merchant.id,
       title: "Test Voucher",
       startDate: "2026-01-01",
-      endDate: "2026-12-31",
+      expiryDate: "2026-12-31",
       totalStock: 10,
-      priceIdr: 25000,
+      basePrice: 25000,
     }, token);
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.voucher.remainingStock).toBe(10);
-    expect(body.voucher.qrPerRedemption).toBe(1);
+    expect(body.voucher.qrPerSlot).toBe(1);
+    expect(body.voucher.appFeeRate).toBeDefined();
+    expect(body.voucher.gasFeeAmount).toBeDefined();
+    expect(body.voucher.totalPrice).toBeDefined();
   });
 
-  test("returns 400 for endDate < startDate", async () => {
+  test("returns 400 for expiryDate < startDate", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createFeeSetting({ isActive: true });
 
     const res = await jsonPost("/api/admin/vouchers", {
       merchantId: merchant.id,
       title: "Bad Dates",
       startDate: "2026-12-31",
-      endDate: "2026-01-01",
+      expiryDate: "2026-01-01",
       totalStock: 10,
-      priceIdr: 25000,
+      basePrice: 25000,
     }, token);
     expect(res.status).toBe(400);
   });
@@ -51,34 +56,36 @@ describe("POST /api/admin/vouchers", () => {
   test("returns 400 for negative totalStock", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createFeeSetting({ isActive: true });
 
     const res = await jsonPost("/api/admin/vouchers", {
       merchantId: merchant.id,
       title: "Bad Stock",
       startDate: "2026-01-01",
-      endDate: "2026-12-31",
+      expiryDate: "2026-12-31",
       totalStock: -1,
-      priceIdr: 25000,
+      basePrice: 25000,
     }, token);
     expect(res.status).toBe(400);
   });
 
-  test("accepts qrPerRedemption = 2", async () => {
+  test("accepts qrPerSlot = 2", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createFeeSetting({ isActive: true });
 
     const res = await jsonPost("/api/admin/vouchers", {
       merchantId: merchant.id,
       title: "Multi-QR",
       startDate: "2026-01-01",
-      endDate: "2026-12-31",
+      expiryDate: "2026-12-31",
       totalStock: 10,
-      priceIdr: 50000,
-      qrPerRedemption: 2,
+      basePrice: 50000,
+      qrPerSlot: 2,
     }, token);
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.voucher.qrPerRedemption).toBe(2);
+    expect(body.voucher.qrPerSlot).toBe(2);
   });
 });
 

@@ -2,32 +2,103 @@ import { Hono } from "hono";
 import bcryptjs from "bcryptjs";
 import { prisma } from "../../db.js";
 import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
-import { createAdminSchema, updateAdminSchema } from "../../schemas/admin.js";
+import { createAdminSchema, updateAdminSchema, adminQuerySchema } from "../../schemas/admin.js";
 
 const adminAdmins = new Hono<AuthEnv>();
+
+// Soft delete helper
+const notDeleted = { deletedAt: null };
 
 // All routes require owner
 adminAdmins.use("/*", requireOwner);
 
-// GET /api/admin/admins — List all admins
+// GET /api/admin/admins — List all admins with filtering and pagination
 adminAdmins.get("/", async (c) => {
-  const admins = await prisma.admin.findMany({
+  const query = adminQuerySchema.safeParse({
+    role: c.req.query("role") || undefined,
+    isActive: c.req.query("isActive") || undefined,
+    search: c.req.query("search") || undefined,
+    page: c.req.query("page"),
+    limit: c.req.query("limit"),
+  });
+
+  if (!query.success) {
+    return c.json(
+      { error: "Validation failed", details: query.error.flatten() },
+      400
+    );
+  }
+
+  const { role, isActive, search, page, limit } = query.data;
+
+  const where = {
+    ...notDeleted,
+    ...(role && { role }),
+    ...(isActive !== undefined && { isActive }),
+    ...(search && {
+      email: { contains: search, mode: "insensitive" as const },
+    }),
+  };
+
+  const [admins, total] = await Promise.all([
+    prisma.admin.findMany({
+      where,
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        merchantId: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        assignedMerchant: {
+          select: { id: true, name: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.admin.count({ where }),
+  ]);
+
+  return c.json({
+    admins,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    },
+  });
+});
+
+// GET /api/admin/admins/:id — Get admin detail
+adminAdmins.get("/:id", async (c) => {
+  const id = c.req.param("id");
+
+  const admin = await prisma.admin.findUnique({
+    where: { id },
     select: {
       id: true,
       email: true,
       role: true,
       merchantId: true,
       isActive: true,
+      deletedAt: true,
       createdAt: true,
       updatedAt: true,
       assignedMerchant: {
         select: { id: true, name: true },
       },
     },
-    orderBy: { createdAt: "desc" },
   });
 
-  return c.json({ admins });
+  if (!admin || admin.deletedAt) {
+    return c.json({ error: "Admin not found" }, 404);
+  }
+
+  return c.json({ admin });
 });
 
 // POST /api/admin/admins — Create admin (owner only)
@@ -144,7 +215,38 @@ adminAdmins.put("/:id", async (c) => {
   }
 });
 
-// DELETE /api/admin/admins/:id — Delete admin (owner only)
+// POST /api/admin/admins/:id/reset-password — Reset admin password (owner only)
+adminAdmins.post("/:id/reset-password", async (c) => {
+  const id = c.req.param("id");
+  const currentAdmin = c.get("adminAuth");
+
+  if (currentAdmin.adminId === id) {
+    return c.json({ error: "Cannot reset your own password", code: "CANNOT_RESET_SELF" }, 400);
+  }
+
+  const target = await prisma.admin.findUnique({ where: { id } });
+  if (!target || target.deletedAt) {
+    return c.json({ error: "Admin not found" }, 404);
+  }
+
+  if (target.role === "owner") {
+    const ownerCount = await prisma.admin.count({
+      where: { role: "owner", isActive: true, deletedAt: null },
+    });
+    if (ownerCount <= 1) {
+      return c.json({ error: "Cannot reset password of the last active owner", code: "CANNOT_RESET_LAST_OWNER" }, 400);
+    }
+  }
+
+  await prisma.admin.update({
+    where: { id },
+    data: { passwordHash: null },
+  });
+
+  return c.json({ ok: true });
+});
+
+// DELETE /api/admin/admins/:id — Soft delete admin (owner only)
 adminAdmins.delete("/:id", async (c) => {
   const id = c.req.param("id");
   const currentAdmin = c.get("adminAuth");
@@ -154,20 +256,23 @@ adminAdmins.delete("/:id", async (c) => {
   }
 
   const target = await prisma.admin.findUnique({ where: { id } });
-  if (!target) {
+  if (!target || target.deletedAt) {
     return c.json({ error: "Admin not found" }, 404);
   }
 
   if (target.role === "owner") {
     const ownerCount = await prisma.admin.count({
-      where: { role: "owner", isActive: true },
+      where: { role: "owner", isActive: true, deletedAt: null },
     });
     if (ownerCount <= 1) {
       return c.json({ error: "Cannot delete the last owner" }, 400);
     }
   }
 
-  await prisma.admin.delete({ where: { id } });
+  await prisma.admin.update({
+    where: { id },
+    data: { deletedAt: new Date() },
+  });
   return c.json({ ok: true });
 });
 
