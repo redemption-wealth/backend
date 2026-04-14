@@ -33,7 +33,9 @@ async function main() {
     update: {},
     create: {
       id: "singleton",
-      appFeePercentage: 3,
+      appFeeRate: 3,
+      wealthContractAddress: process.env.WEALTH_CONTRACT_ADDRESS || "0x0000000000000000000000000000000000000000",
+      devWalletAddress: process.env.DEV_WALLET_ADDRESS || "0x0000000000000000000000000000000000000000",
     },
   });
 
