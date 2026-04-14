@@ -6,12 +6,16 @@ import { createAdminSchema, updateAdminSchema } from "../../schemas/admin.js";
 
 const adminAdmins = new Hono<AuthEnv>();
 
+// Soft delete helper
+const notDeleted = { deletedAt: null };
+
 // All routes require owner
 adminAdmins.use("/*", requireOwner);
 
 // GET /api/admin/admins — List all admins
 adminAdmins.get("/", async (c) => {
   const admins = await prisma.admin.findMany({
+    where: notDeleted,
     select: {
       id: true,
       email: true,
@@ -144,7 +148,7 @@ adminAdmins.put("/:id", async (c) => {
   }
 });
 
-// DELETE /api/admin/admins/:id — Delete admin (owner only)
+// DELETE /api/admin/admins/:id — Soft delete admin (owner only)
 adminAdmins.delete("/:id", async (c) => {
   const id = c.req.param("id");
   const currentAdmin = c.get("adminAuth");
@@ -154,20 +158,23 @@ adminAdmins.delete("/:id", async (c) => {
   }
 
   const target = await prisma.admin.findUnique({ where: { id } });
-  if (!target) {
+  if (!target || target.deletedAt) {
     return c.json({ error: "Admin not found" }, 404);
   }
 
   if (target.role === "owner") {
     const ownerCount = await prisma.admin.count({
-      where: { role: "owner", isActive: true },
+      where: { role: "owner", isActive: true, deletedAt: null },
     });
     if (ownerCount <= 1) {
       return c.json({ error: "Cannot delete the last owner" }, 400);
     }
   }
 
-  await prisma.admin.delete({ where: { id } });
+  await prisma.admin.update({
+    where: { id },
+    data: { deletedAt: new Date() },
+  });
   return c.json({ ok: true });
 });
 

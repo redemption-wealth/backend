@@ -111,8 +111,8 @@ vouchers.post("/:id/redeem", requireUser, async (c) => {
     return c.json({
       redemption,
       txDetails: {
-        tokenContractAddress: settings?.tokenContractAddress,
-        treasuryWalletAddress: settings?.treasuryWalletAddress,
+        tokenContractAddress: settings?.wealthContractAddress,
+        treasuryWalletAddress: settings?.devWalletAddress,
         wealthAmount: redemption.wealthAmount.toString(),
       },
     });

@@ -28,7 +28,7 @@ export async function initiateRedemption({
   const settings = await prisma.appSettings.findUnique({
     where: { id: "singleton" },
   });
-  const appFeePercentage = settings?.appFeePercentage ?? new Prisma.Decimal(3);
+  const appFeePercentage = settings?.appFeeRate ?? new Prisma.Decimal(3);
 
   // Fetch active gas fee setting
   const activeFee = await prisma.feeSetting.findFirst({
@@ -104,18 +104,32 @@ export async function initiateRedemption({
         },
       });
 
-      // Insert QR code records
-      await tx.qrCode.createMany({
-        data: qrData.map((q) => ({
-          voucherId,
+      // Find an available slot and assign its QR codes to this redemption
+      const availableSlot = await tx.redemptionSlot.findFirst({
+        where: { voucherId, status: "available" },
+        include: { qrCodes: true },
+      });
+
+      if (!availableSlot || availableSlot.qrCodes.length === 0) {
+        throw new Error("No available QR codes in slots");
+      }
+
+      // Update slot status to redeemed
+      await tx.redemptionSlot.update({
+        where: { id: availableSlot.id },
+        data: { status: "redeemed", redeemedAt: new Date() },
+      });
+
+      // Assign QR codes to user
+      await tx.qrCode.updateMany({
+        where: { slotId: availableSlot.id },
+        data: {
+          status: "redeemed" as const,
           redemptionId: newRedemption.id,
-          token: q.token,
-          imageUrl: q.imageUrl,
-          imageHash: q.imageHash,
-          status: "assigned" as const,
           assignedToUserId: userId,
           assignedAt: new Date(),
-        })),
+          redeemedAt: new Date(),
+        },
       });
 
       return newRedemption;

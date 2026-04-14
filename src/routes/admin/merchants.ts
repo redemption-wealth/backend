@@ -9,6 +9,9 @@ import {
 
 const adminMerchants = new Hono<AuthEnv>();
 
+// Soft delete helper
+const notDeleted = { deletedAt: null };
+
 // GET /api/admin/merchants — List all merchants (any authenticated admin)
 adminMerchants.get("/", async (c) => {
   const query = merchantQuerySchema.safeParse({
@@ -28,6 +31,7 @@ adminMerchants.get("/", async (c) => {
   const { categoryId, search, page, limit } = query.data;
 
   const where = {
+    ...notDeleted,
     ...(categoryId && { categoryId }),
     ...(search && {
       name: { contains: search, mode: "insensitive" as const },
@@ -106,20 +110,22 @@ adminMerchants.put("/:id", requireManager, async (c) => {
   }
 });
 
-// DELETE /api/admin/merchants/:id — Delete merchant (owner only)
-adminMerchants.delete("/:id", requireOwner, async (c) => {
+// DELETE /api/admin/merchants/:id — Soft delete merchant (manager+ only)
+adminMerchants.delete("/:id", requireManager, async (c) => {
   const id = c.req.param("id");
+
+  const merchant = await prisma.merchant.findUnique({ where: { id } });
+  if (!merchant || merchant.deletedAt) {
+    return c.json({ error: "Merchant not found" }, 404);
+  }
+
   try {
-    await prisma.merchant.delete({ where: { id } });
+    await prisma.merchant.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
     return c.json({ ok: true });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("Foreign key constraint")) {
-      return c.json(
-        { error: "Cannot delete merchant with existing vouchers" },
-        400
-      );
-    }
+  } catch {
     return c.json({ error: "Merchant not found" }, 404);
   }
 });

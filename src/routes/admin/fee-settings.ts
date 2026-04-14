@@ -59,8 +59,8 @@ adminFeeSettings.put("/:id", requireManager, async (c) => {
   }
 });
 
-// POST /api/admin/fee-settings/:id/activate — Activate fee (owner only)
-adminFeeSettings.post("/:id/activate", requireOwner, async (c) => {
+// POST /api/admin/fee-settings/:id/activate — Activate fee (manager+ only)
+adminFeeSettings.post("/:id/activate", requireManager, async (c) => {
   const id = c.req.param("id");
 
   const feeSetting = await prisma.feeSetting.findUnique({ where: { id } });
@@ -83,8 +83,8 @@ adminFeeSettings.post("/:id/activate", requireOwner, async (c) => {
   return c.json({ feeSetting: updated });
 });
 
-// DELETE /api/admin/fee-settings/:id — Delete fee setting (owner only)
-adminFeeSettings.delete("/:id", requireOwner, async (c) => {
+// DELETE /api/admin/fee-settings/:id — Delete fee setting (manager+ only)
+adminFeeSettings.delete("/:id", requireManager, async (c) => {
   const id = c.req.param("id");
 
   const feeSetting = await prisma.feeSetting.findUnique({ where: { id } });

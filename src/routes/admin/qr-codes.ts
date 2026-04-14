@@ -6,7 +6,7 @@ import { createQrCodeSchema, scanQrSchema } from "../../schemas/qr-code.js";
 
 const adminQrCodes = new Hono<AuthEnv>();
 
-// POST /api/admin/qr-codes/scan — Scan a QR token (must be before /:id routes)
+// POST /api/admin/qr-codes/scan — Scan a QR code with slot completion logic
 adminQrCodes.post("/scan", qrScanLimiter, async (c) => {
   const adminAuth = c.get("adminAuth");
   const body = await c.req.json();
@@ -16,12 +16,21 @@ adminQrCodes.post("/scan", qrScanLimiter, async (c) => {
     return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
-  const { token } = parsed.data;
+  const { id, token } = parsed.data;
 
-  // Find QR by token, include voucher merchantId for ownership check
+  // Find QR by id (primary) or token (fallback for legacy)
   const qrCode = await prisma.qrCode.findUnique({
-    where: { token },
-    include: { voucher: { select: { merchantId: true } } },
+    where: id ? { id } : { token },
+    include: {
+      voucher: {
+        select: {
+          id: true,
+          title: true,
+          merchantId: true,
+          merchant: { select: { name: true } },
+        },
+      },
+    },
   });
 
   if (!qrCode) {
@@ -33,33 +42,63 @@ adminQrCodes.post("/scan", qrScanLimiter, async (c) => {
     return c.json({ error: "WRONG_MERCHANT" }, 403);
   }
 
-  // Atomic update: only succeeds if status is currently 'assigned'
-  const updated = await prisma.qrCode.updateMany({
-    where: { id: qrCode.id, status: "assigned" },
-    data: {
-      status: "used",
-      usedAt: new Date(),
-      scannedByAdminId: adminAuth.adminId,
-    },
-  });
-
-  if (updated.count === 0) {
-    // Re-fetch to determine current status
-    const current = await prisma.qrCode.findUnique({
-      where: { id: qrCode.id },
-      select: { status: true },
-    });
-    if (current?.status === "used") {
-      return c.json({ error: "ALREADY_USED" }, 409);
-    }
-    return c.json({ error: "QR code is not in assignable state" }, 422);
+  // Status checks
+  if (qrCode.status === "available") {
+    return c.json({ error: "QR_NOT_REDEEMED", code: "QR_NOT_REDEEMED" }, 422);
   }
+  if (qrCode.status === "used") {
+    return c.json({ error: "ALREADY_USED", code: "QR_ALREADY_USED" }, 409);
+  }
+  if (qrCode.status !== "redeemed") {
+    return c.json({ error: "Invalid QR status" }, 422);
+  }
+
+  // Atomic transaction: mark QR as used, check slot completion, update voucher
+  const result = await prisma.$transaction(async (tx) => {
+    // 1. Mark QR as used
+    await tx.qrCode.update({
+      where: { id: qrCode.id },
+      data: {
+        status: "used",
+        usedAt: new Date(),
+        scannedByAdminId: adminAuth.adminId,
+      },
+    });
+
+    // 2. Check if all QRs in this slot are now used
+    const unusedCount = await tx.qrCode.count({
+      where: {
+        slotId: qrCode.slotId,
+        status: { not: "used" },
+      },
+    });
+
+    // 3. If slot is complete, mark it as fully_used and decrement remaining_stock
+    if (unusedCount === 0) {
+      await tx.redemptionSlot.update({
+        where: { id: qrCode.slotId },
+        data: { status: "fully_used" },
+      });
+
+      await tx.voucher.update({
+        where: { id: qrCode.voucherId },
+        data: {
+          remainingStock: { decrement: 1 },
+        },
+      });
+    }
+
+    return { slotCompleted: unusedCount === 0 };
+  });
 
   return c.json({
     success: true,
     voucherId: qrCode.voucherId,
+    voucherTitle: qrCode.voucher.title,
+    merchantName: qrCode.voucher.merchant.name,
     usedAt: new Date(),
     scannedByAdminId: adminAuth.adminId,
+    slotCompleted: result.slotCompleted,
   });
 });
 
