@@ -34,8 +34,11 @@ app.use(
   "*",
   cors({
     origin: (origin) => {
-      const allowed = (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173").split(",");
-      return allowed.includes(origin) ? origin : allowed[0];
+      if (!origin) return null;
+      const allowed = (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173")
+        .split(",")
+        .map((o) => o.trim().replace(/\/$/, ""));
+      return allowed.includes(origin) ? origin : null;
     },
     credentials: true,
   })
