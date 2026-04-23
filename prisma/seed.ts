@@ -44,18 +44,24 @@ async function main() {
     },
   });
 
-  // Create test merchant for manager/admin testing
-  const testMerchant = await prisma.merchant.upsert({
-    where: { name: "Test Merchant" },
-    update: {},
-    create: {
-      name: "Test Merchant",
-      address: "Jl. Test No. 123, Jakarta",
-      phone: "+6281234567890",
-      categoryId: "kuliner",
-      createdBy: owner.id,
-    },
+  // Create test merchant for manager/admin testing. Merchant.name is not
+  // unique so upsert-by-name doesn't exist on MerchantWhereUniqueInput — use
+  // findFirst + create for idempotency instead.
+  const kulinerCategory = await prisma.category.findUniqueOrThrow({
+    where: { name: "kuliner" },
   });
+  const testMerchant =
+    (await prisma.merchant.findFirst({
+      where: { name: "Test Merchant" },
+    })) ??
+    (await prisma.merchant.create({
+      data: {
+        name: "Test Merchant",
+        description: "Test merchant for manager/admin accounts",
+        categoryId: kulinerCategory.id,
+        createdBy: owner.id,
+      },
+    }));
 
   // Manager account (assigned to test merchant)
   const managerEmail = "manager@wealthcrypto.fund";
