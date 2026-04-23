@@ -13,7 +13,7 @@ adminSettings.get("/", requireOwner, async (c) => {
 
   if (!settings) {
     settings = await prisma.appSettings.create({
-      data: { id: "singleton" },
+      data: { id: "singleton", updatedAt: new Date() },
     });
   }
 
@@ -57,6 +57,7 @@ adminSettings.put("/", requireOwner, async (c) => {
       devWalletAddress,
       alchemyRpcUrl,
       coingeckoApiKey,
+      updatedAt: new Date(),
     },
   });
 
