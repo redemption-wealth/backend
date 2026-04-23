@@ -115,6 +115,15 @@ adminAdmins.post("/", async (c) => {
 
   const { email, password, role, merchantId } = parsed.data;
 
+  // Check if email already used by an active (non-deleted) admin
+  const existingAdmin = await prisma.admin.findFirst({
+    where: { email, ...notDeleted },
+    select: { id: true },
+  });
+  if (existingAdmin) {
+    return c.json({ error: "Email already exists" }, 409);
+  }
+
   // Verify merchant exists if merchantId provided
   if (merchantId) {
     const merchant = await prisma.merchant.findUnique({

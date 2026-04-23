@@ -63,7 +63,7 @@ model User {
 
 model Admin {
   id           String    @id @default(uuid())
-  email        String    @unique
+  email        String
   passwordHash String?   @map("password_hash")
   role         AdminRole @default(manager)
   merchantId   String?   @map("merchant_id")
@@ -82,7 +82,8 @@ model Admin {
   appSettingsFeeUpdates AppSettings[] @relation("AppSettingsFeeUpdater")
 
   @@index([merchantId])
-  // Partial unique index exists in DB: CREATE UNIQUE INDEX admins_merchant_unique ON admins(merchant_id) WHERE merchant_id IS NOT NULL AND deleted_at IS NULL
+  // Partial unique index in DB: CREATE UNIQUE INDEX admins_email_unique ON admins(email) WHERE deleted_at IS NULL
+  // Partial unique index in DB: CREATE UNIQUE INDEX admins_merchant_unique ON admins(merchant_id) WHERE merchant_id IS NOT NULL AND deleted_at IS NULL
   @@map("admins")
 }
 

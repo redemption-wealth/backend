@@ -24,7 +24,7 @@ auth.post("/login", async (c) => {
 
   const { email, password } = parsed.data;
 
-  const admin = await prisma.admin.findUnique({ where: { email } });
+  const admin = await prisma.admin.findFirst({ where: { email, deletedAt: null } });
 
   if (!admin || !admin.isActive) {
     return c.json({ error: "Invalid credentials" }, 401);
@@ -75,7 +75,7 @@ auth.post("/set-password", async (c) => {
 
   const { email, password } = parsed.data;
 
-  const admin = await prisma.admin.findUnique({ where: { email } });
+  const admin = await prisma.admin.findFirst({ where: { email, deletedAt: null } });
 
   if (!admin) {
     return c.json({ error: "Invalid credentials" }, 401);
