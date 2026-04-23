@@ -113,11 +113,12 @@ adminAdmins.post("/", async (c) => {
     );
   }
 
-  const { email, password, role, merchantId } = parsed.data;
+  const { password, role, merchantId } = parsed.data;
+  const email = parsed.data.email.toLowerCase();
 
   // Check if email already used by an active (non-deleted) admin
   const existingAdmin = await prisma.admin.findFirst({
-    where: { email, ...notDeleted },
+    where: { email: { equals: email, mode: "insensitive" }, ...notDeleted },
     select: { id: true },
   });
   if (existingAdmin) {

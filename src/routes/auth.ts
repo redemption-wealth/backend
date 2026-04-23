@@ -14,12 +14,14 @@ const auth = new Hono();
 // POST /api/auth/check-email — Check if account needs password setup
 auth.post("/check-email", async (c) => {
   const body = await c.req.json();
-  const email = body?.email?.trim()?.toLowerCase();
+  const email = body?.email?.trim();
   if (!email) {
     return c.json({ error: "Email is required" }, 400);
   }
 
-  const admin = await prisma.admin.findFirst({ where: { email, deletedAt: null } });
+  const admin = await prisma.admin.findFirst({
+    where: { email: { equals: email, mode: "insensitive" }, deletedAt: null },
+  });
 
   if (!admin) {
     return c.json({ error: "Email tidak terdaftar" }, 401);
@@ -48,7 +50,9 @@ auth.post("/login", async (c) => {
 
   const { email, password } = parsed.data;
 
-  const admin = await prisma.admin.findFirst({ where: { email, deletedAt: null } });
+  const admin = await prisma.admin.findFirst({
+    where: { email: { equals: email, mode: "insensitive" }, deletedAt: null },
+  });
 
   if (!admin || !admin.isActive) {
     return c.json({ error: "Invalid credentials" }, 401);
@@ -99,7 +103,9 @@ auth.post("/set-password", async (c) => {
 
   const { email, password } = parsed.data;
 
-  const admin = await prisma.admin.findFirst({ where: { email, deletedAt: null } });
+  const admin = await prisma.admin.findFirst({
+    where: { email: { equals: email, mode: "insensitive" }, deletedAt: null },
+  });
 
   if (!admin) {
     return c.json({ error: "Invalid credentials" }, 401);
