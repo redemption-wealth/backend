@@ -52,24 +52,24 @@ export async function initiateRedemption({
           id: string;
           remaining_stock: number;
           is_active: boolean;
-          end_date: Date;
-          price_idr: number;
-          qr_per_redemption: number;
+          expiry_date: Date;
+          base_price: string;
+          qr_per_slot: number;
         }>
       >(
-        `SELECT id, remaining_stock, is_active, end_date, price_idr, qr_per_redemption FROM vouchers WHERE id = $1 FOR UPDATE`,
+        `SELECT id, remaining_stock, is_active, expiry_date, base_price, qr_per_slot FROM vouchers WHERE id = $1 FOR UPDATE`,
         voucherId
       );
 
       if (!voucher) throw new Error("Voucher not found");
       if (!voucher.is_active) throw new Error("Voucher is not active");
       if (voucher.remaining_stock <= 0) throw new Error("Voucher out of stock");
-      if (new Date(voucher.end_date) < new Date()) throw new Error("Voucher expired");
+      if (new Date(voucher.expiry_date) < new Date()) throw new Error("Voucher expired");
 
-      const qrPerRedemption = voucher.qr_per_redemption;
+      const qrPerRedemption = voucher.qr_per_slot;
 
       // 3-component pricing: base + app fee + gas fee
-      const priceIdr = new Prisma.Decimal(voucher.price_idr);
+      const priceIdr = new Prisma.Decimal(voucher.base_price);
       const appFee = priceIdr.mul(appFeePercentage).div(100);
       const gasFee = new Prisma.Decimal(gasFeeIdr);
       const totalIdr = priceIdr.add(appFee).add(gasFee);
@@ -95,7 +95,7 @@ export async function initiateRedemption({
           userId,
           voucherId,
           wealthAmount,
-          priceIdrAtRedeem: voucher.price_idr,
+          priceIdrAtRedeem: Math.round(Number(voucher.base_price)),
           wealthPriceIdrAtRedeem: wealthPriceDecimal,
           appFeeAmount,
           gasFeeAmount,
