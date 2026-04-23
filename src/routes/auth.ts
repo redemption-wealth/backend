@@ -11,6 +11,30 @@ import { loginSchema, setPasswordSchema, changePasswordSchema } from "../schemas
 
 const auth = new Hono();
 
+// POST /api/auth/check-email — Check if account needs password setup
+auth.post("/check-email", async (c) => {
+  const body = await c.req.json();
+  const email = body?.email?.trim()?.toLowerCase();
+  if (!email) {
+    return c.json({ error: "Email is required" }, 400);
+  }
+
+  const admin = await prisma.admin.findFirst({ where: { email, deletedAt: null } });
+
+  if (!admin) {
+    return c.json({ error: "Email tidak terdaftar" }, 401);
+  }
+
+  if (!admin.isActive) {
+    return c.json({ error: "Akun dinonaktifkan" }, 403);
+  }
+
+  return c.json({
+    needs_password_setup: !admin.passwordHash,
+    email: admin.email,
+  });
+});
+
 // POST /api/auth/login — Admin login
 auth.post("/login", async (c) => {
   const body = await c.req.json();
