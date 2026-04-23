@@ -14,7 +14,7 @@ uploadRoutes.post("/logo", requireManager, async (c) => {
   try {
     // Parse multipart form data
     const body = await c.req.parseBody();
-    const file = body["file"];
+    const file = body["file"] ?? body["logo"];
 
     if (!file || typeof file === "string") {
       return c.json({ error: "No file provided" }, 400);
