@@ -109,11 +109,16 @@ export async function initiateRedemption({
       // Find an available slot and assign its QR codes to this redemption
       const availableSlot = await tx.redemptionSlot.findFirst({
         where: { voucherId, status: "available" },
-        include: { qrCodes: true },
+        include: { qrCodes: { orderBy: { qrNumber: "asc" } } },
       });
 
       if (!availableSlot || availableSlot.qrCodes.length === 0) {
         throw new Error("No available QR codes in slots");
+      }
+      if (availableSlot.qrCodes.length !== qrData.length) {
+        throw new Error(
+          `Slot has ${availableSlot.qrCodes.length} QR records but ${qrData.length} were generated`
+        );
       }
 
       // Update slot status to redeemed
@@ -122,17 +127,26 @@ export async function initiateRedemption({
         data: { status: "redeemed", redeemedAt: new Date() },
       });
 
-      // Assign QR codes to user
-      await tx.qrCode.updateMany({
-        where: { slotId: availableSlot.id },
-        data: {
-          status: "redeemed" as const,
-          redemptionId: newRedemption.id,
-          assignedToUserId: userId,
-          assignedAt: new Date(),
-          redeemedAt: new Date(),
-        },
-      });
+      // Assign QR codes to user and write the real R2 key + token from generateQrCode.
+      // Per-row update (not updateMany) because imageUrl/imageHash/token differ per QR.
+      const now = new Date();
+      await Promise.all(
+        availableSlot.qrCodes.map((qr, i) =>
+          tx.qrCode.update({
+            where: { id: qr.id },
+            data: {
+              status: "redeemed" as const,
+              redemptionId: newRedemption.id,
+              assignedToUserId: userId,
+              assignedAt: now,
+              redeemedAt: now,
+              imageUrl: qrData[i].imageUrl,
+              imageHash: qrData[i].imageHash,
+              token: qrData[i].token,
+            },
+          })
+        )
+      );
 
       return newRedemption;
     });
