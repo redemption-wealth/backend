@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../db.js";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
+import { reconcileRedemptionById } from "../services/redemption.js";
 
 const redemptions = new Hono<AuthEnv>();
 
@@ -46,6 +47,25 @@ redemptions.get("/:id", requireUser, async (c) => {
   const id = c.req.param("id");
   const user = c.get("userAuth");
 
+  const existing = await prisma.redemption.findFirst({
+    where: { id, userId: user.userId },
+    select: { id: true, status: true, txHash: true },
+  });
+
+  if (!existing) {
+    return c.json({ error: "Redemption not found" }, 404);
+  }
+
+  // Auto-reconcile if we have a tx hash but are still pending.
+  // Lets the QR flip to "confirmed" without waiting for the Alchemy webhook.
+  if (existing.status === "pending" && existing.txHash) {
+    try {
+      await reconcileRedemptionById(existing.id);
+    } catch (err) {
+      console.error("[GET /redemptions/:id] auto-reconcile failed:", err);
+    }
+  }
+
   const redemption = await prisma.redemption.findFirst({
     where: { id, userId: user.userId },
     include: {
@@ -55,11 +75,40 @@ redemptions.get("/:id", requireUser, async (c) => {
     },
   });
 
-  if (!redemption) {
+  return c.json({ redemption });
+});
+
+// POST /api/redemptions/:id/reconcile — User: force on-chain re-check
+redemptions.post("/:id/reconcile", requireUser, async (c) => {
+  const id = c.req.param("id");
+  const user = c.get("userAuth");
+
+  const owned = await prisma.redemption.findFirst({
+    where: { id, userId: user.userId },
+    select: { id: true },
+  });
+  if (!owned) {
     return c.json({ error: "Redemption not found" }, 404);
   }
 
-  return c.json({ redemption });
+  let reconciled = false;
+  try {
+    const outcome = await reconcileRedemptionById(id);
+    reconciled = outcome.reconciled;
+  } catch (err) {
+    console.error("[POST /redemptions/:id/reconcile] failed:", err);
+  }
+
+  const redemption = await prisma.redemption.findFirst({
+    where: { id, userId: user.userId },
+    include: {
+      voucher: { include: { merchant: true } },
+      qrCodes: true,
+      transaction: true,
+    },
+  });
+
+  return c.json({ redemption, reconciled });
 });
 
 // PATCH /api/redemptions/:id/submit-tx — User: submit txHash

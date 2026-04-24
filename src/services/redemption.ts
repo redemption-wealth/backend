@@ -1,6 +1,8 @@
 import { randomUUID } from "crypto";
 import { prisma } from "../db.js";
 import { Prisma } from "@prisma/client";
+import { createPublicClient, http } from "viem";
+import { mainnet, sepolia } from "viem/chains";
 import { generateQrCode, deleteQrFiles } from "./qr-generator.js";
 
 interface InitiateRedemptionParams {
@@ -177,6 +179,62 @@ export async function confirmRedemption(txHash: string) {
 
     return updated;
   });
+}
+
+let cachedRpcClient: ReturnType<typeof createPublicClient> | null = null;
+
+function getRpcClient() {
+  if (cachedRpcClient) return cachedRpcClient;
+  const rpcUrl = process.env.ALCHEMY_RPC_URL;
+  if (!rpcUrl) return null;
+  const chainId = Number(process.env.ETHEREUM_CHAIN_ID ?? 1);
+  const chain = chainId === sepolia.id ? sepolia : mainnet;
+  cachedRpcClient = createPublicClient({ chain, transport: http(rpcUrl) });
+  return cachedRpcClient;
+}
+
+export type ReconcileOutcome =
+  | { reconciled: true; status: "confirmed" | "failed" }
+  | { reconciled: false; reason: "no-tx-hash" | "no-receipt" | "no-rpc" | "not-pending" };
+
+export async function reconcileRedemptionById(
+  redemptionId: string,
+): Promise<ReconcileOutcome> {
+  const redemption = await prisma.redemption.findUnique({
+    where: { id: redemptionId },
+    select: { id: true, status: true, txHash: true },
+  });
+
+  if (!redemption) throw new Error("Redemption not found");
+  if (redemption.status !== "pending") {
+    return { reconciled: false, reason: "not-pending" };
+  }
+  if (!redemption.txHash) {
+    return { reconciled: false, reason: "no-tx-hash" };
+  }
+
+  const client = getRpcClient();
+  if (!client) return { reconciled: false, reason: "no-rpc" };
+
+  try {
+    const receipt = await client.getTransactionReceipt({
+      hash: redemption.txHash as `0x${string}`,
+    });
+    if (!receipt) return { reconciled: false, reason: "no-receipt" };
+
+    if (receipt.status === "success") {
+      await confirmRedemption(redemption.txHash);
+      return { reconciled: true, status: "confirmed" };
+    }
+    await failRedemption(redemption.txHash);
+    return { reconciled: true, status: "failed" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/could not be found|not found/i.test(msg)) {
+      return { reconciled: false, reason: "no-receipt" };
+    }
+    throw err;
+  }
 }
 
 export async function failRedemption(txHash: string) {
