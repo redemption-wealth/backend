@@ -2,8 +2,37 @@ import { Hono } from "hono";
 import { prisma } from "../db.js";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { reconcileRedemptionById } from "../services/redemption.js";
+import { generateSignedUrl } from "../services/r2.js";
 
 const redemptions = new Hono<AuthEnv>();
+
+const QR_BUCKET = process.env.R2_QR_BUCKET_NAME || "wealth-qr-codes";
+const QR_SIGNED_URL_TTL_SEC = 3600;
+
+type QrCodeWithUrl = { imageUrl: string; [key: string]: unknown };
+
+async function withSignedQrUrls<T extends { qrCodes?: QrCodeWithUrl[] | null }>(
+  redemption: T,
+): Promise<T> {
+  if (!redemption.qrCodes || redemption.qrCodes.length === 0) return redemption;
+  const signed = await Promise.all(
+    redemption.qrCodes.map(async (qr) => {
+      if (!qr.imageUrl || /^https?:\/\//i.test(qr.imageUrl)) return qr;
+      try {
+        const url = await generateSignedUrl({
+          bucket: QR_BUCKET,
+          key: qr.imageUrl,
+          expiresIn: QR_SIGNED_URL_TTL_SEC,
+        });
+        return { ...qr, imageUrl: url };
+      } catch (err) {
+        console.error("[redemptions] sign QR url failed:", err);
+        return qr;
+      }
+    }),
+  );
+  return { ...redemption, qrCodes: signed };
+}
 
 // GET /api/redemptions — User: list own redemptions
 redemptions.get("/", requireUser, async (c) => {
@@ -75,7 +104,7 @@ redemptions.get("/:id", requireUser, async (c) => {
     },
   });
 
-  return c.json({ redemption });
+  return c.json({ redemption: redemption ? await withSignedQrUrls(redemption) : null });
 });
 
 // POST /api/redemptions/:id/reconcile — User: force on-chain re-check
@@ -108,7 +137,10 @@ redemptions.post("/:id/reconcile", requireUser, async (c) => {
     },
   });
 
-  return c.json({ redemption, reconciled });
+  return c.json({
+    redemption: redemption ? await withSignedQrUrls(redemption) : null,
+    reconciled,
+  });
 });
 
 // PATCH /api/redemptions/:id/submit-tx — User: submit txHash
