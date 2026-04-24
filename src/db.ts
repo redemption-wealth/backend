@@ -7,31 +7,42 @@ const globalForPrisma = globalThis as unknown as {
   pool: pg.Pool | undefined;
 };
 
-function createPrismaClient() {
-  // Clean up previous pool if it exists (handles stale connections)
+function createPrismaClient(): PrismaClient {
   if (globalForPrisma.pool) {
     globalForPrisma.pool.end().catch(() => {});
+    globalForPrisma.pool = undefined;
   }
 
   const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    max: 1,
-    idleTimeoutMillis: 20_000,
+    max: 3,
+    idleTimeoutMillis: 60_000,
     connectionTimeoutMillis: 10_000,
-    allowExitOnIdle: true,
   });
 
-  // Silently handle pool errors to prevent stale connections from crashing
-  pool.on("error", () => {
+  pool.on("error", (err) => {
+    console.error("[db] pool error, resetting client:", err.message);
     globalForPrisma.prisma = undefined;
     globalForPrisma.pool = undefined;
   });
 
   globalForPrisma.pool = pool;
-  const adapter = new PrismaPg(pool);
-  return new PrismaClient({ adapter });
+  const client = new PrismaClient({ adapter: new PrismaPg(pool) });
+  globalForPrisma.prisma = client;
+  return client;
 }
 
-export const prisma = globalForPrisma.prisma ?? createPrismaClient();
+function getPrisma(): PrismaClient {
+  return globalForPrisma.prisma ?? createPrismaClient();
+}
 
-globalForPrisma.prisma = prisma;
+// Proxy so handlers always see the current live Prisma client.
+// If the pool errored and the global was reset, the next property access
+// rebuilds a fresh client+pool instead of returning a dead reference.
+export const prisma = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    const client = getPrisma();
+    const value = Reflect.get(client, prop);
+    return typeof value === "function" ? value.bind(client) : value;
+  },
+});
