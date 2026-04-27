@@ -15,7 +15,7 @@ function createPrismaClient(): PrismaClient {
 
   const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    max: 10,
+    max: 3,
     idleTimeoutMillis: 60_000,
     connectionTimeoutMillis: 10_000,
   });

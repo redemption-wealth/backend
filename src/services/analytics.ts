@@ -122,7 +122,7 @@ export async function getSummaryStats(merchantId?: string): Promise<{
 export async function getRedemptionsOverTime(
   period: "daily" | "yearly" | "monthly",
   merchantId?: string
-): Promise<Array<{ label: string; count: number }>> {
+): Promise<Array<{ period: string; count: number }>> {
   const cacheKey = merchantId
     ? `redemptions-over-time-${period}:${merchantId}`
     : `redemptions-over-time-${period}`;
@@ -140,18 +140,18 @@ export async function getRedemptionsOverTime(
 
     const grouped = new Map<string, number>();
     redemptions.forEach((r) => {
-      const label = formatDateLabel(r.redeemedAt, period);
-      grouped.set(label, (grouped.get(label) || 0) + 1);
+      const p = formatDateLabel(r.redeemedAt, period);
+      grouped.set(p, (grouped.get(p) || 0) + 1);
     });
 
     return Array.from(grouped.entries())
-      .map(([label, count]) => ({ label, count }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+      .map(([period, count]) => ({ period, count }))
+      .sort((a, b) => a.period.localeCompare(b.period));
   });
 }
 
 export async function getMerchantCategoryDistribution(merchantId?: string): Promise<
-  Array<{ category: string; count: number; percentage: number }>
+  Array<{ categoryName: string; count: number; percentage: number }>
 > {
   const cacheKey = merchantId ? `merchant-categories:${merchantId}` : "merchant-categories";
   return getCachedOrCalculate(cacheKey, async () => {
@@ -163,13 +163,13 @@ export async function getMerchantCategoryDistribution(merchantId?: string): Prom
     const total = merchants.length;
     const grouped = new Map<string, number>();
     merchants.forEach((m) => {
-      const categoryName = m.category.name;
-      grouped.set(categoryName, (grouped.get(categoryName) || 0) + 1);
+      const catName = m.category.name;
+      grouped.set(catName, (grouped.get(catName) || 0) + 1);
     });
 
     return Array.from(grouped.entries())
-      .map(([category, count]) => ({
-        category,
+      .map(([categoryName, count]) => ({
+        categoryName,
         count,
         percentage: total > 0 ? Math.round((count / total) * 100) : 0,
       }))
@@ -180,7 +180,7 @@ export async function getMerchantCategoryDistribution(merchantId?: string): Prom
 export async function getWealthVolumeOverTime(
   period: "daily" | "yearly" | "monthly",
   merchantId?: string
-): Promise<Array<{ label: string; volume: string }>> {
+): Promise<Array<{ period: string; volume: string }>> {
   const cacheKey = merchantId
     ? `wealth-volume-${period}:${merchantId}`
     : `wealth-volume-${period}`;
@@ -200,13 +200,13 @@ export async function getWealthVolumeOverTime(
     const grouped = new Map<string, number>();
     redemptions.forEach((r) => {
       if (!r.confirmedAt) return;
-      const label = formatDateLabel(r.confirmedAt, period);
-      grouped.set(label, (grouped.get(label) || 0) + Number(r.wealthAmount));
+      const p = formatDateLabel(r.confirmedAt, period);
+      grouped.set(p, (grouped.get(p) || 0) + Number(r.wealthAmount));
     });
 
     return Array.from(grouped.entries())
-      .map(([label, volume]) => ({ label, volume: volume.toFixed(3) }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+      .map(([period, volume]) => ({ period, volume: volume.toFixed(3) }))
+      .sort((a, b) => a.period.localeCompare(b.period));
   });
 }
 
@@ -215,10 +215,10 @@ export async function getTopMerchants(
   merchantId?: string
 ): Promise<
   Array<{
-    id: string;
-    name: string;
+    merchantId: string;
+    merchantName: string;
     logoUrl: string | null;
-    redeemCount: number;
+    redemptionCount: number;
     wealthVolume: string;
   }>
 > {
@@ -236,26 +236,26 @@ export async function getTopMerchants(
 
     const merchantStats = new Map<
       string,
-      { id: string; name: string; logoUrl: string | null; redeemCount: number; wealthVolume: number }
+      { merchantId: string; merchantName: string; logoUrl: string | null; redemptionCount: number; wealthVolume: number }
     >();
 
     redemptions.forEach((r) => {
       const merchant = r.voucher.merchant;
       const stats = merchantStats.get(merchant.id) || {
-        id: merchant.id,
-        name: merchant.name,
+        merchantId: merchant.id,
+        merchantName: merchant.name,
         logoUrl: merchant.logoUrl,
-        redeemCount: 0,
+        redemptionCount: 0,
         wealthVolume: 0,
       };
-      stats.redeemCount++;
+      stats.redemptionCount++;
       stats.wealthVolume += Number(r.wealthAmount);
       merchantStats.set(merchant.id, stats);
     });
 
     return Array.from(merchantStats.values())
       .map((m) => ({ ...m, wealthVolume: m.wealthVolume.toFixed(2) }))
-      .sort((a, b) => b.redeemCount - a.redeemCount)
+      .sort((a, b) => b.redemptionCount - a.redemptionCount)
       .slice(0, limit);
   });
 }
@@ -265,10 +265,10 @@ export async function getTopVouchers(
   merchantId?: string
 ): Promise<
   Array<{
-    id: string;
-    title: string;
+    voucherId: string;
+    voucherTitle: string;
     merchantName: string;
-    redeemCount: number;
+    redemptionCount: number;
     wealthVolume: string;
   }>
 > {
@@ -286,26 +286,26 @@ export async function getTopVouchers(
 
     const voucherStats = new Map<
       string,
-      { id: string; title: string; merchantName: string; redeemCount: number; wealthVolume: number }
+      { voucherId: string; voucherTitle: string; merchantName: string; redemptionCount: number; wealthVolume: number }
     >();
 
     redemptions.forEach((r) => {
       const voucher = r.voucher;
       const stats = voucherStats.get(voucher.id) || {
-        id: voucher.id,
-        title: voucher.title,
+        voucherId: voucher.id,
+        voucherTitle: voucher.title,
         merchantName: voucher.merchant.name,
-        redeemCount: 0,
+        redemptionCount: 0,
         wealthVolume: 0,
       };
-      stats.redeemCount++;
+      stats.redemptionCount++;
       stats.wealthVolume += Number(r.wealthAmount);
       voucherStats.set(voucher.id, stats);
     });
 
     return Array.from(voucherStats.values())
       .map((v) => ({ ...v, wealthVolume: v.wealthVolume.toFixed(2) }))
-      .sort((a, b) => b.redeemCount - a.redeemCount)
+      .sort((a, b) => b.redemptionCount - a.redemptionCount)
       .slice(0, limit);
   });
 }
