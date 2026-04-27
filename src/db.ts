@@ -16,8 +16,9 @@ function createPrismaClient(): PrismaClient {
   const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
     max: 1,
-    idleTimeoutMillis: 60_000,
+    idleTimeoutMillis: 500,
     connectionTimeoutMillis: 10_000,
+    allowExitOnIdle: true,
   });
 
   pool.on("error", (err) => {
