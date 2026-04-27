@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { createPublicClient, http, erc20Abi, formatUnits } from "viem";
+import { mainnet, sepolia } from "viem/chains";
 import { requireAdmin, type AuthEnv } from "../../middleware/auth.js";
 import {
   getSummaryStats,
@@ -99,7 +101,7 @@ adminAnalytics.get("/top-vouchers", async (c) => {
   return c.json({ data });
 });
 
-// GET /api/admin/analytics/treasury-balance (stub — owner/manager only meaningful)
+// GET /api/admin/analytics/treasury-balance
 adminAnalytics.get("/treasury-balance", async (c) => {
   const settings = await prisma.appSettings.findUnique({
     where: { id: "singleton" },
@@ -116,12 +118,50 @@ adminAnalytics.get("/treasury-balance", async (c) => {
     );
   }
 
-  return c.json({
-    balance: "0",
-    tokenAddress: settings.wealthContractAddress,
-    treasuryAddress: settings.devWalletAddress,
-    note: "Blockchain integration pending. Balance is currently a placeholder.",
-  });
+  const rpcUrl = process.env.ALCHEMY_RPC_URL;
+  if (!rpcUrl) {
+    return c.json({
+      balance: "0",
+      tokenAddress: settings.wealthContractAddress,
+      treasuryAddress: settings.devWalletAddress,
+      note: "ALCHEMY_RPC_URL not configured. Cannot read on-chain balance.",
+    });
+  }
+
+  try {
+    const chainId = Number(process.env.ETHEREUM_CHAIN_ID ?? 1);
+    const chain = chainId === sepolia.id ? sepolia : mainnet;
+    const client = createPublicClient({ chain, transport: http(rpcUrl) });
+
+    const rawBalance = await client.readContract({
+      address: settings.wealthContractAddress as `0x${string}`,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [settings.devWalletAddress as `0x${string}`],
+    });
+
+    const decimals = await client.readContract({
+      address: settings.wealthContractAddress as `0x${string}`,
+      abi: erc20Abi,
+      functionName: "decimals",
+    });
+
+    const balance = formatUnits(rawBalance, decimals);
+
+    return c.json({
+      balance,
+      tokenAddress: settings.wealthContractAddress,
+      treasuryAddress: settings.devWalletAddress,
+    });
+  } catch (err) {
+    console.error("[treasury-balance] Failed to read on-chain balance:", err);
+    return c.json({
+      balance: "0",
+      tokenAddress: settings.wealthContractAddress,
+      treasuryAddress: settings.devWalletAddress,
+      note: "Failed to read on-chain balance.",
+    });
+  }
 });
 
 export default adminAnalytics;
