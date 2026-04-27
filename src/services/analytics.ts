@@ -205,7 +205,7 @@ export async function getWealthVolumeOverTime(
     });
 
     return Array.from(grouped.entries())
-      .map(([period, volume]) => ({ period, volume: volume.toFixed(3) }))
+      .map(([period, volume]) => ({ period, volume: volume.toFixed(4) }))
       .sort((a, b) => a.period.localeCompare(b.period));
   });
 }
@@ -254,7 +254,7 @@ export async function getTopMerchants(
     });
 
     return Array.from(merchantStats.values())
-      .map((m) => ({ ...m, wealthVolume: m.wealthVolume.toFixed(2) }))
+      .map((m) => ({ ...m, wealthVolume: m.wealthVolume.toFixed(4) }))
       .sort((a, b) => b.redemptionCount - a.redemptionCount)
       .slice(0, limit);
   });
@@ -304,7 +304,7 @@ export async function getTopVouchers(
     });
 
     return Array.from(voucherStats.values())
-      .map((v) => ({ ...v, wealthVolume: v.wealthVolume.toFixed(2) }))
+      .map((v) => ({ ...v, wealthVolume: v.wealthVolume.toFixed(4) }))
       .sort((a, b) => b.redemptionCount - a.redemptionCount)
       .slice(0, limit);
   });
