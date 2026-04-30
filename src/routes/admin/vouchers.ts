@@ -406,4 +406,29 @@ adminVouchers.delete("/:id", async (c) => {
   }
 });
 
+// POST /api/admin/vouchers/recalculate-stock — Recalculate remainingStock for all vouchers
+adminVouchers.post("/recalculate-stock", requireOwner, async (c) => {
+  const vouchers = await prisma.voucher.findMany({
+    where: notDeleted,
+    select: { id: true, remainingStock: true },
+  });
+
+  let fixed = 0;
+  for (const v of vouchers) {
+    const availableCount = await prisma.redemptionSlot.count({
+      where: { voucherId: v.id, status: "available" },
+    });
+
+    if (v.remainingStock !== availableCount) {
+      await prisma.voucher.update({
+        where: { id: v.id },
+        data: { remainingStock: availableCount },
+      });
+      fixed++;
+    }
+  }
+
+  return c.json({ ok: true, total: vouchers.length, fixed });
+});
+
 export default adminVouchers;

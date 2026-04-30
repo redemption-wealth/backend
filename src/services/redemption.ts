@@ -163,28 +163,39 @@ export async function initiateRedemption({
 
 export async function confirmRedemption(txHash: string) {
   return prisma.$transaction(async (tx) => {
-    const redemption = await tx.redemption.findFirst({
-      where: { txHash, status: "pending" },
-    });
+    // Lock the redemption row to prevent double-confirmation race condition
+    const [redemption] = await tx.$queryRawUnsafe<
+      Array<{ id: string; user_id: string; voucher_id: string; wealth_amount: string; status: string }>
+    >(
+      `SELECT id, user_id, voucher_id, wealth_amount, status FROM redemptions WHERE tx_hash = $1 FOR UPDATE`,
+      txHash
+    );
 
-    if (!redemption) throw new Error("Redemption not found or already processed");
+    if (!redemption || redemption.status !== "pending") {
+      throw new Error("Redemption not found or already processed");
+    }
 
     const updated = await tx.redemption.update({
       where: { id: redemption.id },
       data: { status: "confirmed", confirmedAt: new Date() },
     });
 
+    // Recalculate remainingStock from actual available slots instead of blind decrement
+    const availableCount = await tx.redemptionSlot.count({
+      where: { voucherId: redemption.voucher_id, status: "available" },
+    });
+
     await tx.voucher.update({
-      where: { id: redemption.voucherId },
-      data: { remainingStock: { decrement: 1 } },
+      where: { id: redemption.voucher_id },
+      data: { remainingStock: availableCount },
     });
 
     await tx.transaction.create({
       data: {
-        userId: redemption.userId,
+        userId: redemption.user_id,
         redemptionId: redemption.id,
         type: "redeem",
-        amountWealth: redemption.wealthAmount,
+        amountWealth: new Prisma.Decimal(redemption.wealth_amount),
         txHash,
         status: "confirmed",
         confirmedAt: new Date(),
@@ -255,7 +266,7 @@ export async function failRedemption(txHash: string) {
   // Load QR records outside transaction so we have imageUrls for R2 cleanup
   const redemption = await prisma.redemption.findFirst({
     where: { txHash, status: "pending" },
-    include: { qrCodes: { select: { id: true, imageUrl: true } } },
+    include: { qrCodes: { select: { id: true, imageUrl: true, slotId: true } } },
   });
 
   if (!redemption) throw new Error("Redemption not found");
@@ -270,12 +281,33 @@ export async function failRedemption(txHash: string) {
     }
   }
 
-  // DB transaction: delete QR records + mark redemption as failed
+  // Collect unique slot IDs to restore
+  const slotIds = [...new Set(redemption.qrCodes.map((q) => q.slotId))];
+
+  // DB transaction: delete QR records, restore slot, recalculate stock, mark failed
   return prisma.$transaction(async (tx) => {
     const qrIds = redemption.qrCodes.map((q) => q.id);
     if (qrIds.length > 0) {
       await tx.qrCode.deleteMany({ where: { id: { in: qrIds } } });
     }
+
+    // Restore slot(s) back to available
+    if (slotIds.length > 0) {
+      await tx.redemptionSlot.updateMany({
+        where: { id: { in: slotIds }, status: "redeemed" },
+        data: { status: "available", redeemedAt: null },
+      });
+    }
+
+    // Recalculate remainingStock from actual available slots
+    const availableCount = await tx.redemptionSlot.count({
+      where: { voucherId: redemption.voucherId, status: "available" },
+    });
+
+    await tx.voucher.update({
+      where: { id: redemption.voucherId },
+      data: { remainingStock: availableCount },
+    });
 
     return tx.redemption.update({
       where: { id: redemption.id },
