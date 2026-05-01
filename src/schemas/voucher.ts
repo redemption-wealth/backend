@@ -24,7 +24,8 @@ export const updateVoucherSchema = z.object({
   expiryDate: z.string().or(z.date()).optional(),
   totalStock: z.number().int().positive().optional(),
   isActive: z.boolean().optional(),
-  // Note: basePrice, appFeeRate, gasFeeAmount, totalPrice, qrPerSlot are read-only after creation
+  // Note: basePrice, qrPerSlot are read-only after creation
+  // appFeeRate, gasFeeAmount, totalPrice are computed from live settings
 });
 
 export const redeemVoucherSchema = z.object({
