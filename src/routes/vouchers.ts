@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { prisma } from "../db.js";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { initiateRedemption } from "../services/redemption.js";
+import { getLiveFeeConfig, injectFeeFields } from "../services/pricing.js";
 import { redeemVoucherSchema, voucherQuerySchema } from "../schemas/voucher.js";
 
 const vouchers = new Hono<AuthEnv>();
@@ -43,7 +44,7 @@ vouchers.get("/", async (c) => {
     }),
   };
 
-  const [vouchersList, total] = await Promise.all([
+  const [vouchersList, total, feeConfig] = await Promise.all([
     prisma.voucher.findMany({
       where,
       include: { merchant: true },
@@ -52,10 +53,13 @@ vouchers.get("/", async (c) => {
       take: limit,
     }),
     prisma.voucher.count({ where }),
+    getLiveFeeConfig(),
   ]);
 
+  const { appFeeRate, gasFeeAmount } = feeConfig;
+
   return c.json({
-    vouchers: vouchersList,
+    vouchers: vouchersList.map((v) => injectFeeFields(v, appFeeRate, gasFeeAmount)),
     pagination: {
       page,
       limit,
@@ -78,7 +82,8 @@ vouchers.get("/:id", async (c) => {
     return c.json({ error: "Voucher not found" }, 404);
   }
 
-  return c.json({ voucher });
+  const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
+  return c.json({ voucher: injectFeeFields(voucher, appFeeRate, gasFeeAmount) });
 });
 
 // POST /api/vouchers/:id/redeem — User: redeem a voucher
