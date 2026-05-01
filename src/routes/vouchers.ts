@@ -25,14 +25,15 @@ vouchers.get("/", async (c) => {
 
   const { merchantId, category, search, page, limit } = query.data;
 
-  // Compare date-only: voucher is valid through the entire expiry day
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
+  // Start of today in WIB (UTC+7) so expiry comparison aligns with Indonesian dates
+  const nowWib = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
+  nowWib.setHours(0, 0, 0, 0);
+  const todayStartUtc = new Date(nowWib.getTime() - 7 * 60 * 60 * 1000);
 
   const where = {
     isActive: true,
     remainingStock: { gt: 0 },
-    expiryDate: { gte: todayStart },
+    expiryDate: { gte: todayStartUtc },
     ...(merchantId && { merchantId }),
     ...(category && {
       merchant: { category: category as never },

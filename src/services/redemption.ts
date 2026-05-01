@@ -66,9 +66,9 @@ export async function initiateRedemption({
       if (!voucher) throw new Error("Voucher not found");
       if (!voucher.is_active) throw new Error("Voucher is not active");
       if (voucher.remaining_stock <= 0) throw new Error("Voucher out of stock");
-      // Compare date-only: voucher is valid through the entire expiry day
+      // Voucher is valid through the entire expiry day in WIB (UTC+7)
       const expiryEnd = new Date(voucher.expiry_date);
-      expiryEnd.setUTCHours(23, 59, 59, 999);
+      expiryEnd.setUTCHours(16, 59, 59, 999); // 23:59:59 WIB = 16:59:59 UTC
       if (expiryEnd < new Date()) throw new Error("Voucher expired");
 
       const qrPerRedemption = voucher.qr_per_slot;

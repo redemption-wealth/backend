@@ -23,12 +23,32 @@ async function getCachedOrCalculate<T>(
   return result;
 }
 
+const WIB_TZ = "Asia/Jakarta";
+
+/** Get current time as WIB date parts */
+function nowWib() {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: WIB_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(new Date()).map((p) => [p.type, p.value])
+  );
+  return new Date(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+07:00`);
+}
+
 export function getDateRange(period: "daily" | "yearly" | "monthly"): {
   startDate: Date;
   endDate: Date;
   bucketCount: number;
 } {
-  const now = new Date();
+  const now = nowWib();
   const startDate = new Date(now);
 
   switch (period) {
@@ -46,14 +66,18 @@ export function getDateRange(period: "daily" | "yearly" | "monthly"): {
 
 export function formatDateLabel(date: Date, period: "daily" | "yearly" | "monthly"): string {
   switch (period) {
-    case "daily":
-      return date.toISOString().split("T")[0];
-    case "yearly":
-      return date.getFullYear().toString();
+    case "daily": {
+      // Format in WIB timezone to get correct local date
+      const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: WIB_TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+      return fmt.format(date);
+    }
+    case "yearly": {
+      const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: WIB_TZ, year: "numeric" });
+      return fmt.format(date);
+    }
     case "monthly": {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, "0");
-      return year + "-" + month;
+      const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: WIB_TZ, year: "numeric", month: "2-digit" });
+      return fmt.format(date);
     }
   }
 }
