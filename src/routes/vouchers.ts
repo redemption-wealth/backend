@@ -25,10 +25,14 @@ vouchers.get("/", async (c) => {
 
   const { merchantId, category, search, page, limit } = query.data;
 
+  // Compare date-only: voucher is valid through the entire expiry day
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+
   const where = {
     isActive: true,
     remainingStock: { gt: 0 },
-    expiryDate: { gte: new Date() },
+    expiryDate: { gte: todayStart },
     ...(merchantId && { merchantId }),
     ...(category && {
       merchant: { category: category as never },
