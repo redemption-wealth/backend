@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { prisma } from "../db.js";
 
 interface PricingInput {
   priceIdr: number;
@@ -38,7 +39,7 @@ export function calculatePricing(input: PricingInput): PricingResult {
 }
 
 /**
- * Calculate total voucher price with fee snapshot
+ * Calculate total voucher price from base price + fees
  * Formula: totalPrice = basePrice + (basePrice × appFeeRate / 100) + gasFeeAmount
  * Rounding: ROUND_HALF_UP to 2 decimal places
  */
@@ -56,4 +57,40 @@ export function calcTotalPrice(
 
   // Round to 2 decimal places using ROUND_HALF_UP
   return total.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+}
+
+/**
+ * Fetch live fee configuration from AppSettings + active FeeSetting
+ */
+export async function getLiveFeeConfig() {
+  const [settings, activeFee] = await Promise.all([
+    prisma.appSettings.findUnique({ where: { id: "singleton" } }),
+    prisma.feeSetting.findFirst({ where: { isActive: true } }),
+  ]);
+
+  const appFeeRate = settings?.appFeeRate
+    ? new Prisma.Decimal(settings.appFeeRate.toString())
+    : new Prisma.Decimal("3.00");
+
+  const gasFeeAmount = activeFee
+    ? new Prisma.Decimal(activeFee.amountIdr.toString())
+    : new Prisma.Decimal("0");
+
+  return { appFeeRate, gasFeeAmount };
+}
+
+/**
+ * Inject computed fee fields into a voucher object for API response
+ */
+export function injectFeeFields<T extends { basePrice: Prisma.Decimal }>(
+  voucher: T,
+  appFeeRate: Prisma.Decimal,
+  gasFeeAmount: Prisma.Decimal,
+): T & { appFeeRate: Prisma.Decimal; gasFeeAmount: Prisma.Decimal; totalPrice: Prisma.Decimal } {
+  const totalPrice = calcTotalPrice(
+    new Prisma.Decimal(voucher.basePrice.toString()),
+    appFeeRate,
+    gasFeeAmount,
+  );
+  return { ...voucher, appFeeRate, gasFeeAmount, totalPrice };
 }

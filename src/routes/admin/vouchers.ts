@@ -6,7 +6,7 @@ import {
   createVoucherSchema,
   updateVoucherSchema,
 } from "../../schemas/voucher.js";
-import { calcTotalPrice } from "../../services/pricing.js";
+import { getLiveFeeConfig, injectFeeFields } from "../../services/pricing.js";
 import { randomUUID } from "crypto";
 
 const adminVouchers = new Hono<AuthEnv>();
@@ -36,7 +36,7 @@ adminVouchers.get("/", async (c) => {
     }),
   };
 
-  const [vouchersList, total] = await Promise.all([
+  const [vouchersList, total, feeConfig] = await Promise.all([
     prisma.voucher.findMany({
       where,
       include: { merchant: true },
@@ -45,10 +45,13 @@ adminVouchers.get("/", async (c) => {
       take: limit,
     }),
     prisma.voucher.count({ where }),
+    getLiveFeeConfig(),
   ]);
 
+  const { appFeeRate, gasFeeAmount } = feeConfig;
+
   return c.json({
-    vouchers: vouchersList,
+    vouchers: vouchersList.map((v) => injectFeeFields(v, appFeeRate, gasFeeAmount)),
     pagination: {
       page,
       limit,
@@ -77,7 +80,8 @@ adminVouchers.get("/:id", async (c) => {
     return c.json({ error: "Access denied" }, 403);
   }
 
-  return c.json({ voucher });
+  const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
+  return c.json({ voucher: injectFeeFields(voucher, appFeeRate, gasFeeAmount) });
 });
 
 // POST /api/admin/vouchers — Create voucher with atomic slot + QR generation
@@ -100,31 +104,9 @@ adminVouchers.post("/", async (c) => {
   const { title, description, startDate, expiryDate, totalStock, basePrice, qrPerSlot } =
     parsed.data;
 
-  // 1. Fetch system config for app fee rate
-  const systemConfig = await prisma.appSettings.findUnique({
-    where: { id: "singleton" },
-  });
-  const appFeeRate = systemConfig?.appFeeRate
-    ? new Prisma.Decimal(systemConfig.appFeeRate.toString())
-    : new Prisma.Decimal("3.00");
-
-  // 2. Fetch active fee setting
-  const activeFee = await prisma.feeSetting.findFirst({
-    where: { isActive: true },
-  });
-  if (!activeFee) {
-    return c.json(
-      { error: "No active fee setting found", code: "NO_ACTIVE_FEE" },
-      422
-    );
-  }
-  const gasFeeAmount = new Prisma.Decimal(activeFee.amountIdr.toString());
-
-  // 3. Calculate total price
   const basePriceDecimal = new Prisma.Decimal(basePrice.toString());
-  const totalPrice = calcTotalPrice(basePriceDecimal, appFeeRate, gasFeeAmount);
 
-  // 4. Generate slots and QR data arrays
+  // Generate slots and QR data arrays
   const slots = Array.from({ length: totalStock }, (_, i) => ({
     id: randomUUID(),
     slotIndex: i + 1,
@@ -151,7 +133,7 @@ adminVouchers.post("/", async (c) => {
     }
   }
 
-  // 5. Atomic transaction: create voucher + slots + QR codes
+  // Atomic transaction: create voucher + slots + QR codes
   const result = await prisma.$transaction(async (tx) => {
     const voucher = await tx.voucher.create({
       data: {
@@ -163,9 +145,6 @@ adminVouchers.post("/", async (c) => {
         totalStock,
         remainingStock: totalStock,
         basePrice: basePriceDecimal,
-        appFeeRate,
-        gasFeeAmount,
-        totalPrice,
         qrPerSlot,
         createdBy: adminAuth.adminId,
       },
@@ -197,7 +176,11 @@ adminVouchers.post("/", async (c) => {
     };
   });
 
-  return c.json(result, 201);
+  const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
+  return c.json({
+    ...result,
+    voucher: injectFeeFields(result.voucher, appFeeRate, gasFeeAmount),
+  }, 201);
 });
 
 // PUT /api/admin/vouchers/:id — Update voucher with stock management
@@ -349,13 +332,15 @@ adminVouchers.put("/:id", async (c) => {
       return voucher;
     });
 
-    return c.json({ voucher: result });
+    const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
+    return c.json({ voucher: injectFeeFields(result, appFeeRate, gasFeeAmount) });
   }
 
   // No stock update, just update other fields
   try {
     const voucher = await prisma.voucher.update({ where: { id }, data });
-    return c.json({ voucher });
+    const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
+    return c.json({ voucher: injectFeeFields(voucher, appFeeRate, gasFeeAmount) });
   } catch {
     return c.json({ error: "Voucher not found" }, 404);
   }
