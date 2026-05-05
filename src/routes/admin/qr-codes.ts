@@ -35,10 +35,10 @@ adminQrCodes.post("/scan", requireAdminRole, qrScanLimiter, async (c) => {
     return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
-  const { id } = parsed.data;
+  const { token } = parsed.data;
 
   const qrCode = await prisma.qrCode.findUnique({
-    where: { id },
+    where: { token },
     include: {
       voucher: {
         select: {

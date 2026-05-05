@@ -213,6 +213,7 @@ model QrCode {
   voucherId    String
   voucher      Voucher        @relation(fields: [voucherId], references: [id], onDelete: Restrict)
   qrNumber     Int            @db.SmallInt
+  token        String         @unique
   imageUrl     String?
   imageHash    String         @unique
   status       QrStatus       @default(AVAILABLE)
