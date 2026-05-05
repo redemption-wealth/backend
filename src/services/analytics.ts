@@ -25,7 +25,6 @@ async function getCachedOrCalculate<T>(
 
 const WIB_TZ = "Asia/Jakarta";
 
-/** Get current time as WIB date parts */
 function nowWib() {
   const fmt = new Intl.DateTimeFormat("en-CA", {
     timeZone: WIB_TZ,
@@ -67,7 +66,6 @@ export function getDateRange(period: "daily" | "yearly" | "monthly"): {
 export function formatDateLabel(date: Date, period: "daily" | "yearly" | "monthly"): string {
   switch (period) {
     case "daily": {
-      // Format in WIB timezone to get correct local date
       const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: WIB_TZ, year: "numeric", month: "2-digit", day: "2-digit" });
       return fmt.format(date);
     }
@@ -88,7 +86,6 @@ export async function getSummaryStats(merchantId?: string): Promise<{
   totalRedemptions: number;
   confirmedRedemptions: number;
   totalWealthVolume: string;
-  totalUsers: number;
   avgWealthPerRedeem: string;
   totalValueIdr: number;
 }> {
@@ -105,7 +102,6 @@ export async function getSummaryStats(merchantId?: string): Promise<{
       totalRedemptions,
       confirmedRedemptions,
       wealthVolumeResult,
-      totalUsers,
       avgWealthResult,
       totalValueIdrResult,
     ] = await Promise.all([
@@ -114,18 +110,17 @@ export async function getSummaryStats(merchantId?: string): Promise<{
         : prisma.merchant.count({ where: { isActive: true } }),
       prisma.voucher.count({ where: { isActive: true, ...voucherWhere } }),
       prisma.redemption.count({ where: redemptionWhere }),
-      prisma.redemption.count({ where: { status: "confirmed", ...redemptionWhere } }),
+      prisma.redemption.count({ where: { status: "CONFIRMED", ...redemptionWhere } }),
       prisma.redemption.aggregate({
-        where: { status: "confirmed", ...redemptionWhere },
+        where: { status: "CONFIRMED", ...redemptionWhere },
         _sum: { wealthAmount: true },
       }),
-      merchantId ? Promise.resolve(0) : prisma.user.count(),
       prisma.redemption.aggregate({
-        where: { status: "confirmed", ...redemptionWhere },
+        where: { status: "CONFIRMED", ...redemptionWhere },
         _avg: { wealthAmount: true },
       }),
       prisma.redemption.aggregate({
-        where: { status: "confirmed", ...redemptionWhere },
+        where: { status: "CONFIRMED", ...redemptionWhere },
         _sum: { priceIdrAtRedeem: true },
       }),
     ]);
@@ -136,7 +131,6 @@ export async function getSummaryStats(merchantId?: string): Promise<{
       totalRedemptions,
       confirmedRedemptions,
       totalWealthVolume: wealthVolumeResult._sum.wealthAmount?.toString() || "0",
-      totalUsers,
       avgWealthPerRedeem: avgWealthResult._avg.wealthAmount?.toString() || "0",
       totalValueIdr: totalValueIdrResult._sum.priceIdrAtRedeem || 0,
     };
@@ -155,16 +149,16 @@ export async function getRedemptionsOverTime(
 
     const redemptions = await prisma.redemption.findMany({
       where: {
-        redeemedAt: { gte: startDate },
+        createdAt: { gte: startDate },
         ...(merchantId && { voucher: { merchantId } }),
       },
-      select: { redeemedAt: true },
-      orderBy: { redeemedAt: "asc" },
+      select: { createdAt: true },
+      orderBy: { createdAt: "asc" },
     });
 
     const grouped = new Map<string, number>();
     redemptions.forEach((r) => {
-      const p = formatDateLabel(r.redeemedAt, period);
+      const p = formatDateLabel(r.createdAt, period);
       grouped.set(p, (grouped.get(p) || 0) + 1);
     });
 
@@ -181,13 +175,12 @@ export async function getMerchantCategoryDistribution(merchantId?: string): Prom
   return getCachedOrCalculate(cacheKey, async () => {
     const merchants = await prisma.merchant.findMany({
       where: { isActive: true, ...(merchantId && { id: merchantId }) },
-      include: { category: true },
     });
 
     const total = merchants.length;
     const grouped = new Map<string, number>();
     merchants.forEach((m) => {
-      const catName = m.category.name;
+      const catName = m.category as string;
       grouped.set(catName, (grouped.get(catName) || 0) + 1);
     });
 
@@ -213,7 +206,7 @@ export async function getWealthVolumeOverTime(
 
     const redemptions = await prisma.redemption.findMany({
       where: {
-        status: "confirmed",
+        status: "CONFIRMED",
         confirmedAt: { gte: startDate },
         ...(merchantId && { voucher: { merchantId } }),
       },
@@ -252,7 +245,7 @@ export async function getTopMerchants(
   return getCachedOrCalculate(cacheKey, async () => {
     const redemptions = await prisma.redemption.findMany({
       where: {
-        status: "confirmed",
+        status: "CONFIRMED",
         ...(merchantId && { voucher: { merchantId } }),
       },
       include: { voucher: { include: { merchant: true } } },
@@ -302,7 +295,7 @@ export async function getTopVouchers(
   return getCachedOrCalculate(cacheKey, async () => {
     const redemptions = await prisma.redemption.findMany({
       where: {
-        status: "confirmed",
+        status: "CONFIRMED",
         ...(merchantId && { voucher: { merchantId } }),
       },
       include: { voucher: { include: { merchant: true } } },

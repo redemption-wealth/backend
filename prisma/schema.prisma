@@ -9,263 +9,251 @@ datasource db {
 // ─── Enums ──────────────────────────────────────────────────────────────────
 
 enum AdminRole {
-  owner
-  manager
-  admin
+  OWNER
+  MANAGER
+  ADMIN
 }
 
-enum QrStatus {
-  available
-  redeemed
-  used
+enum MerchantCategory {
+  kuliner
+  hiburan
+  event
+  kesehatan
+  lifestyle
+  lainnya
 }
 
 enum SlotStatus {
-  available
-  redeemed
-  fully_used
+  AVAILABLE
+  REDEEMED
+  FULLY_USED
 }
 
 enum RedemptionStatus {
-  pending
-  confirmed
-  failed
+  PENDING
+  CONFIRMED
+  FAILED
+  EXPIRED
 }
 
-enum TransactionType {
-  deposit
-  withdrawal
-  redeem
+enum QrStatus {
+  AVAILABLE
+  REDEEMED
+  USED
 }
 
-enum TransactionStatus {
-  pending
-  confirmed
-  failed
-}
-
-// ─── Models ─────────────────────────────────────────────────────────────────
+// ─── Better Auth managed tables ─────────────────────────────────────────────
+// Field names must match Better Auth's expected schema exactly.
 
 model User {
-  id            String   @id @default(uuid())
-  email         String   @unique
-  privyUserId   String   @unique @map("privy_user_id")
-  walletAddress String?  @map("wallet_address")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(true)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  redemptions  Redemption[]
-  transactions Transaction[]
-  assignedQrs  QrCode[]
+  sessions    Session[]
+  accounts    Account[]
+  admin       Admin?
+  setupTokens PasswordSetupToken[]
 
   @@map("users")
 }
 
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("accounts")
+}
+
+model Verification {
+  id         String    @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@map("verifications")
+}
+
+// ─── Custom tables ───────────────────────────────────────────────────────────
+
 model Admin {
-  id           String    @id @default(uuid())
-  email        String
-  passwordHash String?   @map("password_hash")
-  role         AdminRole @default(manager)
-  merchantId   String?   @map("merchant_id")
-  isActive     Boolean   @default(true) @map("is_active")
-  createdBy    String?   @map("created_by")
-  deletedAt    DateTime? @map("deleted_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        AdminRole
+  merchantId  String?
+  merchant    Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  createdMerchants   Merchant[]    @relation("MerchantCreator")
-  assignedMerchant   Merchant?     @relation("AdminMerchantAssignment", fields: [merchantId], references: [id], onDelete: SetNull)
-  scannedQrCodes     QrCode[]      @relation("QrCodeScanner")
-  creator            Admin?        @relation("AdminCreator", fields: [createdBy], references: [id], onDelete: SetNull)
-  createdAdmins      Admin[]       @relation("AdminCreator")
-  createdVouchers    Voucher[]     @relation("VoucherCreator")
-  appSettingsFeeUpdates AppSettings[] @relation("AppSettingsFeeUpdater")
+  scannedQrCodes QrCode[]
 
-  @@index([merchantId])
-  // Partial unique index in DB: CREATE UNIQUE INDEX admins_email_unique ON admins(email) WHERE deleted_at IS NULL
-  // Partial unique index in DB: CREATE UNIQUE INDEX admins_merchant_unique ON admins(merchant_id) WHERE merchant_id IS NOT NULL AND deleted_at IS NULL
   @@map("admins")
 }
 
+model PasswordSetupToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("password_setup_tokens")
+}
+
 model Merchant {
-  id          String    @id @default(uuid())
+  id          String           @id @default(cuid())
   name        String
-  logoUrl     String?   @map("logo_url")
-  description String?   @db.Text
-  categoryId  String    @map("category_id")
-  isActive    Boolean   @default(true) @map("is_active")
-  createdBy   String?   @map("created_by")
-  deletedAt   DateTime? @map("deleted_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  description String?
+  logoUrl     String?
+  category    MerchantCategory @default(lainnya)
+  isActive    Boolean          @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
 
-  creator        Admin?    @relation("MerchantCreator", fields: [createdBy], references: [id], onDelete: SetNull)
-  category       Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  vouchers       Voucher[]
-  assignedAdmins Admin[]   @relation("AdminMerchantAssignment")
+  vouchers    Voucher[]
+  admins      Admin[]
+  redemptions Redemption[]
 
-  @@index([categoryId])
   @@map("merchants")
 }
 
-model Voucher {
-  id             String    @id @default(uuid())
-  merchantId     String    @map("merchant_id")
-  title          String
-  description    String?   @db.Text
-  startDate      DateTime  @map("start_date") @db.Date
-  expiryDate     DateTime  @map("expiry_date") @db.Date
-  totalStock     Int       @map("total_stock")
-  remainingStock Int       @map("remaining_stock")
-  basePrice      Decimal   @map("base_price") @db.Decimal(15, 2)
-  qrPerSlot      Int       @default(1) @map("qr_per_slot")
-  isActive       Boolean   @default(true) @map("is_active")
-  createdBy      String?   @map("created_by")
-  deletedAt      DateTime? @map("deleted_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-
-  merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Restrict)
-  creator          Admin?            @relation("VoucherCreator", fields: [createdBy], references: [id], onDelete: SetNull)
-  qrCodes          QrCode[]
-  redemptions      Redemption[]
-  redemptionSlots  RedemptionSlot[]
-
-  @@index([merchantId])
-  @@map("vouchers")
-}
-
-model RedemptionSlot {
-  id         String     @id @default(uuid())
-  voucherId  String     @map("voucher_id")
-  slotIndex  Int        @map("slot_index")
-  status     SlotStatus @default(available)
-  redeemedAt DateTime?  @map("redeemed_at")
-  createdAt  DateTime   @default(now()) @map("created_at")
-  updatedAt  DateTime   @updatedAt @map("updated_at")
-
-  voucher Voucher  @relation(fields: [voucherId], references: [id], onDelete: Restrict)
-  qrCodes QrCode[]
-
-  @@unique([voucherId, slotIndex])
-  @@index([voucherId, status])
-  @@map("redemption_slots")
-}
-
-model QrCode {
-  id               String    @id @default(uuid())
-  voucherId        String    @map("voucher_id")
-  slotId           String    @map("slot_id")
-  qrNumber         Int       @map("qr_number") @db.SmallInt
-  redemptionId     String?   @map("redemption_id")
-  // TODO: deprecate after Phase 2 - kept for current scan endpoint compatibility
-  imageUrl         String    @map("image_url")
-  imageHash        String    @unique @map("image_hash")
-  token            String?   @unique @map("token")
-  status           QrStatus  @default(available)
-  assignedToUserId String?   @map("assigned_to_user_id")
-  assignedAt       DateTime? @map("assigned_at")
-  redeemedAt       DateTime? @map("redeemed_at")
-  usedAt           DateTime? @map("used_at")
-  scannedByAdminId String?   @map("scanned_by_admin_id")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
-
-  voucher      Voucher          @relation(fields: [voucherId], references: [id], onDelete: Restrict)
-  slot         RedemptionSlot   @relation(fields: [slotId], references: [id], onDelete: Restrict)
-  assignedTo   User?            @relation(fields: [assignedToUserId], references: [id], onDelete: SetNull)
-  redemption   Redemption?      @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
-  scannedBy    Admin?           @relation("QrCodeScanner", fields: [scannedByAdminId], references: [id], onDelete: SetNull)
-
-  @@unique([slotId, qrNumber])
-  @@index([slotId])
-  @@index([voucherId, status])
-  @@index([assignedToUserId])
-  @@index([redemptionId])
-  @@map("qr_codes")
-}
-
-model Redemption {
-  id                     String           @id @default(uuid())
-  userId                 String           @map("user_id")
-  voucherId              String           @map("voucher_id")
-  wealthAmount           Decimal          @map("wealth_amount") @db.Decimal(36, 18)
-  priceIdrAtRedeem       Int              @map("price_idr_at_redeem")
-  wealthPriceIdrAtRedeem Decimal          @map("wealth_price_idr_at_redeem") @db.Decimal(18, 4)
-  appFeeAmount           Decimal          @map("app_fee_amount") @db.Decimal(36, 18)
-  gasFeeAmount           Decimal          @default(0) @map("gas_fee_amount") @db.Decimal(36, 18)
-  txHash                 String?          @unique @map("tx_hash")
-  idempotencyKey         String           @unique @map("idempotency_key")
-  status                 RedemptionStatus @default(pending)
-  redeemedAt             DateTime         @default(now()) @map("redeemed_at")
-  confirmedAt            DateTime?        @map("confirmed_at")
-  createdAt              DateTime         @default(now()) @map("created_at")
-
-  user        User         @relation(fields: [userId], references: [id], onDelete: Restrict)
-  voucher     Voucher      @relation(fields: [voucherId], references: [id], onDelete: Restrict)
-  qrCodes     QrCode[]
-  transaction Transaction?
-
-  @@index([userId, status])
-  @@index([voucherId])
-  @@map("redemptions")
-}
-
-model Transaction {
-  id           String            @id @default(uuid())
-  userId       String            @map("user_id")
-  redemptionId String?           @unique @map("redemption_id")
-  type         TransactionType
-  amountWealth Decimal           @map("amount_wealth") @db.Decimal(36, 18)
-  txHash       String?           @unique @map("tx_hash")
-  status       TransactionStatus @default(pending)
-  createdAt    DateTime          @default(now()) @map("created_at")
-  confirmedAt  DateTime?         @map("confirmed_at")
-
-  user       User        @relation(fields: [userId], references: [id], onDelete: Restrict)
-  redemption Redemption? @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
-
-  @@index([userId])
-  @@index([type])
-  @@index([createdAt])
-  @@map("transactions")
-}
-
 model AppSettings {
-  id                   String    @id @default("singleton")
-  appFeeRate           Decimal   @default(3) @map("app_fee_rate") @db.Decimal(5, 2)
-  wealthContractAddress String?  @map("wealth_contract_address")
-  devWalletAddress     String?   @map("dev_wallet_address")
-  alchemyRpcUrl        String?   @map("alchemy_rpc_url")
-  coingeckoApiKey      String?   @map("coingecko_api_key")
-  appFeeUpdatedBy      String?   @map("app_fee_updated_by")
-  appFeeUpdatedAt      DateTime? @map("app_fee_updated_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
-
-  feeUpdater Admin? @relation("AppSettingsFeeUpdater", fields: [appFeeUpdatedBy], references: [id], onDelete: SetNull)
+  id           String   @id @default("singleton")
+  appFeeRate   Decimal  @default(3.00) @db.Decimal(5, 2)
+  gasFeeAmount Decimal  @default(0)    @db.Decimal(15, 2)
+  updatedAt    DateTime @updatedAt
 
   @@map("app_settings")
 }
 
-model FeeSetting {
-  id        String   @id @default(uuid())
-  label     String
-  amountIdr Decimal  @map("amount_idr") @db.Decimal(15, 2)
-  isActive  Boolean  @default(false) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+model Voucher {
+  id             String           @id @default(cuid())
+  merchantId     String
+  merchant       Merchant         @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  title          String
+  description    String?
+  basePrice      Decimal          @db.Decimal(15, 2)
+  totalStock     Int
+  remainingStock Int
+  qrPerSlot      Int              @default(1)
+  appFeeSnapshot Decimal          @db.Decimal(5, 2)
+  gasFeeSnapshot Decimal          @db.Decimal(15, 2)
+  startDate      DateTime         @db.Date
+  expiryDate     DateTime         @db.Date
+  isActive       Boolean          @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
-  @@map("fee_settings")
+  slots       RedemptionSlot[]
+  qrCodes     QrCode[]
+  redemptions Redemption[]
+
+  @@map("vouchers")
 }
 
-model Category {
-  id        String   @id @default(uuid())
-  name      String   @unique
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+model RedemptionSlot {
+  id        String     @id @default(cuid())
+  voucherId String
+  voucher   Voucher    @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  slotIndex Int
+  status    SlotStatus @default(AVAILABLE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 
-  merchants Merchant[]
+  qrCodes    QrCode[]
+  redemption Redemption?
 
-  @@map("categories")
+  @@unique([voucherId, slotIndex])
+  @@map("redemption_slots")
+}
+
+model QrCode {
+  id           String         @id @default(cuid())
+  slotId       String
+  slot         RedemptionSlot @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  voucherId    String
+  voucher      Voucher        @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  qrNumber     Int            @db.SmallInt
+  imageUrl     String?
+  imageHash    String         @unique
+  status       QrStatus       @default(AVAILABLE)
+  redemptionId String?
+  redemption   Redemption?    @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
+  scannedById  String?
+  scannedBy    Admin?         @relation(fields: [scannedById], references: [id], onDelete: SetNull)
+  usedAt       DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@unique([slotId, qrNumber])
+  @@index([voucherId, status])
+  @@map("qr_codes")
+}
+
+model Redemption {
+  id                     String           @id @default(cuid())
+  userEmail              String
+  voucherId              String
+  voucher                Voucher          @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  merchantId             String
+  merchant               Merchant         @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  slotId                 String           @unique
+  slot                   RedemptionSlot   @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  wealthAmount           Decimal          @db.Decimal(36, 18)
+  priceIdrAtRedeem       Int
+  wealthPriceIdrAtRedeem Decimal          @db.Decimal(18, 4)
+  appFeeAmount           Decimal          @db.Decimal(36, 18)
+  gasFeeAmount           Decimal          @db.Decimal(36, 18)
+  txHash                 String?          @unique
+  idempotencyKey         String           @unique
+  status                 RedemptionStatus @default(PENDING)
+  confirmedAt            DateTime?
+  failedAt               DateTime?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+
+  qrCodes QrCode[]
+
+  @@index([userEmail, status])
+  @@index([voucherId])
+  @@map("redemptions")
 }
