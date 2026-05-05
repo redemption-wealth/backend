@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
-import { requireManagerOrAdmin, type AuthEnv } from "../../middleware/auth.js";
+import { requireAdminRole, requireManagerOrAdmin, type AuthEnv } from "../../middleware/auth.js";
 import { qrScanLimiter } from "../../middleware/rate-limit.js";
 import { createQrCodeSchema, scanQrSchema } from "../../schemas/qr-code.js";
 
@@ -26,7 +26,7 @@ adminQrCodes.get("/counts", requireManagerOrAdmin, async (c) => {
 });
 
 // POST /api/admin/qr-codes/scan — Scan a QR code with slot completion logic
-adminQrCodes.post("/scan", qrScanLimiter, async (c) => {
+adminQrCodes.post("/scan", requireAdminRole, qrScanLimiter, async (c) => {
   const adminAuth = c.get("adminAuth");
   const body = await c.req.json();
 

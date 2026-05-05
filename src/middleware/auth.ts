@@ -131,6 +131,15 @@ export const requireManager = createMiddleware<AuthEnv>(async (c, next) => {
   await next();
 });
 
+// Admin role only (merchant-level staff who scan QR codes)
+export const requireAdminRole = createMiddleware<AuthEnv>(async (c, next) => {
+  const admin = c.get("adminAuth");
+  if (!admin || admin.role !== "ADMIN") {
+    throw new HTTPException(403, { message: "Admin access required" });
+  }
+  await next();
+});
+
 // Manager OR Admin (for endpoints accessible to both operational roles)
 export const requireManagerOrAdmin = createMiddleware<AuthEnv>(async (c, next) => {
   const admin = c.get("adminAuth");
