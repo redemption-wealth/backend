@@ -30,7 +30,6 @@ export const updateVoucherSchema = z.object({
 
 export const redeemVoucherSchema = z.object({
   idempotencyKey: z.string().uuid(),
-  wealthPriceIdr: z.number().positive(),
 });
 
 export const voucherQuerySchema = paginationSchema.extend({
