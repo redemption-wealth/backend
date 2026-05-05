@@ -1,10 +1,29 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
-import type { AuthEnv } from "../../middleware/auth.js";
+import { requireManagerOrAdmin, type AuthEnv } from "../../middleware/auth.js";
 import { qrScanLimiter } from "../../middleware/rate-limit.js";
 import { createQrCodeSchema, scanQrSchema } from "../../schemas/qr-code.js";
 
 const adminQrCodes = new Hono<AuthEnv>();
+
+// GET /api/admin/qr-codes/counts — Count QR codes by status (manager: all; admin: scoped to merchant)
+// Must be registered before any /:id handler
+adminQrCodes.get("/counts", requireManagerOrAdmin, async (c) => {
+  const adminAuth = c.get("adminAuth");
+
+  const merchantFilter =
+    adminAuth.role === "ADMIN" && adminAuth.merchantId
+      ? { voucher: { merchantId: adminAuth.merchantId } }
+      : {};
+
+  const [available, redeemed, used] = await Promise.all([
+    prisma.qrCode.count({ where: { status: "AVAILABLE", ...merchantFilter } }),
+    prisma.qrCode.count({ where: { status: "REDEEMED", ...merchantFilter } }),
+    prisma.qrCode.count({ where: { status: "USED", ...merchantFilter } }),
+  ]);
+
+  return c.json({ available, redeemed, used });
+});
 
 // POST /api/admin/qr-codes/scan — Scan a QR code with slot completion logic
 adminQrCodes.post("/scan", qrScanLimiter, async (c) => {
@@ -16,11 +35,10 @@ adminQrCodes.post("/scan", qrScanLimiter, async (c) => {
     return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
-  const { id, token } = parsed.data;
+  const { id } = parsed.data;
 
-  // Find QR by id (primary) or token (fallback for legacy)
   const qrCode = await prisma.qrCode.findUnique({
-    where: id ? { id } : { token },
+    where: { id },
     include: {
       voucher: {
         select: {
@@ -38,53 +56,48 @@ adminQrCodes.post("/scan", qrScanLimiter, async (c) => {
   }
 
   // Admin role: enforce merchant ownership
-  if (adminAuth.role === "admin" && qrCode.voucher.merchantId !== adminAuth.merchantId) {
+  if (adminAuth.role === "ADMIN" && qrCode.voucher.merchantId !== adminAuth.merchantId) {
     return c.json({ error: "WRONG_MERCHANT" }, 403);
   }
 
   // Status checks
-  if (qrCode.status === "available") {
+  if (qrCode.status === "AVAILABLE") {
     return c.json({ error: "QR_NOT_REDEEMED", code: "QR_NOT_REDEEMED" }, 422);
   }
-  if (qrCode.status === "used") {
+  if (qrCode.status === "USED") {
     return c.json({ error: "ALREADY_USED", code: "QR_ALREADY_USED" }, 409);
   }
-  if (qrCode.status !== "redeemed") {
+  if (qrCode.status !== "REDEEMED") {
     return c.json({ error: "Invalid QR status" }, 422);
   }
 
-  // Atomic transaction: mark QR as used, check slot completion, update voucher
+  // Atomic transaction: mark QR as used, check slot completion
   const result = await prisma.$transaction(async (tx) => {
-    // 1. Mark QR as used
     await tx.qrCode.update({
       where: { id: qrCode.id },
       data: {
-        status: "used",
+        status: "USED",
         usedAt: new Date(),
-        scannedByAdminId: adminAuth.adminId,
+        scannedById: adminAuth.adminId,
       },
     });
 
-    // 2. Check if all QRs in this slot are now used
     const unusedCount = await tx.qrCode.count({
       where: {
         slotId: qrCode.slotId,
-        status: { not: "used" },
+        status: { not: "USED" },
       },
     });
 
-    // 3. If slot is complete, mark it as fully_used and decrement remaining_stock
     if (unusedCount === 0) {
       await tx.redemptionSlot.update({
         where: { id: qrCode.slotId },
-        data: { status: "fully_used" },
+        data: { status: "FULLY_USED" },
       });
 
       await tx.voucher.update({
         where: { id: qrCode.voucherId },
-        data: {
-          remainingStock: { decrement: 1 },
-        },
+        data: { remainingStock: { decrement: 1 } },
       });
     }
 
@@ -102,7 +115,7 @@ adminQrCodes.post("/scan", qrScanLimiter, async (c) => {
   });
 });
 
-// GET /api/admin/qr-codes — List QR codes (merchant-scoped for admin role)
+// GET /api/admin/qr-codes — List QR codes (merchant-scoped for ADMIN role)
 adminQrCodes.get("/", async (c) => {
   const adminAuth = c.get("adminAuth");
   const voucherId = c.req.query("voucherId");
@@ -113,7 +126,7 @@ adminQrCodes.get("/", async (c) => {
   const where = {
     ...(voucherId && { voucherId }),
     ...(status && { status: status as never }),
-    ...(adminAuth.role === "admin" && adminAuth.merchantId && {
+    ...(adminAuth.role === "ADMIN" && adminAuth.merchantId && {
       voucher: { merchantId: adminAuth.merchantId },
     }),
   };
@@ -122,10 +135,8 @@ adminQrCodes.get("/", async (c) => {
     prisma.qrCode.findMany({
       where,
       include: {
-        voucher: {
-          select: { title: true, merchant: { select: { name: true } } },
-        },
-        assignedTo: { select: { email: true } },
+        voucher: { select: { title: true, merchant: { select: { name: true } } } },
+        scannedBy: { select: { user: { select: { email: true } } } },
       },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
@@ -136,12 +147,7 @@ adminQrCodes.get("/", async (c) => {
 
   return c.json({
     qrCodes,
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 });
 
@@ -151,16 +157,11 @@ adminQrCodes.post("/", async (c) => {
 
   const parsed = createQrCodeSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      400
-    );
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
   try {
-    const qrCode = await prisma.qrCode.create({
-      data: parsed.data,
-    });
+    const qrCode = await prisma.qrCode.create({ data: parsed.data });
     return c.json({ qrCode }, 201);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
