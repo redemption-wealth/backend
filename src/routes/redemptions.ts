@@ -9,7 +9,7 @@ const redemptions = new Hono<AuthEnv>();
 const QR_BUCKET = process.env.R2_QR_BUCKET_NAME || "wealth-qr-codes";
 const QR_SIGNED_URL_TTL_SEC = 3600;
 
-type QrCodeWithUrl = { imageUrl: string; [key: string]: unknown };
+type QrCodeWithUrl = { imageUrl: string | null; [key: string]: unknown };
 
 async function withSignedQrUrls<T extends { qrCodes?: QrCodeWithUrl[] | null }>(
   redemption: T,
@@ -42,7 +42,7 @@ redemptions.get("/", requireUser, async (c) => {
   const status = c.req.query("status");
 
   const where = {
-    userId: user.userId,
+    userEmail: user.userEmail,
     ...(status && { status: status as never }),
   };
 
@@ -62,12 +62,7 @@ redemptions.get("/", requireUser, async (c) => {
 
   return c.json({
     redemptions: redemptionsList,
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 });
 
@@ -77,30 +72,30 @@ redemptions.get("/:id", requireUser, async (c) => {
   const user = c.get("userAuth");
 
   const existing = await prisma.redemption.findFirst({
-    where: { id, userId: user.userId },
-    select: { id: true, status: true, txHash: true },
+    where: { id, userEmail: user.userEmail },
+    select: { id: true, status: true, txHash: true, createdAt: true },
   });
 
   if (!existing) {
     return c.json({ error: "Redemption not found" }, 404);
   }
 
-  // Auto-reconcile if we have a tx hash but are still pending.
-  // Lets the QR flip to "confirmed" without waiting for the Alchemy webhook.
-  if (existing.status === "pending" && existing.txHash) {
-    try {
-      await reconcileRedemptionById(existing.id);
-    } catch (err) {
-      console.error("[GET /redemptions/:id] auto-reconcile failed:", err);
+  if (existing.status === "PENDING" && existing.txHash) {
+    const ageMs = Date.now() - existing.createdAt.getTime();
+    if (ageMs > 30_000) {
+      try {
+        await reconcileRedemptionById(existing.id);
+      } catch (err) {
+        console.error("[GET /redemptions/:id] auto-reconcile failed:", err);
+      }
     }
   }
 
   const redemption = await prisma.redemption.findFirst({
-    where: { id, userId: user.userId },
+    where: { id, userEmail: user.userEmail },
     include: {
       voucher: { include: { merchant: true } },
       qrCodes: true,
-      transaction: true,
     },
   });
 
@@ -113,7 +108,7 @@ redemptions.post("/:id/reconcile", requireUser, async (c) => {
   const user = c.get("userAuth");
 
   const owned = await prisma.redemption.findFirst({
-    where: { id, userId: user.userId },
+    where: { id, userEmail: user.userEmail },
     select: { id: true },
   });
   if (!owned) {
@@ -129,11 +124,10 @@ redemptions.post("/:id/reconcile", requireUser, async (c) => {
   }
 
   const redemption = await prisma.redemption.findFirst({
-    where: { id, userId: user.userId },
+    where: { id, userEmail: user.userEmail },
     include: {
       voucher: { include: { merchant: true } },
       qrCodes: true,
-      transaction: true,
     },
   });
 
@@ -153,27 +147,23 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
     return c.json({ error: "txHash is required" }, 400);
   }
 
-  // Validate txHash format (0x-prefixed hex, 66 chars)
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     return c.json({ error: "Invalid txHash format" }, 400);
   }
 
   const redemption = await prisma.redemption.findFirst({
-    where: { id, userId: user.userId },
+    where: { id, userEmail: user.userEmail },
   });
 
   if (!redemption) {
     return c.json({ error: "Redemption not found" }, 404);
   }
 
-  if (redemption.status !== "pending") {
+  if (redemption.status !== "PENDING") {
     return c.json({ error: "Redemption is not pending" }, 400);
   }
 
-  // Check txHash uniqueness
-  const existingTx = await prisma.redemption.findUnique({
-    where: { txHash },
-  });
+  const existingTx = await prisma.redemption.findUnique({ where: { txHash } });
   if (existingTx) {
     return c.json({ error: "txHash already used" }, 400);
   }
