@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db.js";
-import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import { requireOwner, requireManagerOrAdmin, type AuthEnv } from "../../middleware/auth.js";
 import {
   createVoucherSchema,
   updateVoucherSchema,
@@ -11,10 +11,9 @@ import { randomUUID } from "crypto";
 
 const adminVouchers = new Hono<AuthEnv>();
 
-// Soft delete helper
 const notDeleted = { deletedAt: null };
 
-// GET /api/admin/vouchers — List vouchers (merchant-scoped for admin role)
+// GET /api/admin/vouchers — List vouchers (merchant-scoped for ADMIN role)
 adminVouchers.get("/", async (c) => {
   const adminAuth = c.get("adminAuth");
   const merchantIdQuery = c.req.query("merchantId");
@@ -22,18 +21,15 @@ adminVouchers.get("/", async (c) => {
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "20");
 
-  // Admin role sees only their merchant's vouchers
   const merchantIdFilter =
-    adminAuth.role === "admin"
+    adminAuth.role === "ADMIN"
       ? adminAuth.merchantId
       : merchantIdQuery || undefined;
 
   const where = {
     ...notDeleted,
     ...(merchantIdFilter && { merchantId: merchantIdFilter }),
-    ...(search && {
-      title: { contains: search, mode: "insensitive" as const },
-    }),
+    ...(search && { title: { contains: search, mode: "insensitive" as const } }),
   };
 
   const [vouchersList, total, feeConfig] = await Promise.all([
@@ -52,12 +48,7 @@ adminVouchers.get("/", async (c) => {
 
   return c.json({
     vouchers: vouchersList.map((v) => injectFeeFields(v, appFeeRate, gasFeeAmount)),
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 });
 
@@ -75,8 +66,7 @@ adminVouchers.get("/:id", async (c) => {
     return c.json({ error: "Voucher not found" }, 404);
   }
 
-  // Admin role: enforce merchant ownership
-  if (adminAuth.role === "admin" && voucher.merchantId !== adminAuth.merchantId) {
+  if (adminAuth.role === "ADMIN" && voucher.merchantId !== adminAuth.merchantId) {
     return c.json({ error: "Access denied" }, 403);
   }
 
@@ -91,22 +81,19 @@ adminVouchers.post("/", async (c) => {
 
   const parsed = createVoucherSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      400
-    );
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
-  // Admin role: force merchantId to their own merchant
   const merchantId =
-    adminAuth.role === "admin" ? adminAuth.merchantId! : parsed.data.merchantId;
+    adminAuth.role === "ADMIN" ? adminAuth.merchantId! : parsed.data.merchantId;
 
   const { title, description, startDate, expiryDate, totalStock, basePrice, qrPerSlot } =
     parsed.data;
 
   const basePriceDecimal = new Prisma.Decimal(basePrice.toString());
 
-  // Generate slots and QR data arrays
+  const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
+
   const slots = Array.from({ length: totalStock }, (_, i) => ({
     id: randomUUID(),
     slotIndex: i + 1,
@@ -127,13 +114,12 @@ adminVouchers.post("/", async (c) => {
         id: qrId,
         slotId: slot.id,
         qrNumber: qrNum,
-        imageUrl: `https://placeholder.qr/${qrId}`, // TODO: generate actual QR images
-        imageHash: `hash_${qrId}`, // TODO: generate actual hash
+        imageUrl: `https://placeholder.qr/${qrId}`,
+        imageHash: `hash_${qrId}`,
       });
     }
   }
 
-  // Atomic transaction: create voucher + slots + QR codes
   const result = await prisma.$transaction(async (tx) => {
     const voucher = await tx.voucher.create({
       data: {
@@ -146,7 +132,8 @@ adminVouchers.post("/", async (c) => {
         remainingStock: totalStock,
         basePrice: basePriceDecimal,
         qrPerSlot,
-        createdBy: adminAuth.adminId,
+        appFeeSnapshot: appFeeRate,
+        gasFeeSnapshot: gasFeeAmount,
       },
     });
 
@@ -169,14 +156,9 @@ adminVouchers.post("/", async (c) => {
       })),
     });
 
-    return {
-      voucher,
-      slotsCreated: slots.length,
-      qrCodesCreated: qrCodes.length,
-    };
+    return { voucher, slotsCreated: slots.length, qrCodesCreated: qrCodes.length };
   });
 
-  const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
   return c.json({
     ...result,
     voucher: injectFeeFields(result.voucher, appFeeRate, gasFeeAmount),
@@ -189,7 +171,6 @@ adminVouchers.put("/:id", async (c) => {
   const adminAuth = c.get("adminAuth");
   const body = await c.req.json();
 
-  // Admin role: check ownership before update
   const existing = await prisma.voucher.findUnique({
     where: { id },
     select: { merchantId: true, totalStock: true, qrPerSlot: true, deletedAt: true },
@@ -199,63 +180,45 @@ adminVouchers.put("/:id", async (c) => {
     return c.json({ error: "Voucher not found" }, 404);
   }
 
-  if (adminAuth.role === "admin" && existing.merchantId !== adminAuth.merchantId) {
+  if (adminAuth.role === "ADMIN" && existing.merchantId !== adminAuth.merchantId) {
     return c.json({ error: "Access denied" }, 403);
   }
 
   const parsed = updateVoucherSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      400
-    );
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
   const data = { ...parsed.data } as Record<string, unknown>;
   if (data.startDate) data.startDate = new Date(data.startDate as string);
   if (data.expiryDate) data.expiryDate = new Date(data.expiryDate as string);
 
-  // Handle totalStock updates with floor constraint and slot management
   const newTotalStock = parsed.data.totalStock;
 
   if (newTotalStock !== undefined && newTotalStock !== existing.totalStock) {
     const floor = await prisma.redemptionSlot.count({
       where: {
         voucherId: id,
-        status: { in: ["redeemed", "fully_used"] },
+        status: { in: ["REDEEMED", "FULLY_USED"] },
       },
     });
 
     if (newTotalStock < floor) {
       return c.json(
-        {
-          error: "Cannot reduce stock below floor",
-          code: "BELOW_FLOOR",
-          floor,
-          requested: newTotalStock
-        },
+        { error: "Cannot reduce stock below floor", code: "BELOW_FLOOR", floor, requested: newTotalStock },
         422
       );
     }
 
-    // Perform stock update in transaction
     const result = await prisma.$transaction(async (tx) => {
       if (newTotalStock > existing.totalStock) {
-        // Increasing stock: generate new slots and QR codes
         const newSlots = Array.from(
           { length: newTotalStock - existing.totalStock },
-          (_, i) => ({
-            id: randomUUID(),
-            slotIndex: existing.totalStock + i + 1,
-          })
+          (_, i) => ({ id: randomUUID(), slotIndex: existing.totalStock + i + 1 })
         );
 
         const newQrCodes: Array<{
-          id: string;
-          slotId: string;
-          qrNumber: number;
-          imageUrl: string;
-          imageHash: string;
+          id: string; slotId: string; qrNumber: number; imageUrl: string; imageHash: string;
         }> = [];
 
         for (const slot of newSlots) {
@@ -272,71 +235,41 @@ adminVouchers.put("/:id", async (c) => {
         }
 
         await tx.redemptionSlot.createMany({
-          data: newSlots.map((slot) => ({
-            id: slot.id,
-            voucherId: id,
-            slotIndex: slot.slotIndex,
-          })),
+          data: newSlots.map((slot) => ({ id: slot.id, voucherId: id, slotIndex: slot.slotIndex })),
         });
 
         await tx.qrCode.createMany({
           data: newQrCodes.map((qr) => ({
-            id: qr.id,
-            voucherId: id,
-            slotId: qr.slotId,
-            qrNumber: qr.qrNumber,
-            imageUrl: qr.imageUrl,
-            imageHash: qr.imageHash,
+            id: qr.id, voucherId: id, slotId: qr.slotId, qrNumber: qr.qrNumber,
+            imageUrl: qr.imageUrl, imageHash: qr.imageHash,
           })),
         });
       } else if (newTotalStock < existing.totalStock) {
-        // Decreasing stock: delete available slots from the end
         const slotsToDelete = await tx.redemptionSlot.findMany({
-          where: {
-            voucherId: id,
-            status: "available",
-            slotIndex: { gt: newTotalStock },
-          },
+          where: { voucherId: id, status: "AVAILABLE", slotIndex: { gt: newTotalStock } },
           select: { id: true },
           orderBy: { slotIndex: "desc" },
         });
 
         const slotIds = slotsToDelete.map((s) => s.id);
-
-        // Delete QR codes for these slots
-        await tx.qrCode.deleteMany({
-          where: { slotId: { in: slotIds } },
-        });
-
-        // Delete the slots
-        await tx.redemptionSlot.deleteMany({
-          where: { id: { in: slotIds } },
-        });
+        await tx.qrCode.deleteMany({ where: { slotId: { in: slotIds } } });
+        await tx.redemptionSlot.deleteMany({ where: { id: { in: slotIds } } });
       }
 
-      // Recalculate remainingStock
       const availableCount = await tx.redemptionSlot.count({
-        where: { voucherId: id, status: "available" },
+        where: { voucherId: id, status: "AVAILABLE" },
       });
 
-      // Update voucher with new data
-      const voucher = await tx.voucher.update({
+      return tx.voucher.update({
         where: { id },
-        data: {
-          ...data,
-          totalStock: newTotalStock,
-          remainingStock: availableCount,
-        },
+        data: { ...data, totalStock: newTotalStock, remainingStock: availableCount },
       });
-
-      return voucher;
     });
 
     const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
     return c.json({ voucher: injectFeeFields(result, appFeeRate, gasFeeAmount) });
   }
 
-  // No stock update, just update other fields
   try {
     const voucher = await prisma.voucher.update({ where: { id }, data });
     const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
@@ -346,7 +279,28 @@ adminVouchers.put("/:id", async (c) => {
   }
 });
 
-// DELETE /api/admin/vouchers/:id — Soft delete voucher (manager + admin scoped)
+// POST /api/admin/vouchers/:id/toggle-active — Toggle voucher active status (manager/admin scoped)
+adminVouchers.post("/:id/toggle-active", requireManagerOrAdmin, async (c) => {
+  const id = c.req.param("id");
+  const adminAuth = c.get("adminAuth");
+
+  const voucher = await prisma.voucher.findFirst({
+    where: { id, deletedAt: null },
+  });
+  if (!voucher) return c.json({ error: "Voucher not found" }, 404);
+
+  if (adminAuth.role === "ADMIN" && voucher.merchantId !== adminAuth.merchantId) {
+    return c.json({ error: "Access denied" }, 403);
+  }
+
+  const updated = await prisma.voucher.update({
+    where: { id },
+    data: { isActive: !voucher.isActive },
+  });
+  return c.json({ voucher: updated });
+});
+
+// DELETE /api/admin/vouchers/:id — Soft delete
 adminVouchers.delete("/:id", async (c) => {
   const id = c.req.param("id");
   const adminAuth = c.get("adminAuth");
@@ -360,17 +314,12 @@ adminVouchers.delete("/:id", async (c) => {
     return c.json({ error: "Voucher not found" }, 404);
   }
 
-  // Permission check: manager can always delete, admin must own merchant
-  if (adminAuth.role === "admin" && voucher.merchantId !== adminAuth.merchantId) {
+  if (adminAuth.role === "ADMIN" && voucher.merchantId !== adminAuth.merchantId) {
     return c.json({ error: "Access denied" }, 403);
   }
 
-  // Check for active QR codes (redeemed or used)
   const activeQrCount = await prisma.qrCode.count({
-    where: {
-      voucherId: id,
-      status: { in: ["redeemed", "used"] },
-    },
+    where: { voucherId: id, status: { in: ["REDEEMED", "USED"] } },
   });
 
   if (activeQrCount > 0) {
@@ -381,17 +330,14 @@ adminVouchers.delete("/:id", async (c) => {
   }
 
   try {
-    await prisma.voucher.update({
-      where: { id },
-      data: { deletedAt: new Date() },
-    });
+    await prisma.voucher.update({ where: { id }, data: { deletedAt: new Date() } });
     return c.json({ ok: true });
   } catch {
     return c.json({ error: "Voucher not found" }, 404);
   }
 });
 
-// POST /api/admin/vouchers/recalculate-stock — Recalculate remainingStock for all vouchers
+// POST /api/admin/vouchers/recalculate-stock — Recalculate remainingStock (owner only)
 adminVouchers.post("/recalculate-stock", requireOwner, async (c) => {
   const vouchers = await prisma.voucher.findMany({
     where: notDeleted,
@@ -401,7 +347,7 @@ adminVouchers.post("/recalculate-stock", requireOwner, async (c) => {
   let fixed = 0;
   for (const v of vouchers) {
     const availableCount = await prisma.redemptionSlot.count({
-      where: { voucherId: v.id, status: "available" },
+      where: { voucherId: v.id, status: "AVAILABLE" },
     });
 
     if (v.remainingStock !== availableCount) {
