@@ -1,12 +1,12 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
-import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import { requireManager, type AuthEnv } from "../../middleware/auth.js";
 import { updateSettingsSchema } from "../../schemas/settings.js";
 
 const adminSettings = new Hono<AuthEnv>();
 
 // GET /api/admin/settings — Get app settings (owner only)
-adminSettings.get("/", requireOwner, async (c) => {
+adminSettings.get("/", requireManager, async (c) => {
   let settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
 
   if (!settings) {
@@ -19,7 +19,7 @@ adminSettings.get("/", requireOwner, async (c) => {
 });
 
 // PUT /api/admin/settings — Update app settings (owner only)
-adminSettings.put("/", requireOwner, async (c) => {
+adminSettings.put("/", requireManager, async (c) => {
   const body = await c.req.json();
 
   const parsed = updateSettingsSchema.safeParse(body);
