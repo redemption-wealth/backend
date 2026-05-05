@@ -103,8 +103,8 @@ export async function initiateRedemption({
 
       // Generate QR codes (R2 uploads — not rolled back by Prisma on failure)
       const qrData = await Promise.all(
-        Array.from({ length: qrPerRedemption }, (_, i) =>
-          generateQrCode(redemptionId, i + 1)
+        availableSlot.qrCodes.map((qr, i) =>
+          generateQrCode(qr.id, i + 1, redemptionId)
         )
       );
       uploadedImageUrls = qrData.map((q) => q.imageUrl);
@@ -143,7 +143,6 @@ export async function initiateRedemption({
               status: "REDEEMED",
               redemptionId: newRedemption.id,
               usedAt: now,
-              token: qrData[i].token,
               imageUrl: qrData[i].imageUrl,
               imageHash: qrData[i].imageHash,
             },
