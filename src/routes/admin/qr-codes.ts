@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { prisma } from "../../db.js";
 import { requireAdminRole, requireManagerOrAdmin, type AuthEnv } from "../../middleware/auth.js";
 import { qrScanLimiter } from "../../middleware/rate-limit.js";
-import { createQrCodeSchema, scanQrSchema } from "../../schemas/qr-code.js";
+import { scanQrSchema } from "../../schemas/qr-code.js";
 
 const adminQrCodes = new Hono<AuthEnv>();
 
@@ -151,25 +151,5 @@ adminQrCodes.get("/", async (c) => {
   });
 });
 
-// POST /api/admin/qr-codes — Create QR code (manual, for legacy/testing)
-adminQrCodes.post("/", async (c) => {
-  const body = await c.req.json();
-
-  const parsed = createQrCodeSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
-  }
-
-  try {
-    const qrCode = await prisma.qrCode.create({ data: parsed.data });
-    return c.json({ qrCode }, 201);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("Unique constraint")) {
-      return c.json({ error: "Duplicate imageHash" }, 409);
-    }
-    return c.json({ error: "Failed to create QR code" }, 400);
-  }
-});
 
 export default adminQrCodes;
