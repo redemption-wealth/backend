@@ -91,11 +91,12 @@ export async function initiateRedemption({
       }
 
       // 3-component pricing: base + app fee + gas fee
-      const priceIdr = new Prisma.Decimal(voucher.base_price);
-      const appFee = priceIdr.mul(appFeePercentage).div(100);
+      const basePrice = new Prisma.Decimal(voucher.base_price);
+      const appFee = basePrice.mul(appFeePercentage).div(100);
       const gasFee = new Prisma.Decimal(gasFeeIdr.toString());
-      const totalIdr = priceIdr.add(appFee).add(gasFee);
+      const totalIdr = basePrice.add(appFee).add(gasFee);
 
+      // priceIdr here is the WEALTH token price fetched from CMC (closure from above)
       const wealthPriceDecimal = new Prisma.Decimal(priceIdr);
       const wealthAmount = totalIdr.div(wealthPriceDecimal);
       const appFeeAmount = appFee.div(wealthPriceDecimal);
