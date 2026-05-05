@@ -48,16 +48,12 @@ adminRedemptions.get("/recent", requireOwner, async (c) => {
 
 // GET /api/admin/redemptions — List redemptions (owner only)
 adminRedemptions.get("/", requireOwner, async (c) => {
-  const adminAuth = c.get("adminAuth");
   const status = c.req.query("status");
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "20");
 
   const where = {
     ...(status && { status: status as never }),
-    ...(adminAuth.role === "ADMIN" && adminAuth.merchantId && {
-      voucher: { merchantId: adminAuth.merchantId },
-    }),
   };
 
   const [redemptionsList, total] = await Promise.all([
