@@ -143,6 +143,7 @@ export async function initiateRedemption({
               status: "REDEEMED",
               redemptionId: newRedemption.id,
               usedAt: now,
+              token: qrData[i].token,
               imageUrl: qrData[i].imageUrl,
               imageHash: qrData[i].imageHash,
             },

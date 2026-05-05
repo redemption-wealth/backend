@@ -7,7 +7,7 @@ import {
   updateVoucherSchema,
 } from "../../schemas/voucher.js";
 import { getLiveFeeConfig, injectFeeFields } from "../../services/pricing.js";
-import { randomUUID } from "crypto";
+import { randomUUID, randomBytes } from "crypto";
 
 const adminVouchers = new Hono<AuthEnv>();
 
@@ -103,6 +103,7 @@ adminVouchers.post("/", async (c) => {
     id: string;
     slotId: string;
     qrNumber: number;
+    token: string;
     imageUrl: string;
     imageHash: string;
   }> = [];
@@ -110,10 +111,12 @@ adminVouchers.post("/", async (c) => {
   for (const slot of slots) {
     for (let qrNum = 1; qrNum <= qrPerSlot; qrNum++) {
       const qrId = randomUUID();
+      const token = randomBytes(16).toString("hex");
       qrCodes.push({
         id: qrId,
         slotId: slot.id,
         qrNumber: qrNum,
+        token,
         imageUrl: `https://placeholder.qr/${qrId}`,
         imageHash: `hash_${qrId}`,
       });
@@ -151,6 +154,7 @@ adminVouchers.post("/", async (c) => {
         voucherId: voucher.id,
         slotId: qr.slotId,
         qrNumber: qr.qrNumber,
+        token: qr.token,
         imageUrl: qr.imageUrl,
         imageHash: qr.imageHash,
       })),
@@ -218,7 +222,7 @@ adminVouchers.put("/:id", async (c) => {
         );
 
         const newQrCodes: Array<{
-          id: string; slotId: string; qrNumber: number; imageUrl: string; imageHash: string;
+          id: string; slotId: string; qrNumber: number; token: string; imageUrl: string; imageHash: string;
         }> = [];
 
         for (const slot of newSlots) {
@@ -228,6 +232,7 @@ adminVouchers.put("/:id", async (c) => {
               id: qrId,
               slotId: slot.id,
               qrNumber: qrNum,
+              token: randomBytes(16).toString("hex"),
               imageUrl: `https://placeholder.qr/${qrId}`,
               imageHash: `hash_${qrId}`,
             });
@@ -241,7 +246,7 @@ adminVouchers.put("/:id", async (c) => {
         await tx.qrCode.createMany({
           data: newQrCodes.map((qr) => ({
             id: qr.id, voucherId: id, slotId: qr.slotId, qrNumber: qr.qrNumber,
-            imageUrl: qr.imageUrl, imageHash: qr.imageHash,
+            token: qr.token, imageUrl: qr.imageUrl, imageHash: qr.imageHash,
           })),
         });
       } else if (newTotalStock < existing.totalStock) {

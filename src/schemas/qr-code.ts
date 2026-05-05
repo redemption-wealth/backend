@@ -10,7 +10,7 @@ export const createQrCodeSchema = z.object({
 });
 
 export const scanQrSchema = z.object({
-  id: z.string().cuid(),
+  token: z.string().min(1),
 });
 
 export const qrCodeQuerySchema = paginationSchema.extend({
