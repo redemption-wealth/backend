@@ -18,30 +18,24 @@ vouchers.get("/", async (c) => {
   });
 
   if (!query.success) {
-    return c.json(
-      { error: "Validation failed", details: query.error.flatten() },
-      400
-    );
+    return c.json({ error: "Validation failed", details: query.error.flatten() }, 400);
   }
 
   const { merchantId, category, search, page, limit } = query.data;
 
-  // Start of today in WIB (UTC+7) so expiry comparison aligns with Indonesian dates
+  // Start of today in WIB (UTC+7)
   const nowWib = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
   nowWib.setHours(0, 0, 0, 0);
   const todayStartUtc = new Date(nowWib.getTime() - 7 * 60 * 60 * 1000);
 
   const where = {
     isActive: true,
+    deletedAt: null,
     remainingStock: { gt: 0 },
     expiryDate: { gte: todayStartUtc },
     ...(merchantId && { merchantId }),
-    ...(category && {
-      merchant: { category: category as never },
-    }),
-    ...(search && {
-      title: { contains: search, mode: "insensitive" as const },
-    }),
+    ...(category && { merchant: { category: category as never } }),
+    ...(search && { title: { contains: search, mode: "insensitive" as const } }),
   };
 
   const [vouchersList, total, feeConfig] = await Promise.all([
@@ -60,12 +54,7 @@ vouchers.get("/", async (c) => {
 
   return c.json({
     vouchers: vouchersList.map((v) => injectFeeFields(v, appFeeRate, gasFeeAmount)),
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 });
 
@@ -78,7 +67,7 @@ vouchers.get("/:id", async (c) => {
     include: { merchant: true },
   });
 
-  if (!voucher) {
+  if (!voucher || voucher.deletedAt) {
     return c.json({ error: "Voucher not found" }, 404);
   }
 
@@ -94,42 +83,34 @@ vouchers.post("/:id/redeem", requireUser, async (c) => {
 
   const parsed = redeemVoucherSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      400
-    );
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
-  const { idempotencyKey, wealthPriceIdr } = parsed.data;
+  const { idempotencyKey } = parsed.data;
 
   try {
     const { redemption, alreadyExists } = await initiateRedemption({
-      userId: user.userId,
+      userEmail: user.userEmail,
       voucherId,
       idempotencyKey,
-      wealthPriceIdr,
     });
 
     if (alreadyExists) {
       return c.json({ redemption, alreadyExists: true });
     }
 
-    const settings = await prisma.appSettings.findUnique({
-      where: { id: "singleton" },
-    });
-
     return c.json({
       redemption,
       txDetails: {
-        tokenContractAddress: settings?.wealthContractAddress,
-        treasuryWalletAddress: settings?.devWalletAddress,
+        tokenContractAddress: process.env.WEALTH_CONTRACT_ADDRESS,
+        treasuryWalletAddress: process.env.DEV_WALLET_ADDRESS,
         wealthAmount: redemption.wealthAmount.toString(),
       },
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Redemption failed";
-    return c.json({ error: message }, 400);
+    const message = error instanceof Error ? error.message : "Redemption failed";
+    const status = message.includes("Price service unavailable") ? 503 : 400;
+    return c.json({ error: message }, status);
   }
 });
 

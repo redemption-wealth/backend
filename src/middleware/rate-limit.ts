@@ -58,13 +58,9 @@ export const loginLimiter = createRateLimiter({
 export const setPasswordLimiter = createRateLimiter({
   maxAttempts: 3,
   windowMs: 15 * 60 * 1000,
-  keyFn: async (c) => {
-    try {
-      const body = await c.req.json();
-      return `set-password:${body.email || "unknown"}`;
-    } catch {
-      return "set-password:unknown";
-    }
+  keyFn: (c) => {
+    const ip = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? "unknown";
+    return `set-password:${ip}`;
   },
 });
 

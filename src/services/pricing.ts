@@ -63,17 +63,14 @@ export function calcTotalPrice(
  * Fetch live fee configuration from AppSettings + active FeeSetting
  */
 export async function getLiveFeeConfig() {
-  const [settings, activeFee] = await Promise.all([
-    prisma.appSettings.findUnique({ where: { id: "singleton" } }),
-    prisma.feeSetting.findFirst({ where: { isActive: true } }),
-  ]);
+  const settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
 
   const appFeeRate = settings?.appFeeRate
     ? new Prisma.Decimal(settings.appFeeRate.toString())
     : new Prisma.Decimal("3.00");
 
-  const gasFeeAmount = activeFee
-    ? new Prisma.Decimal(activeFee.amountIdr.toString())
+  const gasFeeAmount = settings?.gasFeeAmount
+    ? new Prisma.Decimal(settings.gasFeeAmount.toString())
     : new Prisma.Decimal("0");
 
   return { appFeeRate, gasFeeAmount };

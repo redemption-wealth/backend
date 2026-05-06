@@ -2,133 +2,62 @@ import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
-import bcryptjs from "bcryptjs";
 
-const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
-  // Seed categories first (required for merchant FK)
-  const categories = [
-    { name: "kuliner" },
-    { name: "hiburan" },
-    { name: "event" },
-    { name: "kesehatan" },
-    { name: "lifestyle" },
-    { name: "travel" },
-  ];
+  const ownerEmail = (process.env.INITIAL_OWNER_EMAIL || "owner@wealthcrypto.fund").toLowerCase();
 
-  for (const category of categories) {
-    await prisma.category.upsert({
-      where: { name: category.name },
-      update: {},
-      create: category,
-    });
-  }
-
-  // Owner account
-  const ownerEmail = process.env.INITIAL_OWNER_EMAIL || "owner@wealthcrypto.fund";
-  const ownerPassword = process.env.INITIAL_OWNER_PASSWORD || "change-me-on-first-login";
-  const ownerPasswordHash = await bcryptjs.hash(ownerPassword, 12);
-
-  const owner = await prisma.admin.upsert({
+  // Upsert the User for the owner
+  const user = await prisma.user.upsert({
     where: { email: ownerEmail },
     update: {},
     create: {
       email: ownerEmail,
-      passwordHash: ownerPasswordHash,
-      role: "owner",
+      name: ownerEmail,
+      emailVerified: true,
     },
   });
 
-  // Create test merchant for manager/admin testing. Merchant.name is not
-  // unique so upsert-by-name doesn't exist on MerchantWhereUniqueInput — use
-  // findFirst + create for idempotency instead.
-  const kulinerCategory = await prisma.category.findUniqueOrThrow({
-    where: { name: "kuliner" },
-  });
-  const testMerchant =
-    (await prisma.merchant.findFirst({
-      where: { name: "Test Merchant" },
-    })) ??
-    (await prisma.merchant.create({
-      data: {
-        name: "Test Merchant",
-        description: "Test merchant for manager/admin accounts",
-        categoryId: kulinerCategory.id,
-        createdBy: owner.id,
-      },
-    }));
-
-  // Manager account (assigned to test merchant)
-  const managerEmail = "manager@wealthcrypto.fund";
-  const managerPassword = "manager-test-password";
-  const managerPasswordHash = await bcryptjs.hash(managerPassword, 12);
-
-  await prisma.admin.upsert({
-    where: { email: managerEmail },
+  // Credential account with NULL password (pending setup)
+  await prisma.account.upsert({
+    where: { id: `credential-${user.id}` },
     update: {},
     create: {
-      email: managerEmail,
-      passwordHash: managerPasswordHash,
-      role: "manager",
-      merchantId: testMerchant.id,
+      id: `credential-${user.id}`,
+      accountId: user.id,
+      providerId: "credential",
+      userId: user.id,
+      password: null,
     },
   });
 
-  // Admin account (assigned to test merchant)
-  const adminEmail = "admin@wealthcrypto.fund";
-  const adminPassword = "admin-test-password";
-  const adminPasswordHash = await bcryptjs.hash(adminPassword, 12);
-
+  // Admin record
   await prisma.admin.upsert({
-    where: { email: adminEmail },
+    where: { userId: user.id },
     update: {},
     create: {
-      email: adminEmail,
-      passwordHash: adminPasswordHash,
-      role: "admin",
-      merchantId: testMerchant.id,
+      userId: user.id,
+      role: "OWNER",
+      isActive: true,
     },
   });
 
-  // Create singleton app settings
+  // Singleton app settings
   await prisma.appSettings.upsert({
     where: { id: "singleton" },
     update: {},
     create: {
       id: "singleton",
       appFeeRate: 3,
-      wealthContractAddress: process.env.WEALTH_CONTRACT_ADDRESS || "0x0000000000000000000000000000000000000000",
-      devWalletAddress: process.env.DEV_WALLET_ADDRESS || "0x0000000000000000000000000000000000000000",
+      gasFeeAmount: 0,
     },
   });
 
-  // Create default fee setting
-  const existingFee = await prisma.feeSetting.findFirst({
-    where: { isActive: true },
-  });
-  if (!existingFee) {
-    await prisma.feeSetting.create({
-      data: {
-        label: "Standard Gas Fee",
-        amountIdr: 5000,
-        isActive: true,
-      },
-    });
-  }
-
-  console.log(`\n✅ Seeded test accounts:`);
-  console.log(`   Owner: ${ownerEmail} / ${ownerPassword}`);
-  console.log(`   Manager: manager@wealthcrypto.fund / manager-test-password`);
-  console.log(`   Admin: admin@wealthcrypto.fund / admin-test-password`);
-  console.log(`\n✅ Seeded test merchant: Test Merchant (ID: ${testMerchant.id})`);
-  console.log(`✅ Seeded app settings (singleton)`);
-  console.log(`✅ Seeded default fee setting`);
-  console.log(`✅ Seeded ${categories.length} categories\n`);
+  console.log(`\nSeeded owner: ${ownerEmail} (pending password setup)`);
+  console.log("Seeded app settings singleton\n");
 }
 
 main()
