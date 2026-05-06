@@ -149,7 +149,12 @@ adminAdmins.post("/", async (c) => {
     if (!merchant) return c.json({ error: "Merchant not found" }, 404);
   }
 
-  // Create User + credential Account (password NULL = pending setup) + Admin atomically
+  // Generate a setup token so the owner can immediately share a setup link.
+  // 24-hour TTL on initial creation (longer than reset's 5min) since the owner
+  // may need time to forward the link to the new admin.
+  const setupToken = randomBytes(32).toString("hex");
+
+  // Create User + credential Account (password NULL = pending setup) + Admin + token atomically
   const result = await prisma.$transaction(async (tx) => {
     const user = await tx.user.create({
       data: { email, name: email, emailVerified: true },
@@ -171,11 +176,19 @@ adminAdmins.post("/", async (c) => {
       select: adminSelect,
     });
 
+    await tx.passwordSetupToken.create({
+      data: {
+        userId: user.id,
+        token: setupToken,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+
     return admin;
   });
 
   const [enriched] = await withPendingSetup([result]);
-  return c.json({ admin: enriched }, 201);
+  return c.json({ admin: enriched, setupToken }, 201);
 });
 
 // ─── Update ───────────────────────────────────────────────────────────────────
@@ -297,12 +310,13 @@ adminAdmins.post("/:id/reset-password", async (c) => {
     }),
     // Invalidate all sessions (auto-logout)
     prisma.session.deleteMany({ where: { userId: target.userId } }),
-    // Issue a fresh setup token (5 min TTL)
+    // Issue a fresh setup token (24h TTL — owner shares the link manually,
+    // so we need enough time to forward it via Slack/WA/email.)
     prisma.passwordSetupToken.create({
       data: {
         userId: target.userId,
         token: setupToken,
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       },
     }),
   ]);
