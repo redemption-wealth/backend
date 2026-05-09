@@ -1,212 +1,239 @@
 import { Hono } from "hono";
 import bcryptjs from "bcryptjs";
+import { randomBytes } from "node:crypto";
 import { prisma } from "../db.js";
-import {
-  createAdminToken,
-  requireUser,
-  requireAdmin,
-  privyClient,
-} from "../middleware/auth.js";
-import { loginSchema, setPasswordSchema, changePasswordSchema } from "../schemas/auth.js";
+import { requireAdmin, type AuthEnv } from "../middleware/auth.js";
+import { auth } from "../lib/auth.js";
+import { loginLimiter, setPasswordLimiter } from "../middleware/rate-limit.js";
+import { signInSchema, setupPasswordSchema, changePasswordSchema } from "../schemas/auth.js";
 
-const auth = new Hono();
+const authRoutes = new Hono<AuthEnv>();
 
-// POST /api/auth/check-email — Check if account needs password setup
-auth.post("/check-email", async (c) => {
-  const body = await c.req.json();
-  const email = body?.email?.trim();
-  if (!email) {
-    return c.json({ error: "Email is required" }, 400);
-  }
+// ─── POST /api/auth/sign-in/email ────────────────────────────────────────────
+// Custom login: checks Admin existence, detects NULL password, verifies bcrypt.
+// On success: creates a Better Auth session and returns the token.
 
-  const admin = await prisma.admin.findFirst({
-    where: { email: { equals: email, mode: "insensitive" }, deletedAt: null },
-  });
-
-  if (!admin) {
-    return c.json({ error: "Email tidak terdaftar" }, 401);
-  }
-
-  if (!admin.isActive) {
-    return c.json({ error: "Akun dinonaktifkan" }, 403);
-  }
-
-  return c.json({
-    needs_password_setup: !admin.passwordHash,
-    email: admin.email,
-  });
-});
-
-// POST /api/auth/login — Admin login
-auth.post("/login", async (c) => {
-  const body = await c.req.json();
-  const parsed = loginSchema.safeParse(body);
+authRoutes.post("/sign-in/email", loginLimiter, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = signInSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      400
-    );
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
   const { email, password } = parsed.data;
 
+  // Find Admin + User + credential Account in one query
   const admin = await prisma.admin.findFirst({
-    where: { email: { equals: email, mode: "insensitive" }, deletedAt: null },
+    where: { user: { email: { equals: email, mode: "insensitive" } } },
+    include: {
+      user: {
+        include: {
+          accounts: { where: { providerId: "credential" } },
+        },
+      },
+    },
   });
 
   if (!admin || !admin.isActive) {
-    return c.json({ error: "Invalid credentials" }, 401);
+    return c.json({ error: "Invalid email or password" }, 401);
   }
 
-  // Check if password not set (first-login flow)
-  if (!admin.passwordHash) {
-    return c.json(
-      { needs_password_setup: true, email: admin.email },
-      200
-    );
+  const account = admin.user.accounts[0];
+
+  // NULL password → pending setup flow
+  if (!account || account.password === null) {
+    const setupToken = randomBytes(32).toString("hex");
+    await prisma.passwordSetupToken.create({
+      data: {
+        userId: admin.userId,
+        token: setupToken,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      },
+    });
+    return c.json({ needsPasswordSetup: true, setupToken });
   }
 
-  const isValid = await bcryptjs.compare(password, admin.passwordHash);
+  const isValid = await bcryptjs.compare(password, account.password);
   if (!isValid) {
-    return c.json({ error: "Invalid credentials" }, 401);
+    return c.json({ error: "Invalid email or password" }, 401);
   }
 
-  const token = await createAdminToken({
-    id: admin.id,
-    email: admin.email,
-    role: admin.role,
+  // Create Better Auth session (written directly to sessions table)
+  const sessionToken = randomBytes(32).toString("hex");
+  const session = await prisma.session.create({
+    data: {
+      token: sessionToken,
+      userId: admin.userId,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      userAgent: c.req.header("user-agent") ?? null,
+    },
+  });
+
+  await prisma.admin.update({
+    where: { id: admin.id },
+    data: { lastLoginAt: new Date() },
   });
 
   return c.json({
-    token,
-    admin: {
-      id: admin.id,
-      email: admin.email,
+    token: session.token,
+    user: {
+      id: admin.user.id,
+      email: admin.user.email,
       role: admin.role,
-      isActive: admin.isActive,
-      createdAt: admin.createdAt,
-      updatedAt: admin.updatedAt,
     },
   });
 });
 
-// POST /api/auth/set-password — First-login password flow
-auth.post("/set-password", async (c) => {
-  const body = await c.req.json();
-  const parsed = setPasswordSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      400
-    );
-  }
+// ─── POST /api/auth/sign-out ──────────────────────────────────────────────────
 
-  const { email, password } = parsed.data;
-
-  const admin = await prisma.admin.findFirst({
-    where: { email: { equals: email, mode: "insensitive" }, deletedAt: null },
-  });
-
-  if (!admin) {
-    return c.json({ error: "Invalid credentials" }, 401);
-  }
-
-  if (admin.passwordHash) {
-    return c.json({ error: "Password already set" }, 409);
-  }
-
-  const passwordHash = await bcryptjs.hash(password, 12);
-
-  await prisma.admin.update({
-    where: { id: admin.id },
-    data: { passwordHash },
-  });
-
-  return c.json({ message: "Password set successfully" });
+authRoutes.post("/sign-out", requireAdmin, async (c) => {
+  const { sessionId } = c.get("adminAuth");
+  await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
+  return c.json({ ok: true });
 });
 
-// GET /api/auth/me — Get current admin
-auth.get("/me", requireAdmin, (c) => {
-  const admin = c.get("adminAuth");
-  return c.json({ admin });
-});
+// ─── GET /api/auth/get-session ────────────────────────────────────────────────
 
-// PATCH /api/auth/change-password — Change current admin password
-auth.patch("/change-password", requireAdmin, async (c) => {
+authRoutes.get("/get-session", requireAdmin, async (c) => {
   const adminAuth = c.get("adminAuth");
-  const body = await c.req.json();
+  return c.json({
+    user: {
+      id: adminAuth.userId,
+      email: adminAuth.email,
+      role: adminAuth.role,
+      merchantId: adminAuth.merchantId,
+    },
+    session: { id: adminAuth.sessionId },
+  });
+});
 
+// ─── POST /api/auth/setup-password ───────────────────────────────────────────
+// Consumes a PasswordSetupToken, sets password, auto-issues a session.
+
+authRoutes.post("/setup-password", setPasswordLimiter, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = setupPasswordSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
+  }
+
+  const { token, password } = parsed.data;
+
+  const setupToken = await prisma.passwordSetupToken.findUnique({ where: { token } });
+
+  if (!setupToken || setupToken.usedAt !== null || setupToken.expiresAt < new Date()) {
+    return c.json({ error: "Invalid or expired setup token" }, 401);
+  }
+
+  // Check the admin linked to this token is still active
+  const admin = await prisma.admin.findUnique({
+    where: { userId: setupToken.userId },
+    select: { id: true, role: true, isActive: true },
+  });
+  if (!admin || !admin.isActive) {
+    return c.json({ error: "Invalid or expired setup token" }, 401);
+  }
+
+  const hashed = await bcryptjs.hash(password, 12);
+
+  await prisma.$transaction([
+    // Mark token used
+    prisma.passwordSetupToken.update({
+      where: { id: setupToken.id },
+      data: { usedAt: new Date() },
+    }),
+    // Set or update the credential Account password
+    prisma.account.upsert({
+      where: { id: `credential-${setupToken.userId}` },
+      create: {
+        id: `credential-${setupToken.userId}`,
+        accountId: setupToken.userId,
+        providerId: "credential",
+        userId: setupToken.userId,
+        password: hashed,
+      },
+      update: { password: hashed },
+    }),
+    // Update lastLoginAt
+    prisma.admin.update({
+      where: { id: admin.id },
+      data: { lastLoginAt: new Date() },
+    }),
+  ]);
+
+  // Auto-login: create session
+  const sessionToken = randomBytes(32).toString("hex");
+  const session = await prisma.session.create({
+    data: {
+      token: sessionToken,
+      userId: setupToken.userId,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      userAgent: c.req.header("user-agent") ?? null,
+    },
+  });
+
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: setupToken.userId },
+    select: { id: true, email: true },
+  });
+
+  return c.json({
+    token: session.token,
+    user: { id: user.id, email: user.email, role: admin.role },
+  });
+});
+
+// ─── POST /api/auth/change-password ──────────────────────────────────────────
+
+authRoutes.post("/change-password", requireAdmin, async (c) => {
+  const adminAuth = c.get("adminAuth");
+  const body = await c.req.json().catch(() => ({}));
   const parsed = changePasswordSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      400
-    );
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
   const { currentPassword, newPassword } = parsed.data;
 
-  const admin = await prisma.admin.findUnique({
-    where: { id: adminAuth.adminId },
+  const account = await prisma.account.findFirst({
+    where: { userId: adminAuth.userId, providerId: "credential" },
   });
 
-  if (!admin || !admin.passwordHash) {
-    return c.json({ error: "Admin not found" }, 404);
+  if (!account || !account.password) {
+    return c.json({ error: "Password not set — use setup-password first" }, 400);
   }
 
-  const isValid = await bcryptjs.compare(currentPassword, admin.passwordHash);
+  const isValid = await bcryptjs.compare(currentPassword, account.password);
   if (!isValid) {
     return c.json({ error: "Current password is incorrect" }, 401);
   }
 
-  const newPasswordHash = await bcryptjs.hash(newPassword, 12);
+  const hashed = await bcryptjs.hash(newPassword, 12);
 
-  await prisma.admin.update({
-    where: { id: admin.id },
-    data: { passwordHash: newPasswordHash },
-  });
+  await prisma.$transaction([
+    prisma.account.update({
+      where: { id: account.id },
+      data: { password: hashed },
+    }),
+    // Delete all sessions except current
+    prisma.session.deleteMany({
+      where: { userId: adminAuth.userId, id: { not: adminAuth.sessionId } },
+    }),
+  ]);
 
-  return c.json({ message: "Password berhasil diubah" });
+  return c.json({ ok: true, message: "Password changed. Other devices logged out." });
 });
 
-// POST /api/auth/user-sync — Sync Privy user to database
-auth.post("/user-sync", async (c) => {
-  const authHeader = c.req.header("authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+// ─── POST /api/auth/sign-out-others ──────────────────────────────────────────
 
-  const token = authHeader.slice(7);
-
-  let claims;
-  try {
-    claims = await privyClient.verifyAuthToken(token);
-  } catch {
-    return c.json({ error: "Invalid token" }, 401);
-  }
-
-  const privyUser = await privyClient.getUser(claims.userId);
-  const email = privyUser.email?.address;
-  const wallet = privyUser.wallet?.address;
-
-  if (!email) {
-    return c.json({ error: "Email not found" }, 400);
-  }
-
-  const user = await prisma.user.upsert({
-    where: { privyUserId: claims.userId },
-    update: {
-      email,
-      walletAddress: wallet ?? undefined,
-    },
-    create: {
-      privyUserId: claims.userId,
-      email,
-      walletAddress: wallet,
-    },
+authRoutes.post("/sign-out-others", requireAdmin, async (c) => {
+  const { userId, sessionId } = c.get("adminAuth");
+  await prisma.session.deleteMany({
+    where: { userId, id: { not: sessionId } },
   });
-
-  return c.json({ user });
+  return c.json({ ok: true });
 });
 
-export default auth;
+export default authRoutes;

@@ -6,6 +6,7 @@ const QR_BUCKET = process.env.R2_QR_BUCKET_NAME || "wealth-qr-codes";
 
 /**
  * Generate a QR code PNG, upload to R2, and return token + metadata.
+ * The token (random hex) is encoded in the QR image — admin scans or manually enters it.
  * R2 key format: qr-codes/{redemptionId}/{index}.png (deterministic — idempotent on retry)
  */
 export async function generateQrCode(

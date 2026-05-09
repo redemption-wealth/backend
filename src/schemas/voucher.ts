@@ -3,7 +3,7 @@ import { paginationSchema } from "./common.js";
 
 export const createVoucherSchema = z
   .object({
-    merchantId: z.string().uuid(),
+    merchantId: z.string().min(1),  // accepts cuid or uuid
     title: z.string().min(2).max(200),
     description: z.string().max(2000).optional(),
     startDate: z.string().or(z.date()),
@@ -30,11 +30,10 @@ export const updateVoucherSchema = z.object({
 
 export const redeemVoucherSchema = z.object({
   idempotencyKey: z.string().uuid(),
-  wealthPriceIdr: z.number().positive(),
 });
 
 export const voucherQuerySchema = paginationSchema.extend({
-  merchantId: z.string().uuid().optional(),
+  merchantId: z.string().min(1).optional(),
   category: z.string().optional(),
   search: z.string().max(100).optional(),
 });

@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "crypto";
 import { Hono } from "hono";
 import {
   confirmRedemption,
@@ -8,17 +9,33 @@ const webhook = new Hono();
 
 // POST /api/webhook/alchemy — Alchemy webhook for tx confirmation
 webhook.post("/alchemy", async (c) => {
-  // Verify Alchemy webhook signature
-  const signature = c.req.header("x-alchemy-signature");
-  if (!signature) {
-    return c.json({ error: "Missing signature" }, 401);
+  // Must read raw body first — stream can only be consumed once
+  const rawBody = await c.req.text();
+
+  const signingKey = process.env.ALCHEMY_WEBHOOK_SIGNING_KEY;
+  const isProduction = process.env.NODE_ENV === "production";
+
+  if (!signingKey) {
+    if (isProduction) {
+      return c.json({ error: "Webhook not configured" }, 401);
+    }
+    console.warn("[webhook] ALCHEMY_WEBHOOK_SIGNING_KEY not set — skipping HMAC check in dev");
+  } else {
+    const signature = c.req.header("x-alchemy-signature");
+    if (!signature) {
+      return c.json({ error: "Missing signature" }, 401);
+    }
+
+    const computed = createHmac("sha256", signingKey).update(rawBody).digest("hex");
+    const computedBuf = Buffer.from(computed, "hex");
+    const sigBuf = Buffer.from(signature, "hex");
+
+    if (computedBuf.length !== sigBuf.length || !timingSafeEqual(computedBuf, sigBuf)) {
+      return c.json({ error: "Invalid signature" }, 401);
+    }
   }
 
-  // TODO: Verify signature with ALCHEMY_WEBHOOK_SIGNING_KEY
-  // const body = await c.req.text();
-  // const isValid = verifyAlchemySignature(signature, body, process.env.ALCHEMY_WEBHOOK_SIGNING_KEY);
-
-  const body = await c.req.json();
+  const body = JSON.parse(rawBody);
   const { event } = body;
 
   if (!event?.activity) {
