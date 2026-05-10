@@ -49,31 +49,32 @@ export async function initiateRedemption({
 
   try {
     const redemption = await prisma.$transaction(async (tx) => {
-      // Lock voucher row
-      const [voucher] = await tx.$queryRawUnsafe<
-        Array<{
-          id: string;
-          remaining_stock: number;
-          is_active: boolean;
-          expiry_date: Date;
-          base_price: string;
-          qr_per_slot: number;
-          merchant_id: string;
-        }>
-      >(
-        `SELECT id, remaining_stock, is_active, expiry_date, base_price, qr_per_slot, merchant_id FROM vouchers WHERE id = $1 FOR UPDATE`,
-        voucherId
-      );
+      // Read voucher via Prisma ORM (uses @map mapping; safe across schema
+      // drift). Concurrency for stock is handled by the slot reservation
+      // below — only one redemption can claim a given AVAILABLE slot, so we
+      // cannot oversell even without explicit FOR UPDATE.
+      const voucher = await tx.voucher.findUnique({
+        where: { id: voucherId },
+        select: {
+          id: true,
+          remainingStock: true,
+          isActive: true,
+          expiryDate: true,
+          basePrice: true,
+          qrPerSlot: true,
+          merchantId: true,
+        },
+      });
 
       if (!voucher) throw new Error("Voucher not found");
-      if (!voucher.is_active) throw new Error("Voucher is not active");
-      if (voucher.remaining_stock <= 0) throw new Error("Voucher out of stock");
+      if (!voucher.isActive) throw new Error("Voucher is not active");
+      if (voucher.remainingStock <= 0) throw new Error("Voucher out of stock");
       // Voucher is valid through the entire expiry day in WIB (UTC+7)
-      const expiryEnd = new Date(voucher.expiry_date);
+      const expiryEnd = new Date(voucher.expiryDate);
       expiryEnd.setUTCHours(16, 59, 59, 999); // 23:59:59 WIB = 16:59:59 UTC
       if (expiryEnd < new Date()) throw new Error("Voucher expired");
 
-      const qrPerRedemption = voucher.qr_per_slot;
+      const qrPerRedemption = voucher.qrPerSlot;
 
       // Find an available slot first (before generating QR images)
       const availableSlot = await tx.redemptionSlot.findFirst({
@@ -91,7 +92,7 @@ export async function initiateRedemption({
       }
 
       // 3-component pricing: base + app fee + gas fee
-      const basePrice = new Prisma.Decimal(voucher.base_price);
+      const basePrice = new Prisma.Decimal(voucher.basePrice);
       const appFee = basePrice.mul(appFeePercentage).div(100);
       const gasFee = new Prisma.Decimal(gasFeeIdr.toString());
       const totalIdr = basePrice.add(appFee).add(gasFee);
@@ -116,10 +117,10 @@ export async function initiateRedemption({
           id: redemptionId,
           userEmail,
           voucherId,
-          merchantId: voucher.merchant_id,
+          merchantId: voucher.merchantId,
           slotId: availableSlot.id,
           wealthAmount,
-          priceIdrAtRedeem: Math.round(Number(voucher.base_price)),
+          priceIdrAtRedeem: Math.round(Number(voucher.basePrice)),
           wealthPriceIdrAtRedeem: wealthPriceDecimal,
           appFeeAmount,
           gasFeeAmount,
@@ -167,30 +168,38 @@ export async function initiateRedemption({
 
 export async function confirmRedemption(txHash: string) {
   return prisma.$transaction(async (tx) => {
-    // Lock the redemption row to prevent double-confirmation race condition
-    const [redemption] = await tx.$queryRawUnsafe<
-      Array<{ id: string; voucher_id: string; wealth_amount: string; status: string }>
-    >(
-      `SELECT id, voucher_id, wealth_amount, status FROM redemptions WHERE tx_hash = $1 FOR UPDATE`,
-      txHash
-    );
+    // Find the pending redemption by txHash. The atomic update below guards
+    // against double-confirmation: only one caller will succeed in flipping
+    // status from PENDING to CONFIRMED.
+    const redemption = await tx.redemption.findFirst({
+      where: { txHash, status: "PENDING" },
+      select: { id: true, voucherId: true },
+    });
 
-    if (!redemption || redemption.status !== "PENDING") {
+    if (!redemption) {
       throw new Error("Redemption not found or already processed");
     }
 
-    const updated = await tx.redemption.update({
-      where: { id: redemption.id },
+    const flipped = await tx.redemption.updateMany({
+      where: { id: redemption.id, status: "PENDING" },
       data: { status: "CONFIRMED", confirmedAt: new Date() },
+    });
+
+    if (flipped.count === 0) {
+      throw new Error("Redemption already confirmed by another worker");
+    }
+
+    const updated = await tx.redemption.findUniqueOrThrow({
+      where: { id: redemption.id },
     });
 
     // Recalculate remainingStock from actual available slots instead of blind decrement
     const availableCount = await tx.redemptionSlot.count({
-      where: { voucherId: redemption.voucher_id, status: "AVAILABLE" },
+      where: { voucherId: redemption.voucherId, status: "AVAILABLE" },
     });
 
     await tx.voucher.update({
-      where: { id: redemption.voucher_id },
+      where: { id: redemption.voucherId },
       data: { remainingStock: availableCount },
     });
 
