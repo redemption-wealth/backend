@@ -7,15 +7,49 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from "stream";
 
-// Initialize S3 client for Cloudflare R2
-const r2Client = new S3Client({
-  region: "auto",
-  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID || "",
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
-  },
-});
+// Cloudflare R2 account IDs are 32-character lowercase hex strings.
+// Validating early catches typos / missing env that would otherwise surface
+// as a cryptic TLS alert 40 (handshake_failure) when the SDK opens its
+// connection — the wildcard `*.r2.cloudflarestorage.com` cert refuses any
+// host whose SNI doesn't resolve to a real R2 account.
+const ACCOUNT_ID_REGEX = /^[0-9a-f]{32}$/;
+
+function readR2Env() {
+  const accountId = (process.env.R2_ACCOUNT_ID ?? "").trim();
+  const accessKeyId = (process.env.R2_ACCESS_KEY_ID ?? "").trim();
+  const secretAccessKey = (process.env.R2_SECRET_ACCESS_KEY ?? "").trim();
+
+  const missing: string[] = [];
+  if (!accountId) missing.push("R2_ACCOUNT_ID");
+  if (!accessKeyId) missing.push("R2_ACCESS_KEY_ID");
+  if (!secretAccessKey) missing.push("R2_SECRET_ACCESS_KEY");
+  if (missing.length > 0) {
+    throw new Error(
+      `R2 env missing: ${missing.join(", ")}. Set them in the deployment environment.`,
+    );
+  }
+
+  if (!ACCOUNT_ID_REGEX.test(accountId)) {
+    throw new Error(
+      `R2_ACCOUNT_ID has unexpected format. Cloudflare R2 account IDs are 32 lowercase hex characters; got "${accountId}". Double-check the value in your deployment environment.`,
+    );
+  }
+
+  return { accountId, accessKeyId, secretAccessKey };
+}
+
+let cachedClient: S3Client | null = null;
+
+function getR2Client(): S3Client {
+  if (cachedClient) return cachedClient;
+  const { accountId, accessKeyId, secretAccessKey } = readR2Env();
+  cachedClient = new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey },
+  });
+  return cachedClient;
+}
 
 export interface UploadOptions {
   bucket: string;
@@ -45,7 +79,7 @@ export async function uploadFile(
       ContentType: options.contentType || "application/octet-stream",
     });
 
-    await r2Client.send(command);
+    await getR2Client().send(command);
 
     console.log(`[R2] Uploaded: ${options.bucket}/${options.key}`);
 
@@ -73,7 +107,7 @@ export async function deleteFile(
       Key: key,
     });
 
-    await r2Client.send(command);
+    await getR2Client().send(command);
 
     console.log(`[R2] Deleted: ${bucket}/${key}`);
 
@@ -99,7 +133,7 @@ export async function generateSignedUrl(
       Key: options.key,
     });
 
-    const signedUrl = await getSignedUrl(r2Client, command, {
+    const signedUrl = await getSignedUrl(getR2Client(), command, {
       expiresIn: options.expiresIn || 3600, // Default: 1 hour
     });
 
