@@ -1,81 +1,85 @@
 import { describe, test, expect } from "vitest";
-import { createQrCodeSchema, qrCodeQuerySchema } from "@/schemas/qr-code.js";
+import {
+  createQrCodeSchema,
+  scanQrSchema,
+  qrCodeQuerySchema,
+} from "@/schemas/qr-code.js";
+
+const CUID = "clh1234567890abcdefghijkl";
 
 describe("createQrCodeSchema", () => {
-  test("valid QR data passes", () => {
-    const result = createQrCodeSchema.safeParse({
-      voucherId: "550e8400-e29b-41d4-a716-446655440000",
-      slotId: "660e8400-e29b-41d4-a716-446655440000",
-      qrNumber: 1,
-      imageUrl: "https://example.com/qr.png",
-      imageHash: "abc123hash",
-    });
-    expect(result.success).toBe(true);
+  const ok = {
+    voucherId: CUID,
+    slotId: CUID,
+    qrNumber: 1,
+    imageUrl: "https://cdn.example.com/qr.png",
+    imageHash: "hash123",
+  };
+
+  test("positive: valid payload passes", () => {
+    expect(createQrCodeSchema.safeParse(ok).success).toBe(true);
   });
 
-  test("non-UUID voucherId fails", () => {
-    const result = createQrCodeSchema.safeParse({
-      voucherId: "not-a-uuid",
-      slotId: "660e8400-e29b-41d4-a716-446655440000",
-      qrNumber: 1,
-      imageUrl: "https://example.com/qr.png",
-      imageHash: "abc123hash",
-    });
-    expect(result.success).toBe(false);
+  test("negative: non-cuid voucherId rejected", () => {
+    expect(
+      createQrCodeSchema.safeParse({ ...ok, voucherId: "123" }).success,
+    ).toBe(false);
   });
 
-  test("invalid URL for imageUrl fails", () => {
-    const result = createQrCodeSchema.safeParse({
-      voucherId: "550e8400-e29b-41d4-a716-446655440000",
-      slotId: "660e8400-e29b-41d4-a716-446655440000",
-      qrNumber: 1,
-      imageUrl: "not-a-url",
-      imageHash: "abc123hash",
-    });
-    expect(result.success).toBe(false);
+  test("edge: qrNumber 1 and 2 accepted, 0 and 3 rejected", () => {
+    expect(createQrCodeSchema.safeParse({ ...ok, qrNumber: 2 }).success).toBe(
+      true,
+    );
+    expect(createQrCodeSchema.safeParse({ ...ok, qrNumber: 0 }).success).toBe(
+      false,
+    );
+    expect(createQrCodeSchema.safeParse({ ...ok, qrNumber: 3 }).success).toBe(
+      false,
+    );
   });
 
-  test("empty imageHash fails", () => {
-    const result = createQrCodeSchema.safeParse({
-      voucherId: "550e8400-e29b-41d4-a716-446655440000",
-      slotId: "660e8400-e29b-41d4-a716-446655440000",
-      qrNumber: 1,
-      imageUrl: "https://example.com/qr.png",
-      imageHash: "",
-    });
-    expect(result.success).toBe(false);
+  test("negative: non-URL imageUrl rejected", () => {
+    expect(
+      createQrCodeSchema.safeParse({ ...ok, imageUrl: "x" }).success,
+    ).toBe(false);
   });
 
-  test("missing fields fails", () => {
-    const result = createQrCodeSchema.safeParse({});
-    expect(result.success).toBe(false);
+  test("negative: empty imageHash rejected", () => {
+    expect(
+      createQrCodeSchema.safeParse({ ...ok, imageHash: "" }).success,
+    ).toBe(false);
+  });
+});
+
+// UAT B24/B27 — scan QR / manual token input
+describe("scanQrSchema", () => {
+  test("positive: non-empty token passes", () => {
+    expect(scanQrSchema.safeParse({ token: "tok_abc" }).success).toBe(true);
+  });
+
+  test("negative: empty token rejected", () => {
+    expect(scanQrSchema.safeParse({ token: "" }).success).toBe(false);
+  });
+
+  test("negative: missing token rejected", () => {
+    expect(scanQrSchema.safeParse({}).success).toBe(false);
   });
 });
 
 describe("qrCodeQuerySchema", () => {
-  test("empty query uses defaults", () => {
-    const result = qrCodeQuerySchema.safeParse({});
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.page).toBe(1);
-      expect(result.data.limit).toBe(20);
-    }
+  test("positive: valid status enum + cuid voucherId", () => {
+    expect(
+      qrCodeQuerySchema.safeParse({ status: "USED", voucherId: CUID }).success,
+    ).toBe(true);
   });
 
-  test("valid status filter passes", () => {
-    const result = qrCodeQuerySchema.safeParse({ status: "available" });
-    expect(result.success).toBe(true);
+  test("negative: lowercase/invalid status rejected", () => {
+    expect(qrCodeQuerySchema.safeParse({ status: "used" }).success).toBe(false);
   });
 
-  test("invalid status fails", () => {
-    const result = qrCodeQuerySchema.safeParse({ status: "invalid" });
-    expect(result.success).toBe(false);
-  });
-
-  test("valid voucherId filter passes", () => {
-    const result = qrCodeQuerySchema.safeParse({
-      voucherId: "550e8400-e29b-41d4-a716-446655440000",
-    });
-    expect(result.success).toBe(true);
+  test("positive: defaults applied when empty", () => {
+    const r = qrCodeQuerySchema.safeParse({});
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.limit).toBe(20);
   });
 });

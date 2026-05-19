@@ -1,70 +1,63 @@
 import { describe, test, expect } from "vitest";
 import { updateSettingsSchema } from "@/schemas/settings.js";
 
+// UAT B21 — App Fee Rate (%) + Gas Fee (IDR) config
 describe("updateSettingsSchema", () => {
-  test("valid settings pass", () => {
-    const result = updateSettingsSchema.safeParse({
-      appFeeRate: 5,
-    });
-    expect(result.success).toBe(true);
+  test("positive: appFeeRate only passes", () => {
+    expect(updateSettingsSchema.safeParse({ appFeeRate: 5 }).success).toBe(true);
   });
 
-  test("empty object passes (all optional)", () => {
-    const result = updateSettingsSchema.safeParse({});
-    expect(result.success).toBe(true);
+  test("positive: gasFeeAmount only passes", () => {
+    expect(
+      updateSettingsSchema.safeParse({ gasFeeAmount: 5000 }).success,
+    ).toBe(true);
   });
 
-  test("appFeeRate > 50 fails", () => {
-    const result = updateSettingsSchema.safeParse({
-      appFeeRate: 51,
-    });
-    expect(result.success).toBe(false);
+  test("positive: both fields pass", () => {
+    expect(
+      updateSettingsSchema.safeParse({ appFeeRate: 3, gasFeeAmount: 0 }).success,
+    ).toBe(true);
   });
 
-  test("appFeeRate negative fails", () => {
-    const result = updateSettingsSchema.safeParse({
-      appFeeRate: -1,
-    });
-    expect(result.success).toBe(false);
+  test("positive: empty object passes (all optional)", () => {
+    expect(updateSettingsSchema.safeParse({}).success).toBe(true);
   });
 
-  test("appFeeRate=0 passes", () => {
-    const result = updateSettingsSchema.safeParse({
-      appFeeRate: 0,
-    });
-    expect(result.success).toBe(true);
+  test("edge: appFeeRate 0 and 50 pass; -1 and 51 fail", () => {
+    expect(updateSettingsSchema.safeParse({ appFeeRate: 0 }).success).toBe(true);
+    expect(updateSettingsSchema.safeParse({ appFeeRate: 50 }).success).toBe(
+      true,
+    );
+    expect(updateSettingsSchema.safeParse({ appFeeRate: -1 }).success).toBe(
+      false,
+    );
+    expect(updateSettingsSchema.safeParse({ appFeeRate: 51 }).success).toBe(
+      false,
+    );
   });
 
-  test("appFeeRate=50 passes", () => {
-    const result = updateSettingsSchema.safeParse({
-      appFeeRate: 50,
-    });
-    expect(result.success).toBe(true);
+  test("edge: gasFeeAmount 0 passes, negative fails", () => {
+    expect(updateSettingsSchema.safeParse({ gasFeeAmount: 0 }).success).toBe(
+      true,
+    );
+    expect(
+      updateSettingsSchema.safeParse({ gasFeeAmount: -100 }).success,
+    ).toBe(false);
   });
 
-  test("all fields with valid wallet address passes", () => {
-    const result = updateSettingsSchema.safeParse({
+  test("negative: non-numeric appFeeRate rejected", () => {
+    expect(
+      updateSettingsSchema.safeParse({ appFeeRate: "3" }).success,
+    ).toBe(false);
+  });
+
+  test("edge: unknown keys are stripped, not rejected", () => {
+    const r = updateSettingsSchema.safeParse({
       appFeeRate: 3,
-      wealthContractAddress: "0x1234567890abcdef1234567890abcdef12345678",
-      devWalletAddress: "0xabcdef1234567890abcdef1234567890abcdef12",
-      alchemyRpcUrl: "https://eth-mainnet.g.alchemy.com/v2/key",
-      coingeckoApiKey: "CG-test-key",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test("null address values pass", () => {
-    const result = updateSettingsSchema.safeParse({
-      wealthContractAddress: null,
-      devWalletAddress: null,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test("invalid wallet address fails", () => {
-    const result = updateSettingsSchema.safeParse({
       devWalletAddress: "not-a-wallet",
     });
-    expect(result.success).toBe(false);
+    expect(r.success).toBe(true);
+    if (r.success)
+      expect((r.data as Record<string, unknown>).devWalletAddress).toBeUndefined();
   });
 });
