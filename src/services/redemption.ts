@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { prisma } from "../db.js";
 import { Prisma } from "@prisma/client";
 import { createPublicClient, http } from "viem";
-import { mainnet, sepolia } from "viem/chains";
+import { resolveChain } from "../lib/chain.js";
 import { generateQrCode, deleteQrFiles } from "./qr-generator.js";
 import { getWealthPrice } from "./price.js";
 
@@ -213,8 +213,7 @@ function getRpcClient() {
   if (cachedRpcClient) return cachedRpcClient;
   const rpcUrl = process.env.ALCHEMY_RPC_URL;
   if (!rpcUrl) return null;
-  const chainId = Number(process.env.ETHEREUM_CHAIN_ID ?? 1);
-  const chain = chainId === sepolia.id ? sepolia : mainnet;
+  const { chain } = resolveChain();
   cachedRpcClient = createPublicClient({ chain, transport: http(rpcUrl) });
   return cachedRpcClient;
 }

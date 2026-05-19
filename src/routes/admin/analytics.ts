@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { createPublicClient, http, erc20Abi, formatUnits } from "viem";
-import { mainnet, sepolia } from "viem/chains";
+import { resolveChain } from "../../lib/chain.js";
 import { requireAdmin, type AuthEnv } from "../../middleware/auth.js";
 import {
   getSummaryStats,
@@ -114,8 +114,7 @@ adminAnalytics.get("/treasury-balance", async (c) => {
   }
 
   try {
-    const chainId = Number(process.env.ETHEREUM_CHAIN_ID ?? 1);
-    const chain = chainId === sepolia.id ? sepolia : mainnet;
+    const { chain } = resolveChain();
     const client = createPublicClient({ chain, transport: http(rpcUrl) });
 
     const rawBalance = await client.readContract({
