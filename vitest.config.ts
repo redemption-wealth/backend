@@ -66,9 +66,11 @@ export default defineConfig({
     },
     env: {
       ADMIN_JWT_SECRET: "test-secret-min-32-chars-for-vitest-testing",
+      BETTER_AUTH_SECRET: "test-better-auth-secret-min-32-chars-vitest",
       NODE_ENV: "test",
       PRIVY_APP_ID: "test-privy-app-id",
       PRIVY_APP_SECRET: "test-privy-app-secret",
+      ETHEREUM_CHAIN_ID: "11155111",
     },
   },
 });

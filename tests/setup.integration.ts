@@ -35,18 +35,16 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   // Clean all tables between tests in correct dependency order
-  // Delete child records first to avoid foreign key violations
-  await testPrisma.transaction.deleteMany();
+  // (child records first to avoid foreign key violations). Models
+  // transaction/category/feeSetting were removed from the schema.
   await testPrisma.redemption.deleteMany();
   await testPrisma.qrCode.deleteMany();
   await testPrisma.redemptionSlot.deleteMany();
   await testPrisma.voucher.deleteMany();
   await testPrisma.merchant.deleteMany();
-  await testPrisma.category.deleteMany();
   await testPrisma.user.deleteMany();
   await testPrisma.admin.deleteMany();
   await testPrisma.appSettings.deleteMany();
-  await testPrisma.feeSetting.deleteMany();
 });
 
 afterAll(async () => {
