@@ -33,8 +33,12 @@ vouchers.get("/", async (c) => {
     deletedAt: null,
     remainingStock: { gt: 0 },
     expiryDate: { gte: todayStartUtc },
+    merchant: {
+      isActive: true,
+      deletedAt: null,
+      ...(category && { category: category as never }),
+    },
     ...(merchantId && { merchantId }),
-    ...(category && { merchant: { category: category as never } }),
     ...(search && { title: { contains: search, mode: "insensitive" as const } }),
   };
 
@@ -67,7 +71,7 @@ vouchers.get("/:id", async (c) => {
     include: { merchant: true },
   });
 
-  if (!voucher || voucher.deletedAt) {
+  if (!voucher || voucher.deletedAt || !voucher.merchant?.isActive || voucher.merchant?.deletedAt) {
     return c.json({ error: "Voucher not found" }, 404);
   }
 
