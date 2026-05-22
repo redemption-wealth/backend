@@ -86,6 +86,7 @@ export async function getSummaryStats(merchantId?: string): Promise<{
   totalRedemptions: number;
   confirmedRedemptions: number;
   totalWealthVolume: string;
+  totalUsers: number;
   avgWealthPerRedeem: string;
   totalValueIdr: number;
 }> {
@@ -104,6 +105,7 @@ export async function getSummaryStats(merchantId?: string): Promise<{
       wealthVolumeResult,
       avgWealthResult,
       totalValueIdrResult,
+      uniqueUsers,
     ] = await Promise.all([
       merchantId
         ? prisma.merchant.count({ where: { id: merchantId, isActive: true } })
@@ -123,6 +125,11 @@ export async function getSummaryStats(merchantId?: string): Promise<{
         where: { status: "CONFIRMED", ...redemptionWhere },
         _sum: { priceIdrAtRedeem: true },
       }),
+      prisma.redemption.findMany({
+        where: { status: "CONFIRMED", ...redemptionWhere },
+        select: { userEmail: true },
+        distinct: ["userEmail"],
+      }),
     ]);
 
     return {
@@ -131,6 +138,7 @@ export async function getSummaryStats(merchantId?: string): Promise<{
       totalRedemptions,
       confirmedRedemptions,
       totalWealthVolume: wealthVolumeResult._sum.wealthAmount?.toString() || "0",
+      totalUsers: uniqueUsers.length,
       avgWealthPerRedeem: avgWealthResult._avg.wealthAmount?.toString() || "0",
       totalValueIdr: totalValueIdrResult._sum.priceIdrAtRedeem || 0,
     };

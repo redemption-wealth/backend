@@ -4,6 +4,7 @@ import {
   confirmRedemption,
   failRedemption,
 } from "../services/redemption.js";
+import { clearAnalyticsCache } from "../services/analytics.js";
 
 const webhook = new Hono();
 
@@ -52,10 +53,12 @@ webhook.post("/alchemy", async (c) => {
         activity.typeTraceAddress === "CALL"
       ) {
         await confirmRedemption(txHash);
+        clearAnalyticsCache();
       }
     } catch {
       try {
         await failRedemption(txHash);
+        clearAnalyticsCache();
       } catch {
         // Redemption may not exist for this txHash
       }
