@@ -27,7 +27,7 @@ adminRedemptions.get("/recent", requireOwner, async (c) => {
       voucher: {
         select: {
           title: true,
-          merchant: { select: { name: true } },
+          merchant: { select: { name: true, logoUrl: true } },
         },
       },
     },
@@ -38,9 +38,11 @@ adminRedemptions.get("/recent", requireOwner, async (c) => {
   return c.json({
     redemptions: redemptions.map((r) => ({
       id: r.id,
-      userEmail: r.userEmail,
       status: r.status,
+      wealthAmount: r.wealthAmount.toString(),
       confirmedAt: r.confirmedAt,
+      redeemedAt: r.createdAt,
+      user: { email: r.userEmail },
       voucher: r.voucher,
     })),
   });
