@@ -73,7 +73,25 @@ adminRedemptions.get("/", requireOwner, async (c) => {
   ]);
 
   return c.json({
-    redemptions: redemptionsList,
+    redemptions: redemptionsList.map((r) => ({
+      id: r.id,
+      voucherId: r.voucherId,
+      merchantId: r.merchantId,
+      slotId: r.slotId,
+      wealthAmount: r.wealthAmount.toString(),
+      priceIdrAtRedeem: r.priceIdrAtRedeem,
+      wealthPriceIdrAtRedeem: r.wealthPriceIdrAtRedeem.toString(),
+      appFeeAmount: r.appFeeAmount.toString(),
+      gasFeeAmount: r.gasFeeAmount.toString(),
+      txHash: r.txHash,
+      status: r.status,
+      confirmedAt: r.confirmedAt,
+      failedAt: r.failedAt,
+      redeemedAt: r.createdAt,
+      user: { email: r.userEmail },
+      voucher: r.voucher,
+      qrCodes: r.qrCodes,
+    })),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 });
@@ -94,7 +112,27 @@ adminRedemptions.get("/:id", requireOwner, async (c) => {
     return c.json({ error: "Redemption not found" }, 404);
   }
 
-  return c.json({ redemption });
+  return c.json({
+    redemption: {
+      id: redemption.id,
+      voucherId: redemption.voucherId,
+      merchantId: redemption.merchantId,
+      slotId: redemption.slotId,
+      wealthAmount: redemption.wealthAmount.toString(),
+      priceIdrAtRedeem: redemption.priceIdrAtRedeem,
+      wealthPriceIdrAtRedeem: redemption.wealthPriceIdrAtRedeem.toString(),
+      appFeeAmount: redemption.appFeeAmount.toString(),
+      gasFeeAmount: redemption.gasFeeAmount.toString(),
+      txHash: redemption.txHash,
+      status: redemption.status,
+      confirmedAt: redemption.confirmedAt,
+      failedAt: redemption.failedAt,
+      redeemedAt: redemption.createdAt,
+      user: { email: redemption.userEmail },
+      voucher: redemption.voucher,
+      qrCodes: redemption.qrCodes,
+    },
+  });
 });
 
 export default adminRedemptions;
