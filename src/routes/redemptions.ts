@@ -2,8 +2,9 @@ import { Hono } from "hono";
 import { prisma } from "../db.js";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import {
-  failPendingRedemption,
+  ensureQrAssigned,
   reconcileRedemptionById,
+  releasePendingRedemption,
   STALE_PENDING_EXPIRY_MS,
 } from "../services/redemption.js";
 import { generateSignedUrl } from "../services/r2.js";
@@ -78,9 +79,9 @@ redemptions.get("/", requireUser, async (c) => {
     )
     .slice(0, 10);
 
-  // Expire pending entries that never received a txHash (wallet tx failed before
-  // broadcast, e.g. insufficient gas) so they flip to FAILED and release stock
-  // instead of lingering as "menunggu" forever.
+  // Release pending entries that never received a txHash (wallet tx failed before
+  // broadcast, e.g. insufficient gas) so the slot + stock recover and the
+  // abandoned attempt disappears instead of lingering as "menunggu" forever.
   const staleNoTx = redemptionsList
     .filter(
       (r) =>
@@ -93,7 +94,7 @@ redemptions.get("/", requireUser, async (c) => {
   if (stalePending.length > 0 || staleNoTx.length > 0) {
     await Promise.allSettled([
       ...stalePending.map((r) => reconcileRedemptionById(r.id)),
-      ...staleNoTx.map((r) => failPendingRedemption(r)),
+      ...staleNoTx.map((r) => releasePendingRedemption(r.id)),
     ]);
     [redemptionsList, total] = await fetchPage();
   }
@@ -131,11 +132,19 @@ redemptions.get("/:id", requireUser, async (c) => {
       if (existing.txHash && ageMs > 30_000) {
         await reconcileRedemptionById(existing.id);
       } else if (!existing.txHash && ageMs > STALE_PENDING_EXPIRY_MS) {
-        // Wallet tx never broadcast (e.g. insufficient gas) — expire to FAILED.
-        await failPendingRedemption(existing);
+        // Wallet tx never broadcast (e.g. insufficient gas) — release + delete.
+        await releasePendingRedemption(existing.id);
       }
     } catch (err) {
       console.error("[GET /redemptions/:id] auto-reconcile failed:", err);
+    }
+  } else if (existing.status === "CONFIRMED") {
+    // Lazy-heal: finish QR generation if it didn't complete right after
+    // confirmation (idempotent), so the user always gets their QR.
+    try {
+      await ensureQrAssigned(existing.id);
+    } catch (err) {
+      console.error("[GET /redemptions/:id] ensureQrAssigned failed:", err);
     }
   }
 

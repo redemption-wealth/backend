@@ -1,4 +1,3 @@
-import { randomUUID } from "crypto";
 import { prisma } from "../db.js";
 import { Prisma } from "@prisma/client";
 import { createPublicClient, http } from "viem";
@@ -41,170 +40,175 @@ export async function initiateRedemption({
     throw new Error("Price service unavailable");
   }
 
-  // Pre-generate redemptionId so we can use it for QR R2 keys before the transaction
-  const redemptionId = randomUUID();
-
-  // --- Transaction with row-level locking ---
-  let uploadedImageUrls: string[] = [];
-
-  try {
-    const redemption = await prisma.$transaction(async (tx) => {
-      // Read voucher via Prisma ORM (uses @map mapping; safe across schema
-      // drift). Concurrency for stock is handled by the slot reservation
-      // below — only one redemption can claim a given AVAILABLE slot, so we
-      // cannot oversell even without explicit FOR UPDATE.
-      const voucher = await tx.voucher.findUnique({
-        where: { id: voucherId },
-        select: {
-          id: true,
-          remainingStock: true,
-          isActive: true,
-          expiryDate: true,
-          basePrice: true,
-          qrPerSlot: true,
-          merchantId: true,
-        },
-      });
-
-      if (!voucher) throw new Error("Voucher not found");
-      if (!voucher.isActive) throw new Error("Voucher is not active");
-      if (voucher.remainingStock <= 0) throw new Error("Voucher out of stock");
-      // Voucher is valid through the entire expiry day in WIB (UTC+7)
-      const expiryEnd = new Date(voucher.expiryDate);
-      expiryEnd.setUTCHours(16, 59, 59, 999); // 23:59:59 WIB = 16:59:59 UTC
-      if (expiryEnd < new Date()) throw new Error("Voucher expired");
-
-      const qrPerRedemption = voucher.qrPerSlot;
-
-      // Find an available slot first (before generating QR images)
-      const availableSlot = await tx.redemptionSlot.findFirst({
-        where: { voucherId, status: "AVAILABLE" },
-        include: { qrCodes: { orderBy: { qrNumber: "asc" } } },
-      });
-
-      if (!availableSlot || availableSlot.qrCodes.length === 0) {
-        throw new Error("No available QR codes in slots");
-      }
-      if (availableSlot.qrCodes.length !== qrPerRedemption) {
-        throw new Error(
-          `Slot has ${availableSlot.qrCodes.length} QR records but ${qrPerRedemption} were expected`
-        );
-      }
-
-      // 3-component pricing: base + app fee + gas fee
-      const basePrice = new Prisma.Decimal(voucher.basePrice);
-      const appFee = basePrice.mul(appFeePercentage).div(100);
-      const gasFee = new Prisma.Decimal(gasFeeIdr.toString());
-      const totalIdr = basePrice.add(appFee).add(gasFee);
-
-      // priceIdr here is the WEALTH token price fetched from CMC (closure from above)
-      const wealthPriceDecimal = new Prisma.Decimal(priceIdr);
-      const wealthAmount = totalIdr.div(wealthPriceDecimal);
-      const appFeeAmount = appFee.div(wealthPriceDecimal);
-      const gasFeeAmount = gasFee.div(wealthPriceDecimal);
-
-      // Generate QR codes (R2 uploads — not rolled back by Prisma on failure)
-      const qrData = await Promise.all(
-        Array.from({ length: qrPerRedemption }, (_, i) =>
-          generateQrCode(redemptionId, i + 1)
-        )
-      );
-      uploadedImageUrls = qrData.map((q) => q.imageUrl);
-
-      // Create redemption with pre-generated ID
-      const newRedemption = await tx.redemption.create({
-        data: {
-          id: redemptionId,
-          userEmail,
-          voucherId,
-          merchantId: voucher.merchantId,
-          slotId: availableSlot.id,
-          wealthAmount,
-          priceIdrAtRedeem: Math.round(Number(voucher.basePrice)),
-          wealthPriceIdrAtRedeem: wealthPriceDecimal,
-          appFeeAmount,
-          gasFeeAmount,
-          idempotencyKey,
-          status: "PENDING",
-        },
-      });
-
-      // Update slot status to REDEEMED
-      await tx.redemptionSlot.update({
-        where: { id: availableSlot.id },
-        data: { status: "REDEEMED" },
-      });
-
-      // Assign QR codes to this redemption and write the real R2 key from generateQrCode
-      const now = new Date();
-      await Promise.all(
-        availableSlot.qrCodes.map((qr, i) =>
-          tx.qrCode.update({
-            where: { id: qr.id },
-            data: {
-              status: "REDEEMED",
-              redemptionId: newRedemption.id,
-              usedAt: now,
-              token: qrData[i].token,
-              imageUrl: qrData[i].imageUrl,
-              imageHash: qrData[i].imageHash,
-            },
-          })
-        )
-      );
-
-      return newRedemption;
+  // Reserve a slot in a transaction. QR codes are NOT touched here — they are
+  // generated and handed to the user only once the on-chain transfer is
+  // confirmed (see confirmRedemption). A failed/abandoned attempt therefore
+  // leaves no QR and no history: the PENDING row is deleted on release.
+  const redemption = await prisma.$transaction(async (tx) => {
+    const voucher = await tx.voucher.findUnique({
+      where: { id: voucherId },
+      select: {
+        id: true,
+        remainingStock: true,
+        isActive: true,
+        expiryDate: true,
+        basePrice: true,
+        qrPerSlot: true,
+        merchantId: true,
+      },
     });
 
-    return { redemption, alreadyExists: false };
-  } catch (err) {
-    // Compensating action: delete R2 files if any were uploaded before the DB failed
-    if (uploadedImageUrls.length > 0) {
-      await deleteQrFiles(uploadedImageUrls);
+    if (!voucher) throw new Error("Voucher not found");
+    if (!voucher.isActive) throw new Error("Voucher is not active");
+    if (voucher.remainingStock <= 0) throw new Error("Voucher out of stock");
+    // Voucher is valid through the entire expiry day in WIB (UTC+7)
+    const expiryEnd = new Date(voucher.expiryDate);
+    expiryEnd.setUTCHours(16, 59, 59, 999); // 23:59:59 WIB = 16:59:59 UTC
+    if (expiryEnd < new Date()) throw new Error("Voucher expired");
+
+    const qrPerRedemption = voucher.qrPerSlot;
+
+    // Reserve an available slot. Only one redemption can claim a given slot, so
+    // we cannot oversell even without an explicit FOR UPDATE.
+    const availableSlot = await tx.redemptionSlot.findFirst({
+      where: { voucherId, status: "AVAILABLE" },
+      include: { qrCodes: { orderBy: { qrNumber: "asc" } } },
+    });
+
+    if (!availableSlot || availableSlot.qrCodes.length === 0) {
+      throw new Error("No available QR codes in slots");
     }
-    throw err;
-  }
+    if (availableSlot.qrCodes.length !== qrPerRedemption) {
+      throw new Error(
+        `Slot has ${availableSlot.qrCodes.length} QR records but ${qrPerRedemption} were expected`,
+      );
+    }
+
+    // 3-component pricing: base + app fee + gas fee
+    const basePrice = new Prisma.Decimal(voucher.basePrice);
+    const appFee = basePrice.mul(appFeePercentage).div(100);
+    const gasFee = new Prisma.Decimal(gasFeeIdr.toString());
+    const totalIdr = basePrice.add(appFee).add(gasFee);
+
+    // priceIdr here is the WEALTH token price fetched from CMC (closure from above)
+    const wealthPriceDecimal = new Prisma.Decimal(priceIdr);
+    const wealthAmount = totalIdr.div(wealthPriceDecimal);
+    const appFeeAmount = appFee.div(wealthPriceDecimal);
+    const gasFeeAmount = gasFee.div(wealthPriceDecimal);
+
+    const newRedemption = await tx.redemption.create({
+      data: {
+        userEmail,
+        voucherId,
+        merchantId: voucher.merchantId,
+        slotId: availableSlot.id,
+        wealthAmount,
+        priceIdrAtRedeem: Math.round(Number(voucher.basePrice)),
+        wealthPriceIdrAtRedeem: wealthPriceDecimal,
+        appFeeAmount,
+        gasFeeAmount,
+        idempotencyKey,
+        status: "PENDING",
+      },
+    });
+
+    // Hold the slot. QR codes stay AVAILABLE until confirmation.
+    await tx.redemptionSlot.update({
+      where: { id: availableSlot.id },
+      data: { status: "REDEEMED" },
+    });
+
+    return newRedemption;
+  });
+
+  return { redemption, alreadyExists: false };
+}
+
+/**
+ * Generate + assign the slot's QR codes to a CONFIRMED redemption. Idempotent:
+ * deterministic R2 keys and an already-assigned check make it safe to call
+ * repeatedly, so it doubles as a lazy-heal if QR generation failed right after
+ * confirmation (e.g. R2 was briefly down).
+ */
+export async function ensureQrAssigned(redemptionId: string): Promise<void> {
+  const redemption = await prisma.redemption.findUnique({
+    where: { id: redemptionId },
+    select: {
+      status: true,
+      slot: {
+        select: {
+          qrCodes: {
+            select: { id: true, qrNumber: true, redemptionId: true },
+            orderBy: { qrNumber: "asc" },
+          },
+        },
+      },
+    },
+  });
+  if (!redemption || redemption.status !== "CONFIRMED" || !redemption.slot) return;
+
+  const qrRecords = redemption.slot.qrCodes;
+  if (qrRecords.length === 0) return;
+  if (qrRecords.every((q) => q.redemptionId === redemptionId)) return; // already assigned
+
+  // R2 uploads happen outside the DB transaction (network calls).
+  const qrData = await Promise.all(
+    qrRecords.map((qr) => generateQrCode(redemptionId, qr.qrNumber)),
+  );
+  const now = new Date();
+  await prisma.$transaction(
+    qrRecords.map((qr, i) =>
+      prisma.qrCode.update({
+        where: { id: qr.id },
+        data: {
+          status: "REDEEMED",
+          redemptionId,
+          usedAt: now,
+          token: qrData[i].token,
+          imageUrl: qrData[i].imageUrl,
+          imageHash: qrData[i].imageHash,
+        },
+      }),
+    ),
+  );
 }
 
 export async function confirmRedemption(txHash: string) {
-  return prisma.$transaction(async (tx) => {
-    // Find the pending redemption by txHash. The atomic update below guards
-    // against double-confirmation: only one caller will succeed in flipping
-    // status from PENDING to CONFIRMED.
-    const redemption = await tx.redemption.findFirst({
-      where: { txHash, status: "PENDING" },
-      select: { id: true, voucherId: true },
-    });
-
-    if (!redemption) {
-      throw new Error("Redemption not found or already processed");
-    }
-
-    const flipped = await tx.redemption.updateMany({
-      where: { id: redemption.id, status: "PENDING" },
-      data: { status: "CONFIRMED", confirmedAt: new Date() },
-    });
-
-    if (flipped.count === 0) {
-      throw new Error("Redemption already confirmed by another worker");
-    }
-
-    const updated = await tx.redemption.findUniqueOrThrow({
-      where: { id: redemption.id },
-    });
-
-    // Recalculate remainingStock from actual available slots instead of blind decrement
-    const availableCount = await tx.redemptionSlot.count({
-      where: { voucherId: redemption.voucherId, status: "AVAILABLE" },
-    });
-
-    await tx.voucher.update({
-      where: { id: redemption.voucherId },
-      data: { remainingStock: availableCount },
-    });
-
-    return updated;
+  // Claim the confirmation atomically — only one worker proceeds past this,
+  // so a concurrent webhook + reconcile cannot double-assign QR codes.
+  const target = await prisma.redemption.findFirst({
+    where: { txHash, status: "PENDING" },
+    select: { id: true, voucherId: true },
   });
+  if (!target) throw new Error("Redemption not found or already processed");
+
+  const claimed = await prisma.redemption.updateMany({
+    where: { id: target.id, status: "PENDING" },
+    data: { status: "CONFIRMED", confirmedAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    throw new Error("Redemption already confirmed by another worker");
+  }
+
+  // Transfer confirmed → generate + hand over the QR codes. If QR generation
+  // fails (e.g. R2 briefly down) the confirmation still stands; the QR is
+  // lazily healed on the next detail fetch via ensureQrAssigned.
+  try {
+    await ensureQrAssigned(target.id);
+  } catch (err) {
+    console.error("[confirmRedemption] QR assignment deferred:", err);
+  }
+
+  // Recalculate remainingStock from actual available slots.
+  const availableCount = await prisma.redemptionSlot.count({
+    where: { voucherId: target.voucherId, status: "AVAILABLE" },
+  });
+  await prisma.voucher.update({
+    where: { id: target.voucherId },
+    data: { remainingStock: availableCount },
+  });
+
+  return prisma.redemption.findUniqueOrThrow({ where: { id: target.id } });
 }
 
 let cachedRpcClient: ReturnType<typeof createPublicClient> | null = null;
@@ -267,107 +271,92 @@ export async function reconcileRedemptionById(
 // 15 min; 30 min gives ample buffer before we release the slot back to stock.
 export const STALE_PENDING_EXPIRY_MS = 30 * 60 * 1000;
 
-type FailableRedemption = {
-  id: string;
-  voucherId: string;
-  qrCodes: { id: string; imageUrl: string | null; slotId: string }[];
-};
-
 /**
- * Shared core for transitioning a PENDING redemption to FAILED and releasing
- * its slot + QR codes back to AVAILABLE so the voucher stock recovers.
+ * Release a PENDING redemption: free its reserved slot and DELETE the row so a
+ * failed/abandoned attempt leaves no history (product decision). Deleting the
+ * row also frees the unique `slotId`, so the slot can be reserved again — this
+ * is what fixes the "Unique constraint failed on slotId" lockout.
  *
- * QR codes are RESET (not deleted): they are pre-created per slot at voucher
- * creation and never regenerated, so deleting them would leave the slot
- * AVAILABLE-but-unredeemable ("No available QR codes in slots"). Resetting
- * keeps the slot reusable — initiateRedemption overwrites token/image on reuse.
- *
- * The status flip is guarded so a concurrent confirmation cannot be clobbered,
- * and R2 cleanup only runs once we've actually claimed the failure (otherwise a
- * confirmed redemption could lose its QR images).
+ * Guarded so a concurrent confirmation is never clobbered (only acts while
+ * still PENDING). Returns true if it released the redemption.
  */
-export async function failPendingRedemption(redemption: FailableRedemption) {
-  const result = await prisma.$transaction(async (tx) => {
-    const flipped = await tx.redemption.updateMany({
-      where: { id: redemption.id, status: "PENDING" },
-      data: { status: "FAILED", failedAt: new Date() },
+export async function releasePendingRedemption(
+  redemptionId: string,
+): Promise<boolean> {
+  // Collect any assigned QR image keys up-front for best-effort R2 cleanup
+  // (only transition-era pendings have these; new-flow pendings have none).
+  const pre = await prisma.redemption.findUnique({
+    where: { id: redemptionId },
+    select: { status: true, qrCodes: { select: { imageUrl: true } } },
+  });
+  if (!pre || pre.status !== "PENDING") return false;
+  const imageUrls = pre.qrCodes
+    .map((q) => q.imageUrl)
+    .filter(Boolean) as string[];
+
+  const released = await prisma.$transaction(async (tx) => {
+    // Re-check inside the tx so we don't clobber a concurrent confirmation.
+    const current = await tx.redemption.findUnique({
+      where: { id: redemptionId },
+      select: { status: true, voucherId: true, slotId: true },
     });
-    if (flipped.count === 0) {
-      // Already confirmed or failed by another worker — leave slots/QRs alone.
-      return null;
-    }
+    if (!current || current.status !== "PENDING") return false;
 
-    const qrIds = redemption.qrCodes.map((q) => q.id);
-    if (qrIds.length > 0) {
-      await tx.qrCode.updateMany({
-        where: { id: { in: qrIds } },
-        data: {
-          status: "AVAILABLE",
-          redemptionId: null,
-          usedAt: null,
-          scannedById: null,
-          imageUrl: null,
-        },
-      });
-    }
+    // Detach any assigned QR codes back to AVAILABLE (no-op in the normal flow,
+    // where a PENDING redemption never has QR codes assigned).
+    await tx.qrCode.updateMany({
+      where: { redemptionId },
+      data: {
+        status: "AVAILABLE",
+        redemptionId: null,
+        usedAt: null,
+        scannedById: null,
+        imageUrl: null,
+      },
+    });
 
-    const slotIds = [...new Set(redemption.qrCodes.map((q) => q.slotId))];
-    if (slotIds.length > 0) {
-      await tx.redemptionSlot.updateMany({
-        where: { id: { in: slotIds }, status: "REDEEMED" },
-        data: { status: "AVAILABLE" },
-      });
-    }
+    // Free the reserved slot.
+    await tx.redemptionSlot.updateMany({
+      where: { id: current.slotId, status: "REDEEMED" },
+      data: { status: "AVAILABLE" },
+    });
 
-    // Recalculate remainingStock from actual available slots
+    // Delete the redemption — no failure history.
+    await tx.redemption.delete({ where: { id: redemptionId } });
+
     const availableCount = await tx.redemptionSlot.count({
-      where: { voucherId: redemption.voucherId, status: "AVAILABLE" },
+      where: { voucherId: current.voucherId, status: "AVAILABLE" },
     });
     await tx.voucher.update({
-      where: { id: redemption.voucherId },
+      where: { id: current.voucherId },
       data: { remainingStock: availableCount },
     });
-
-    return tx.redemption.findUniqueOrThrow({ where: { id: redemption.id } });
+    return true;
   });
 
-  // Best-effort R2 cleanup — only after we won the status flip, using the
-  // image URLs loaded before they were nulled in the transaction above.
-  if (result) {
-    const imageUrls = redemption.qrCodes
-      .map((q) => q.imageUrl)
-      .filter(Boolean) as string[];
-    if (imageUrls.length > 0) {
-      try {
-        await deleteQrFiles(imageUrls);
-      } catch (err) {
-        console.error("[failPendingRedemption] R2 cleanup failed, continuing:", err);
-      }
+  if (released && imageUrls.length > 0) {
+    try {
+      await deleteQrFiles(imageUrls);
+    } catch (err) {
+      console.error("[releasePendingRedemption] R2 cleanup failed:", err);
     }
   }
-
-  return result;
+  return released;
 }
 
 export async function failRedemption(txHash: string) {
   const redemption = await prisma.redemption.findFirst({
     where: { txHash, status: "PENDING" },
-    select: {
-      id: true,
-      voucherId: true,
-      qrCodes: { select: { id: true, imageUrl: true, slotId: true } },
-    },
+    select: { id: true },
   });
-
   if (!redemption) throw new Error("Redemption not found");
-
-  return failPendingRedemption(redemption);
+  return releasePendingRedemption(redemption.id);
 }
 
 /**
  * Sweep PENDING redemptions that never received a txHash (the user's wallet
  * transaction failed — e.g. insufficient gas — before broadcasting) and are
- * older than the stale window, marking them FAILED and releasing their slots.
+ * older than the stale window, deleting them and releasing their slots.
  *
  * Bounded by `limit` so a single invocation can't run unbounded; callers that
  * need to drain everything should loop until `expired < limit`.
@@ -382,11 +371,7 @@ export async function expireStalePendingRedemptions(opts?: {
 
   const stale = await prisma.redemption.findMany({
     where: { status: "PENDING", txHash: null, createdAt: { lt: cutoff } },
-    select: {
-      id: true,
-      voucherId: true,
-      qrCodes: { select: { id: true, imageUrl: true, slotId: true } },
-    },
+    select: { id: true },
     orderBy: { createdAt: "asc" },
     take: limit,
   });
@@ -394,8 +379,8 @@ export async function expireStalePendingRedemptions(opts?: {
   const ids: string[] = [];
   for (const redemption of stale) {
     try {
-      const result = await failPendingRedemption(redemption);
-      if (result) ids.push(redemption.id);
+      const released = await releasePendingRedemption(redemption.id);
+      if (released) ids.push(redemption.id);
     } catch (err) {
       console.error(`[expireStalePendingRedemptions] ${redemption.id} failed:`, err);
     }
