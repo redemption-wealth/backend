@@ -122,14 +122,35 @@ adminQrCodes.get("/", async (c) => {
   const adminAuth = c.get("adminAuth");
   const voucherId = c.req.query("voucherId");
   const status = c.req.query("status");
+  const search = c.req.query("search")?.trim();
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "50");
 
-  const where = {
+  // Free-text search across every meaningful column: QR id/token, voucher
+  // title, merchant name, the admin who scanned it — and the status enum when
+  // the term is typed exactly (e.g. "used"). Kept as a top-level OR (not under
+  // `voucher`) so it doesn't clash with the ADMIN merchant-scope filter.
+  const statusMatch = search
+    ? (["AVAILABLE", "REDEEMED", "USED"] as const).find(
+        (s) => s === search.toUpperCase(),
+      )
+    : undefined;
+
+  const where: Prisma.QrCodeWhereInput = {
     ...(voucherId && { voucherId }),
     ...(status && { status: status as never }),
     ...(adminAuth.role === "ADMIN" && adminAuth.merchantId && {
       voucher: { merchantId: adminAuth.merchantId },
+    }),
+    ...(search && {
+      OR: [
+        { id: { contains: search, mode: "insensitive" } },
+        { token: { contains: search, mode: "insensitive" } },
+        { voucher: { title: { contains: search, mode: "insensitive" } } },
+        { voucher: { merchant: { name: { contains: search, mode: "insensitive" } } } },
+        { scannedBy: { user: { email: { contains: search, mode: "insensitive" } } } },
+        ...(statusMatch ? [{ status: statusMatch }] : []),
+      ],
     }),
   };
 
