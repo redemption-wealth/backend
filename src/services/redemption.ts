@@ -262,36 +262,56 @@ export async function reconcileRedemptionById(
   }
 }
 
-export async function failRedemption(txHash: string) {
-  // Load QR records outside transaction so we have imageUrls for R2 cleanup
-  const redemption = await prisma.redemption.findFirst({
-    where: { txHash, status: "PENDING" },
-    include: { qrCodes: { select: { id: true, imageUrl: true, slotId: true } } },
-  });
+// A PENDING redemption is considered stale (the user never broadcast a tx)
+// after this window. The user-facing banner escalates to "contact support" at
+// 15 min; 30 min gives ample buffer before we release the slot back to stock.
+export const STALE_PENDING_EXPIRY_MS = 30 * 60 * 1000;
 
-  if (!redemption) throw new Error("Redemption not found");
+type FailableRedemption = {
+  id: string;
+  voucherId: string;
+  qrCodes: { id: string; imageUrl: string | null; slotId: string }[];
+};
 
-  // Attempt R2 cleanup first (best-effort)
-  const imageUrls = redemption.qrCodes.map((q) => q.imageUrl).filter(Boolean) as string[];
-  if (imageUrls.length > 0) {
-    try {
-      await deleteQrFiles(imageUrls);
-    } catch (err) {
-      console.error("[failRedemption] R2 cleanup failed, continuing:", err);
+/**
+ * Shared core for transitioning a PENDING redemption to FAILED and releasing
+ * its slot + QR codes back to AVAILABLE so the voucher stock recovers.
+ *
+ * QR codes are RESET (not deleted): they are pre-created per slot at voucher
+ * creation and never regenerated, so deleting them would leave the slot
+ * AVAILABLE-but-unredeemable ("No available QR codes in slots"). Resetting
+ * keeps the slot reusable — initiateRedemption overwrites token/image on reuse.
+ *
+ * The status flip is guarded so a concurrent confirmation cannot be clobbered,
+ * and R2 cleanup only runs once we've actually claimed the failure (otherwise a
+ * confirmed redemption could lose its QR images).
+ */
+export async function failPendingRedemption(redemption: FailableRedemption) {
+  const result = await prisma.$transaction(async (tx) => {
+    const flipped = await tx.redemption.updateMany({
+      where: { id: redemption.id, status: "PENDING" },
+      data: { status: "FAILED", failedAt: new Date() },
+    });
+    if (flipped.count === 0) {
+      // Already confirmed or failed by another worker — leave slots/QRs alone.
+      return null;
     }
-  }
 
-  // Collect unique slot IDs to restore
-  const slotIds = [...new Set(redemption.qrCodes.map((q) => q.slotId))];
-
-  // DB transaction: delete QR records, restore slot, recalculate stock, mark failed
-  return prisma.$transaction(async (tx) => {
     const qrIds = redemption.qrCodes.map((q) => q.id);
     if (qrIds.length > 0) {
-      await tx.qrCode.deleteMany({ where: { id: { in: qrIds } } });
+      await tx.qrCode.updateMany({
+        where: { id: { in: qrIds } },
+        data: {
+          status: "AVAILABLE",
+          redemptionId: null,
+          usedAt: null,
+          scannedById: null,
+          imageUrl: null,
+        },
+      });
     }
 
-    // Restore slot(s) back to AVAILABLE
+    const slotIds = [...new Set(redemption.qrCodes.map((q) => q.slotId))];
     if (slotIds.length > 0) {
       await tx.redemptionSlot.updateMany({
         where: { id: { in: slotIds }, status: "REDEEMED" },
@@ -303,15 +323,83 @@ export async function failRedemption(txHash: string) {
     const availableCount = await tx.redemptionSlot.count({
       where: { voucherId: redemption.voucherId, status: "AVAILABLE" },
     });
-
     await tx.voucher.update({
       where: { id: redemption.voucherId },
       data: { remainingStock: availableCount },
     });
 
-    return tx.redemption.update({
-      where: { id: redemption.id },
-      data: { status: "FAILED", failedAt: new Date() },
-    });
+    return tx.redemption.findUniqueOrThrow({ where: { id: redemption.id } });
   });
+
+  // Best-effort R2 cleanup — only after we won the status flip, using the
+  // image URLs loaded before they were nulled in the transaction above.
+  if (result) {
+    const imageUrls = redemption.qrCodes
+      .map((q) => q.imageUrl)
+      .filter(Boolean) as string[];
+    if (imageUrls.length > 0) {
+      try {
+        await deleteQrFiles(imageUrls);
+      } catch (err) {
+        console.error("[failPendingRedemption] R2 cleanup failed, continuing:", err);
+      }
+    }
+  }
+
+  return result;
+}
+
+export async function failRedemption(txHash: string) {
+  const redemption = await prisma.redemption.findFirst({
+    where: { txHash, status: "PENDING" },
+    select: {
+      id: true,
+      voucherId: true,
+      qrCodes: { select: { id: true, imageUrl: true, slotId: true } },
+    },
+  });
+
+  if (!redemption) throw new Error("Redemption not found");
+
+  return failPendingRedemption(redemption);
+}
+
+/**
+ * Sweep PENDING redemptions that never received a txHash (the user's wallet
+ * transaction failed — e.g. insufficient gas — before broadcasting) and are
+ * older than the stale window, marking them FAILED and releasing their slots.
+ *
+ * Bounded by `limit` so a single invocation can't run unbounded; callers that
+ * need to drain everything should loop until `expired < limit`.
+ */
+export async function expireStalePendingRedemptions(opts?: {
+  olderThanMs?: number;
+  limit?: number;
+}): Promise<{ expired: number; ids: string[] }> {
+  const olderThanMs = opts?.olderThanMs ?? STALE_PENDING_EXPIRY_MS;
+  const limit = opts?.limit ?? 100;
+  const cutoff = new Date(Date.now() - olderThanMs);
+
+  const stale = await prisma.redemption.findMany({
+    where: { status: "PENDING", txHash: null, createdAt: { lt: cutoff } },
+    select: {
+      id: true,
+      voucherId: true,
+      qrCodes: { select: { id: true, imageUrl: true, slotId: true } },
+    },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+  });
+
+  const ids: string[] = [];
+  for (const redemption of stale) {
+    try {
+      const result = await failPendingRedemption(redemption);
+      if (result) ids.push(redemption.id);
+    } catch (err) {
+      console.error(`[expireStalePendingRedemptions] ${redemption.id} failed:`, err);
+    }
+  }
+
+  return { expired: ids.length, ids };
 }

@@ -11,6 +11,7 @@ import voucherRoutes from "./routes/vouchers.js";
 import redemptionRoutes from "./routes/redemptions.js";
 import priceRoutes from "./routes/price.js";
 import webhookRoutes from "./routes/webhook.js";
+import cronRoutes from "./routes/cron.js";
 
 // Admin routes (require session auth)
 import adminOverviewRoutes from "./routes/admin/overview.js";
@@ -56,6 +57,7 @@ app.route("/api/vouchers", voucherRoutes);
 app.route("/api/redemptions", redemptionRoutes);
 app.route("/api/price", priceRoutes);
 app.route("/api/webhook", webhookRoutes);
+app.route("/api/cron", cronRoutes);
 
 // ─── Admin routes (session-protected) ────────────────────────────────────────
 

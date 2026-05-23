@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import { prisma } from "../db.js";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
-import { reconcileRedemptionById } from "../services/redemption.js";
+import {
+  failPendingRedemption,
+  reconcileRedemptionById,
+  STALE_PENDING_EXPIRY_MS,
+} from "../services/redemption.js";
 import { generateSignedUrl } from "../services/r2.js";
 
 const redemptions = new Hono<AuthEnv>();
@@ -73,10 +77,24 @@ redemptions.get("/", requireUser, async (c) => {
         Date.now() - r.createdAt.getTime() > 30_000,
     )
     .slice(0, 10);
-  if (stalePending.length > 0) {
-    await Promise.allSettled(
-      stalePending.map((r) => reconcileRedemptionById(r.id)),
-    );
+
+  // Expire pending entries that never received a txHash (wallet tx failed before
+  // broadcast, e.g. insufficient gas) so they flip to FAILED and release stock
+  // instead of lingering as "menunggu" forever.
+  const staleNoTx = redemptionsList
+    .filter(
+      (r) =>
+        r.status === "PENDING" &&
+        !r.txHash &&
+        Date.now() - r.createdAt.getTime() > STALE_PENDING_EXPIRY_MS,
+    )
+    .slice(0, 10);
+
+  if (stalePending.length > 0 || staleNoTx.length > 0) {
+    await Promise.allSettled([
+      ...stalePending.map((r) => reconcileRedemptionById(r.id)),
+      ...staleNoTx.map((r) => failPendingRedemption(r)),
+    ]);
     [redemptionsList, total] = await fetchPage();
   }
 
@@ -93,21 +111,31 @@ redemptions.get("/:id", requireUser, async (c) => {
 
   const existing = await prisma.redemption.findFirst({
     where: { id, userEmail: user.userEmail },
-    select: { id: true, status: true, txHash: true, createdAt: true },
+    select: {
+      id: true,
+      voucherId: true,
+      status: true,
+      txHash: true,
+      createdAt: true,
+      qrCodes: { select: { id: true, imageUrl: true, slotId: true } },
+    },
   });
 
   if (!existing) {
     return c.json({ error: "Redemption not found" }, 404);
   }
 
-  if (existing.status === "PENDING" && existing.txHash) {
+  if (existing.status === "PENDING") {
     const ageMs = Date.now() - existing.createdAt.getTime();
-    if (ageMs > 30_000) {
-      try {
+    try {
+      if (existing.txHash && ageMs > 30_000) {
         await reconcileRedemptionById(existing.id);
-      } catch (err) {
-        console.error("[GET /redemptions/:id] auto-reconcile failed:", err);
+      } else if (!existing.txHash && ageMs > STALE_PENDING_EXPIRY_MS) {
+        // Wallet tx never broadcast (e.g. insufficient gas) — expire to FAILED.
+        await failPendingRedemption(existing);
       }
+    } catch (err) {
+      console.error("[GET /redemptions/:id] auto-reconcile failed:", err);
     }
   }
 

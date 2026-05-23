@@ -6,5 +6,11 @@
       "source": "/(.*)",
       "destination": "/api"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/expire-pending-redemptions",
+      "schedule": "0 * * * *"
+    }
   ]
 }

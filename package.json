@@ -16,6 +16,7 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
+    "cleanup:stale-pending": "tsx scripts/expire-stale-pending.ts",
     "test": "vitest",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
