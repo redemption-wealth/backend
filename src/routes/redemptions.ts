@@ -46,19 +46,39 @@ redemptions.get("/", requireUser, async (c) => {
     ...(status && { status: status as never }),
   };
 
-  const [redemptionsList, total] = await Promise.all([
-    prisma.redemption.findMany({
-      where,
-      include: {
-        voucher: { include: { merchant: true } },
-        qrCodes: true,
-      },
-      orderBy: { createdAt: "desc" },
-      skip: (page - 1) * limit,
-      take: limit,
-    }),
-    prisma.redemption.count({ where }),
-  ]);
+  const fetchPage = () =>
+    Promise.all([
+      prisma.redemption.findMany({
+        where,
+        include: {
+          voucher: { include: { merchant: true } },
+          qrCodes: true,
+        },
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.redemption.count({ where }),
+    ]);
+
+  let [redemptionsList, total] = await fetchPage();
+
+  // Lazily reconcile stale pending entries so the list reflects on-chain truth
+  // even when the confirmation webhook misses them. Bounded to avoid RPC overuse.
+  const stalePending = redemptionsList
+    .filter(
+      (r) =>
+        r.status === "PENDING" &&
+        r.txHash &&
+        Date.now() - r.createdAt.getTime() > 30_000,
+    )
+    .slice(0, 10);
+  if (stalePending.length > 0) {
+    await Promise.allSettled(
+      stalePending.map((r) => reconcileRedemptionById(r.id)),
+    );
+    [redemptionsList, total] = await fetchPage();
+  }
 
   return c.json({
     redemptions: redemptionsList,

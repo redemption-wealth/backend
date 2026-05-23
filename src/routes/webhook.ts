@@ -1,9 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { Hono } from "hono";
-import {
-  confirmRedemption,
-  failRedemption,
-} from "../services/redemption.js";
+import { confirmRedemption } from "../services/redemption.js";
 import { clearAnalyticsCache } from "../services/analytics.js";
 
 const webhook = new Hono();
@@ -43,25 +40,35 @@ webhook.post("/alchemy", async (c) => {
     return c.json({ error: "Invalid webhook payload" }, 400);
   }
 
+  const wealthContract = process.env.WEALTH_CONTRACT_ADDRESS?.toLowerCase();
+  const treasury = process.env.DEV_WALLET_ADDRESS?.toLowerCase();
+  if (!wealthContract || !treasury) {
+    console.warn(
+      "[webhook] WEALTH_CONTRACT_ADDRESS / DEV_WALLET_ADDRESS not set — cannot validate transfers, skipping",
+    );
+  }
+
   for (const activity of event.activity) {
     const txHash = activity.hash;
     if (!txHash) continue;
 
+    // Only a $WEALTH token transfer into the treasury confirms a redemption.
+    // Alchemy omits typeTraceAddress for token transfers, so gating on it would
+    // silently drop every confirmation — validate the asset and destination instead.
+    if (activity.category !== "token") continue;
+    if (!wealthContract || !treasury) continue;
+    const tokenAddress = activity.rawContract?.address?.toLowerCase();
+    const toAddress = activity.toAddress?.toLowerCase();
+    if (tokenAddress !== wealthContract || toAddress !== treasury) continue;
+
     try {
-      if (
-        activity.category === "token" &&
-        activity.typeTraceAddress === "CALL"
-      ) {
-        await confirmRedemption(txHash);
-        clearAnalyticsCache();
-      }
-    } catch {
-      try {
-        await failRedemption(txHash);
-        clearAnalyticsCache();
-      } catch {
-        // Redemption may not exist for this txHash
-      }
+      await confirmRedemption(txHash);
+      clearAnalyticsCache();
+    } catch (err) {
+      // Unknown or already-confirmed txHash (e.g. a duplicate delivery) is
+      // expected. A token-transfer event always means the transfer succeeded,
+      // so there is no failure path to take here — log and continue.
+      console.error("[webhook] confirmRedemption failed:", err);
     }
   }
 

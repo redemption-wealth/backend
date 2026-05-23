@@ -1,285 +1,184 @@
-import { describe, test, expect, beforeEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { createHmac } from "node:crypto";
 import { testPrisma } from "../../setup.integration.js";
-import { createFixtures } from "../../helpers/fixtures.js";
 import app from "@/app.js";
 
-const fixtures = createFixtures(testPrisma);
+const SIGNING_KEY = "test-webhook-signing-key";
+const WEALTH_CONTRACT = "0x1234567890123456789012345678901234567890";
+const TREASURY = "0x0987654321098765432109876543210987654321";
 
-// Helper to send webhook request with signature
-function webhookPost(body: unknown) {
-  const headers = new Headers({
-    "Content-Type": "application/json",
-    "x-alchemy-signature": "mock-signature",
-  });
+// Send a webhook request with a valid Alchemy HMAC signature by default.
+// Pass { signature: null } to omit the header, or a string to force a value.
+function webhookPost(body: unknown, opts?: { signature?: string | null }) {
+  const raw = JSON.stringify(body);
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const signature =
+    opts && "signature" in opts
+      ? opts.signature
+      : createHmac("sha256", SIGNING_KEY).update(raw).digest("hex");
+  if (signature != null) headers.set("x-alchemy-signature", signature);
   return app.request("/api/webhook/alchemy", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: raw,
     headers,
   });
 }
 
-describe("POST /api/webhook/alchemy", () => {
-  let appSettings: Awaited<ReturnType<typeof testPrisma.appSettings.create>>;
+// Mirrors Alchemy's Address Activity payload for an ERC20 transfer:
+// category "token", a rawContract.address + toAddress, and NO typeTraceAddress
+// (Alchemy only sends that field for internal transfers).
+function tokenActivity(
+  txHash: string,
+  overrides?: { toAddress?: string; tokenAddress?: string },
+) {
+  return {
+    hash: txHash,
+    category: "token",
+    fromAddress: "0x1111111111111111111111111111111111111111",
+    toAddress: overrides?.toAddress ?? TREASURY,
+    asset: "WEALTH",
+    value: 100,
+    rawContract: {
+      address: overrides?.tokenAddress ?? WEALTH_CONTRACT,
+      decimals: 18,
+    },
+  };
+}
 
-  beforeEach(async () => {
-    appSettings = await testPrisma.appSettings.create({
-      data: {
-        appFeeRate: 3,
-        wealthContractAddress: "0x1234567890123456789012345678901234567890",
-        devWalletAddress: "0x0987654321098765432109876543210987654321",
-      },
-    });
+async function seedPendingRedemption(txHash: string) {
+  const merchant = await testPrisma.merchant.create({
+    data: { name: `Merchant ${Math.random().toString(36).slice(2)}`, category: "kuliner" },
+  });
+  const voucher = await testPrisma.voucher.create({
+    data: {
+      merchantId: merchant.id,
+      title: "Test Voucher",
+      basePrice: "25000",
+      totalStock: 3,
+      remainingStock: 3,
+      qrPerSlot: 1,
+      appFeeSnapshot: "3",
+      gasFeeSnapshot: "500",
+      startDate: new Date("2026-01-01"),
+      expiryDate: new Date("2026-12-31"),
+    },
+  });
+  const slots = await Promise.all(
+    [1, 2, 3].map((slotIndex) =>
+      testPrisma.redemptionSlot.create({ data: { voucherId: voucher.id, slotIndex } }),
+    ),
+  );
+  // Reserve the first slot, mirroring what the redeem flow does on creation.
+  await testPrisma.redemptionSlot.update({
+    where: { id: slots[0].id },
+    data: { status: "REDEEMED" },
+  });
+  const redemption = await testPrisma.redemption.create({
+    data: {
+      userEmail: `user-${Math.random().toString(36).slice(2)}@test.com`,
+      voucherId: voucher.id,
+      merchantId: merchant.id,
+      slotId: slots[0].id,
+      wealthAmount: "100",
+      priceIdrAtRedeem: 25000,
+      wealthPriceIdrAtRedeem: "250",
+      appFeeAmount: "3",
+      gasFeeAmount: "20",
+      idempotencyKey: `idm-${txHash}`,
+      status: "PENDING",
+      txHash,
+    },
+  });
+  return { redemption, voucher };
+}
+
+describe("POST /api/webhook/alchemy", () => {
+  beforeEach(() => {
+    vi.stubEnv("ALCHEMY_WEBHOOK_SIGNING_KEY", SIGNING_KEY);
+    vi.stubEnv("WEALTH_CONTRACT_ADDRESS", WEALTH_CONTRACT);
+    vi.stubEnv("DEV_WALLET_ADDRESS", TREASURY);
   });
 
-  test("returns 401 without signature header", async () => {
-    const res = await app.request("/api/webhook/alchemy", {
-      method: "POST",
-      body: JSON.stringify({
-        event: {
-          activity: [
-            {
-              hash: "0x" + "a".repeat(64),
-              category: "token",
-              typeTraceAddress: "CALL",
-            },
-          ],
-        },
-      }),
-      headers: new Headers({ "Content-Type": "application/json" }),
-    });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test("returns 401 when signature header is missing", async () => {
+    const res = await webhookPost({ event: { activity: [] } }, { signature: null });
     expect(res.status).toBe(401);
   });
 
-  test("returns 400 for missing event.activity", async () => {
+  test("returns 401 when signature is invalid", async () => {
+    const res = await webhookPost({ event: { activity: [] } }, { signature: "deadbeef" });
+    expect(res.status).toBe(401);
+  });
+
+  test("returns 400 when event.activity is missing", async () => {
     const res = await webhookPost({ event: {} });
     expect(res.status).toBe(400);
   });
 
-  test("confirms redemption for valid token transfer", async () => {
-    // Create test data
-    const user = await fixtures.createUser();
-    const admin = await fixtures.createAdmin();
-    const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher, qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
-
+  test("confirms redemption for a $WEALTH transfer into the treasury", async () => {
     const txHash = "0x" + "b".repeat(64);
+    const { redemption } = await seedPendingRedemption(txHash);
 
-    // Create pending redemption with txHash
-    const redemption = await testPrisma.redemption.create({
-      data: {
-        userId: user.id,
-        voucherId: voucher.id,
-        wealthAmount: "100",
-        priceIdrAtRedeem: 25000,
-        wealthPriceIdrAtRedeem: "250",
-        appFeeAmount: "3",
-        gasFeeAmount: "20",
-        idempotencyKey: `idm-${user.id}-1`,
-        status: "pending",
-        txHash,
-      },
-    });
-
-    // Assign QR codes
-    await testPrisma.qrCode.update({
-      where: { id: qrCodes[0].id },
-      data: { redemptionId: redemption.id, status: "redeemed", assignedToUserId: user.id, assignedAt: new Date() },
-    });
-
-    // Simulate Alchemy webhook
-    const payload = {
-      event: {
-        activity: [
-          {
-            hash: txHash,
-            category: "token",
-            typeTraceAddress: "CALL",
-            asset: appSettings.wealthContractAddress,
-          },
-        ],
-      },
-    };
-
-    // Note: Signature verification is TODO in webhook.ts, so we just send with header
-    const headers = new Headers({ "Content-Type": "application/json" });
-    headers.set("x-alchemy-signature", "mock-signature");
-
-    const res = await webhookPost(payload);
-
+    const res = await webhookPost({ event: { activity: [tokenActivity(txHash)] } });
     expect(res.status).toBe(200);
 
-    // Verify redemption was confirmed
-    const updated = await testPrisma.redemption.findUnique({
-      where: { id: redemption.id },
-    });
-    expect(updated?.status).toBe("confirmed");
-    expect(updated?.confirmedAt).toBeDefined();
+    const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(updated?.status).toBe("CONFIRMED");
+    expect(updated?.confirmedAt).not.toBeNull();
 
-    // Verify stock was decremented
-    const updatedVoucher = await testPrisma.voucher.findUnique({
-      where: { id: voucher.id },
-    });
-    expect(updatedVoucher?.remainingStock).toBe(voucher.remainingStock - 1);
-
-    // Verify transaction was created
-    const transaction = await testPrisma.transaction.findFirst({
-      where: { redemptionId: redemption.id },
-    });
-    expect(transaction).toBeDefined();
-    expect(transaction?.status).toBe("confirmed");
+    // remainingStock is recalculated from AVAILABLE slots (2 of 3 left).
+    const voucher = await testPrisma.voucher.findUnique({ where: { id: redemption.voucherId } });
+    expect(voucher?.remainingStock).toBe(2);
   });
 
-  test("handles unknown txHash gracefully", async () => {
-    const payload = {
-      event: {
-        activity: [
-          {
-            hash: "0x" + "c".repeat(64), // Unknown txHash
-            category: "token",
-            typeTraceAddress: "CALL",
-          },
-        ],
-      },
-    };
+  test("does NOT confirm when the transfer goes to a different address", async () => {
+    const txHash = "0x" + "c".repeat(64);
+    const { redemption } = await seedPendingRedemption(txHash);
 
-    const res = await webhookPost(payload);
+    const res = await webhookPost({
+      event: { activity: [tokenActivity(txHash, { toAddress: "0x" + "9".repeat(40) })] },
+    });
+    expect(res.status).toBe(200);
 
-    // Should not crash
+    const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(updated?.status).toBe("PENDING");
+  });
+
+  test("does NOT confirm when the token contract is not $WEALTH", async () => {
+    const txHash = "0x" + "d".repeat(64);
+    const { redemption } = await seedPendingRedemption(txHash);
+
+    const res = await webhookPost({
+      event: { activity: [tokenActivity(txHash, { tokenAddress: "0x" + "2".repeat(40) })] },
+    });
+    expect(res.status).toBe(200);
+
+    const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(updated?.status).toBe("PENDING");
+  });
+
+  test("handles an unknown txHash gracefully", async () => {
+    const res = await webhookPost({
+      event: { activity: [tokenActivity("0x" + "e".repeat(64))] },
+    });
     expect(res.status).toBe(200);
   });
 
-  test("handles multiple activities in one payload", async () => {
-    const user = await fixtures.createUser();
-    const admin = await fixtures.createAdmin();
-    const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher, qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
-
-    const txHash1 = "0x" + "d".repeat(64);
-    const txHash2 = "0x" + "e".repeat(64);
-
-    // Create two pending redemptions
-    const redemption1 = await testPrisma.redemption.create({
-      data: {
-        userId: user.id,
-        voucherId: voucher.id,
-        wealthAmount: "100",
-        priceIdrAtRedeem: 25000,
-        wealthPriceIdrAtRedeem: "250",
-        appFeeAmount: "3",
-        gasFeeAmount: "20",
-        idempotencyKey: `idm-${user.id}-1`,
-        status: "pending",
-        txHash: txHash1,
-      },
-    });
-
-    const redemption2 = await testPrisma.redemption.create({
-      data: {
-        userId: user.id,
-        voucherId: voucher.id,
-        wealthAmount: "200",
-        priceIdrAtRedeem: 50000,
-        wealthPriceIdrAtRedeem: "250",
-        appFeeAmount: "6",
-        gasFeeAmount: "20",
-        idempotencyKey: `idm-${user.id}-2`,
-        status: "pending",
-        txHash: txHash2,
-      },
-    });
-
-    await testPrisma.qrCode.update({
-      where: { id: qrCodes[0].id },
-      data: { redemptionId: redemption1.id, status: "redeemed", assignedToUserId: user.id, assignedAt: new Date() },
-    });
-
-    await testPrisma.qrCode.update({
-      where: { id: qrCodes[1].id },
-      data: { redemptionId: redemption2.id, status: "redeemed", assignedToUserId: user.id, assignedAt: new Date() },
-    });
-
-    const payload = {
-      event: {
-        activity: [
-          {
-            hash: txHash1,
-            category: "token",
-            typeTraceAddress: "CALL",
-          },
-          {
-            hash: txHash2,
-            category: "token",
-            typeTraceAddress: "CALL",
-          },
-        ],
-      },
-    };
-
-    const res = await webhookPost(payload);
-
-    expect(res.status).toBe(200);
-
-    // Verify both were confirmed
-    const updated1 = await testPrisma.redemption.findUnique({
-      where: { id: redemption1.id },
-    });
-    const updated2 = await testPrisma.redemption.findUnique({
-      where: { id: redemption2.id },
-    });
-
-    expect(updated1?.status).toBe("confirmed");
-    expect(updated2?.status).toBe("confirmed");
-  });
-
-  test("idempotent: duplicate webhook doesn't create duplicate transaction", async () => {
-    const user = await fixtures.createUser();
-    const admin = await fixtures.createAdmin();
-    const merchant = await fixtures.createMerchant(admin.id);
-    const { voucher, qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 5);
-
+  test("is idempotent across duplicate deliveries", async () => {
     const txHash = "0x" + "f".repeat(64);
+    const { redemption } = await seedPendingRedemption(txHash);
 
-    const redemption = await testPrisma.redemption.create({
-      data: {
-        userId: user.id,
-        voucherId: voucher.id,
-        wealthAmount: "100",
-        priceIdrAtRedeem: 25000,
-        wealthPriceIdrAtRedeem: "250",
-        appFeeAmount: "3",
-        gasFeeAmount: "20",
-        idempotencyKey: `idm-${user.id}-1`,
-        status: "pending",
-        txHash,
-      },
-    });
+    await webhookPost({ event: { activity: [tokenActivity(txHash)] } });
+    const first = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
 
-    await testPrisma.qrCode.update({
-      where: { id: qrCodes[0].id },
-      data: { redemptionId: redemption.id, status: "redeemed", assignedToUserId: user.id, assignedAt: new Date() },
-    });
+    const res2 = await webhookPost({ event: { activity: [tokenActivity(txHash)] } });
+    expect(res2.status).toBe(200);
 
-    const payload = {
-      event: {
-        activity: [
-          {
-            hash: txHash,
-            category: "token",
-            typeTraceAddress: "CALL",
-          },
-        ],
-      },
-    };
-
-    // Send webhook twice
-    await webhookPost(payload);
-    await webhookPost(payload);
-
-    // Should only have one transaction
-    const transactions = await testPrisma.transaction.findMany({
-      where: { redemptionId: redemption.id },
-    });
-
-    expect(transactions.length).toBe(1);
+    const second = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(second?.status).toBe("CONFIRMED");
+    expect(second?.confirmedAt?.getTime()).toBe(first?.confirmedAt?.getTime());
   });
 });
