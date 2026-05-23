@@ -1,6 +1,8 @@
 import { Hono } from "hono";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../db.js";
 import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import { parseSort, buildOrderBy } from "../../lib/list-query.js";
 
 const adminRedemptions = new Hono<AuthEnv>();
 
@@ -51,12 +53,34 @@ adminRedemptions.get("/recent", requireOwner, async (c) => {
 // GET /api/admin/redemptions — List redemptions (owner only)
 adminRedemptions.get("/", requireOwner, async (c) => {
   const status = c.req.query("status");
+  const search = c.req.query("search")?.trim();
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "20");
 
-  const where = {
+  const where: Prisma.RedemptionWhereInput = {
     ...(status && { status: status as never }),
+    ...(search && {
+      OR: [
+        { userEmail: { contains: search, mode: "insensitive" } },
+        { voucher: { title: { contains: search, mode: "insensitive" } } },
+        { voucher: { merchant: { name: { contains: search, mode: "insensitive" } } } },
+      ],
+    }),
   };
+
+  const orderBy = buildOrderBy<Prisma.RedemptionOrderByWithRelationInput>(
+    parseSort(c),
+    {
+      user: (dir) => ({ userEmail: dir }),
+      voucher: (dir) => ({ voucher: { title: dir } }),
+      wealth: (dir) => ({ wealthAmount: dir }),
+      wealthAmount: (dir) => ({ wealthAmount: dir }),
+      status: (dir) => ({ status: dir }),
+      redeemedAt: (dir) => ({ createdAt: dir }),
+      createdAt: (dir) => ({ createdAt: dir }),
+    },
+    (dir) => ({ createdAt: dir }),
+  );
 
   const [redemptionsList, total] = await Promise.all([
     prisma.redemption.findMany({
@@ -65,7 +89,7 @@ adminRedemptions.get("/", requireOwner, async (c) => {
         voucher: { include: { merchant: true } },
         qrCodes: true,
       },
-      orderBy: { createdAt: "desc" },
+      orderBy,
       skip: (page - 1) * limit,
       take: limit,
     }),

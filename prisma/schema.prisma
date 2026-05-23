@@ -221,7 +221,8 @@ model QrCode {
   redemption   Redemption?    @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
   scannedById  String?
   scannedBy    Admin?         @relation(fields: [scannedById], references: [id], onDelete: SetNull)
-  usedAt       DateTime?
+  assignedAt   DateTime?      // set when status → REDEEMED (QR handed to the user)
+  usedAt       DateTime?      // set only when status → USED (scanned by merchant)
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 

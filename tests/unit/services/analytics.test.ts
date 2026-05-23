@@ -19,6 +19,11 @@ describe("getSummaryStats", () => {
       .mockResolvedValueOnce({ _sum: { wealthAmount: "123.45" } } as never)
       .mockResolvedValueOnce({ _avg: { wealthAmount: "41.15" } } as never)
       .mockResolvedValueOnce({ _sum: { priceIdrAtRedeem: 750000 } } as never);
+    // uniqueUsers: distinct redeemer emails (any status) — "Pengguna Redeem"
+    prismaMock.redemption.findMany.mockResolvedValue([
+      { userEmail: "a@x.com" },
+      { userEmail: "b@x.com" },
+    ] as never);
 
     const result = await getSummaryStats();
 
@@ -29,6 +34,7 @@ describe("getSummaryStats", () => {
     expect(result.totalWealthVolume).toBe("123.45");
     expect(result.avgWealthPerRedeem).toBe("41.15");
     expect(result.totalValueIdr).toBe(750000);
+    expect(result.totalUsers).toBe(2);
   });
 
   test("edge: null aggregates fall back to '0' / 0", async () => {
@@ -39,12 +45,14 @@ describe("getSummaryStats", () => {
       .mockResolvedValueOnce({ _sum: { wealthAmount: null } } as never)
       .mockResolvedValueOnce({ _avg: { wealthAmount: null } } as never)
       .mockResolvedValueOnce({ _sum: { priceIdrAtRedeem: null } } as never);
+    prismaMock.redemption.findMany.mockResolvedValue([] as never);
 
     const result = await getSummaryStats();
 
     expect(result.totalWealthVolume).toBe("0");
     expect(result.avgWealthPerRedeem).toBe("0");
     expect(result.totalValueIdr).toBe(0);
+    expect(result.totalUsers).toBe(0);
   });
 
   test("positive: merchant-scoped call returns scoped counts", async () => {
@@ -57,11 +65,13 @@ describe("getSummaryStats", () => {
       .mockResolvedValueOnce({ _sum: { wealthAmount: "10" } } as never)
       .mockResolvedValueOnce({ _avg: { wealthAmount: "5" } } as never)
       .mockResolvedValueOnce({ _sum: { priceIdrAtRedeem: 1000 } } as never);
+    prismaMock.redemption.findMany.mockResolvedValue([{ userEmail: "a@x.com" }] as never);
 
     const result = await getSummaryStats("merchant-1");
 
     expect(result.totalMerchants).toBe(1);
     expect(result.totalVouchers).toBe(4);
     expect(result.confirmedRedemptions).toBe(2);
+    expect(result.totalUsers).toBe(1);
   });
 });

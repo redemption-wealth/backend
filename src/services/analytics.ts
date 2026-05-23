@@ -50,17 +50,44 @@ export function getDateRange(period: "daily" | "yearly" | "monthly"): {
   const now = nowWib();
   const startDate = new Date(now);
 
+  // startDate is offset by (bucketCount - 1) units so the query window lines up
+  // exactly with the buckets produced by buildBuckets() — every bucket has a
+  // matching range and no out-of-range record is silently dropped.
   switch (period) {
     case "daily":
-      startDate.setDate(now.getDate() - 7);
+      startDate.setDate(now.getDate() - 6);
+      startDate.setHours(0, 0, 0, 0);
       return { startDate, endDate: now, bucketCount: 7 };
     case "yearly":
-      startDate.setFullYear(now.getFullYear() - 5);
+      startDate.setFullYear(now.getFullYear() - 4);
       return { startDate, endDate: now, bucketCount: 5 };
     case "monthly":
-      startDate.setMonth(now.getMonth() - 6);
+      startDate.setMonth(now.getMonth() - 5);
       return { startDate, endDate: now, bucketCount: 6 };
   }
+}
+
+// Produce every bucket label in the range (oldest → newest) so charts render a
+// full, gap-free axis. Days/months/years with no activity become explicit 0s.
+export function buildBuckets(period: "daily" | "yearly" | "monthly", bucketCount: number): string[] {
+  const now = nowWib();
+  const labels: string[] = [];
+  for (let i = bucketCount - 1; i >= 0; i--) {
+    const d = new Date(now);
+    switch (period) {
+      case "daily":
+        d.setDate(now.getDate() - i);
+        break;
+      case "monthly":
+        d.setMonth(now.getMonth() - i);
+        break;
+      case "yearly":
+        d.setFullYear(now.getFullYear() - i);
+        break;
+    }
+    labels.push(formatDateLabel(d, period));
+  }
+  return labels;
 }
 
 export function formatDateLabel(date: Date, period: "daily" | "yearly" | "monthly"): string {
@@ -108,9 +135,9 @@ export async function getSummaryStats(merchantId?: string): Promise<{
       uniqueUsers,
     ] = await Promise.all([
       merchantId
-        ? prisma.merchant.count({ where: { id: merchantId, isActive: true } })
-        : prisma.merchant.count({ where: { isActive: true } }),
-      prisma.voucher.count({ where: { isActive: true, ...voucherWhere } }),
+        ? prisma.merchant.count({ where: { id: merchantId, isActive: true, deletedAt: null } })
+        : prisma.merchant.count({ where: { isActive: true, deletedAt: null } }),
+      prisma.voucher.count({ where: { isActive: true, deletedAt: null, ...voucherWhere } }),
       prisma.redemption.count({ where: redemptionWhere }),
       prisma.redemption.count({ where: { status: "CONFIRMED", ...redemptionWhere } }),
       prisma.redemption.aggregate({
@@ -125,8 +152,11 @@ export async function getSummaryStats(merchantId?: string): Promise<{
         where: { status: "CONFIRMED", ...redemptionWhere },
         _sum: { priceIdrAtRedeem: true },
       }),
+      // "Pengguna Redeem": distinct emails across ALL redemptions (any status),
+      // not just CONFIRMED — measures everyone who has redeemed, not Privy
+      // sign-ups (regular users have no User row). See brainstorm 2026-05-23.
       prisma.redemption.findMany({
-        where: { status: "CONFIRMED", ...redemptionWhere },
+        where: { ...redemptionWhere },
         select: { userEmail: true },
         distinct: ["userEmail"],
       }),
@@ -153,7 +183,7 @@ export async function getRedemptionsOverTime(
     ? `redemptions-over-time-${period}:${merchantId}`
     : `redemptions-over-time-${period}`;
   return getCachedOrCalculate(cacheKey, async () => {
-    const { startDate } = getDateRange(period);
+    const { startDate, bucketCount } = getDateRange(period);
 
     const redemptions = await prisma.redemption.findMany({
       where: {
@@ -170,9 +200,11 @@ export async function getRedemptionsOverTime(
       grouped.set(p, (grouped.get(p) || 0) + 1);
     });
 
-    return Array.from(grouped.entries())
-      .map(([period, count]) => ({ period, count }))
-      .sort((a, b) => a.period.localeCompare(b.period));
+    // Zero-fill: every bucket in the range appears, even with no activity.
+    return buildBuckets(period, bucketCount).map((label) => ({
+      period: label,
+      count: grouped.get(label) ?? 0,
+    }));
   });
 }
 
@@ -182,7 +214,7 @@ export async function getMerchantCategoryDistribution(merchantId?: string): Prom
   const cacheKey = merchantId ? `merchant-categories:${merchantId}` : "merchant-categories";
   return getCachedOrCalculate(cacheKey, async () => {
     const merchants = await prisma.merchant.findMany({
-      where: { isActive: true, ...(merchantId && { id: merchantId }) },
+      where: { isActive: true, deletedAt: null, ...(merchantId && { id: merchantId }) },
     });
 
     const total = merchants.length;
@@ -210,7 +242,7 @@ export async function getWealthVolumeOverTime(
     ? `wealth-volume-${period}:${merchantId}`
     : `wealth-volume-${period}`;
   return getCachedOrCalculate(cacheKey, async () => {
-    const { startDate } = getDateRange(period);
+    const { startDate, bucketCount } = getDateRange(period);
 
     const redemptions = await prisma.redemption.findMany({
       where: {
@@ -229,9 +261,11 @@ export async function getWealthVolumeOverTime(
       grouped.set(p, (grouped.get(p) || 0) + Number(r.wealthAmount));
     });
 
-    return Array.from(grouped.entries())
-      .map(([period, volume]) => ({ period, volume: volume.toFixed(4) }))
-      .sort((a, b) => a.period.localeCompare(b.period));
+    // Zero-fill so the volume chart spans the full range.
+    return buildBuckets(period, bucketCount).map((label) => ({
+      period: label,
+      volume: (grouped.get(label) ?? 0).toFixed(4),
+    }));
   });
 }
 

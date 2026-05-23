@@ -1,8 +1,10 @@
 import { Hono } from "hono";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../db.js";
 import { requireAdminRole, requireManagerOrAdmin, type AuthEnv } from "../../middleware/auth.js";
 import { qrScanLimiter } from "../../middleware/rate-limit.js";
 import { scanQrSchema } from "../../schemas/qr-code.js";
+import { parseSort, buildOrderBy } from "../../lib/list-query.js";
 
 const adminQrCodes = new Hono<AuthEnv>();
 
@@ -131,6 +133,19 @@ adminQrCodes.get("/", async (c) => {
     }),
   };
 
+  const orderBy = buildOrderBy<Prisma.QrCodeOrderByWithRelationInput>(
+    parseSort(c),
+    {
+      status: (dir) => ({ status: dir }),
+      assignedAt: (dir) => ({ assignedAt: dir }),
+      usedAt: (dir) => ({ usedAt: dir }),
+      qrNumber: (dir) => ({ qrNumber: dir }),
+      voucher: (dir) => ({ voucher: { title: dir } }),
+      createdAt: (dir) => ({ createdAt: dir }),
+    },
+    (dir) => ({ createdAt: dir }),
+  );
+
   const [qrCodes, total] = await Promise.all([
     prisma.qrCode.findMany({
       where,
@@ -138,7 +153,7 @@ adminQrCodes.get("/", async (c) => {
         voucher: { select: { title: true, merchant: { select: { name: true } } } },
         scannedBy: { select: { user: { select: { email: true } } } },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy,
       skip: (page - 1) * limit,
       take: limit,
     }),

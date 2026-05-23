@@ -163,7 +163,7 @@ export async function ensureQrAssigned(redemptionId: string): Promise<void> {
         data: {
           status: "REDEEMED",
           redemptionId,
-          usedAt: now,
+          assignedAt: now,
           token: qrData[i].token,
           imageUrl: qrData[i].imageUrl,
           imageHash: qrData[i].imageHash,
@@ -309,6 +309,7 @@ export async function releasePendingRedemption(
       data: {
         status: "AVAILABLE",
         redemptionId: null,
+        assignedAt: null,
         usedAt: null,
         scannedById: null,
         imageUrl: null,

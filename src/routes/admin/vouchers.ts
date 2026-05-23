@@ -7,17 +7,53 @@ import {
   updateVoucherSchema,
 } from "../../schemas/voucher.js";
 import { getLiveFeeConfig, injectFeeFields } from "../../services/pricing.js";
+import { parseSort, buildOrderBy } from "../../lib/list-query.js";
 import { randomUUID, randomBytes } from "crypto";
 
 const adminVouchers = new Hono<AuthEnv>();
 
 const notDeleted = { deletedAt: null };
 
+// Midnight (UTC) of today's WIB calendar date — matches how @db.Date values are
+// stored, so date-only comparisons for derived voucher status are correct.
+function wibTodayUtcMidnight(): Date {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const [y, m, d] = fmt.format(new Date()).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+// Translate a derived voucher status into a Prisma where-clause. Priority mirrors
+// deriveVoucherStatus() in the back-office (inactive → expired → upcoming →
+// depleted → active) so server-side filtering and the client badge agree.
+function voucherStatusWhere(status: string | undefined): Prisma.VoucherWhereInput {
+  const today = wibTodayUtcMidnight();
+  switch (status) {
+    case "inactive":
+      return { isActive: false };
+    case "expired":
+      return { isActive: true, expiryDate: { lt: today } };
+    case "upcoming":
+      return { isActive: true, startDate: { gt: today }, expiryDate: { gte: today } };
+    case "depleted":
+      return { isActive: true, startDate: { lte: today }, expiryDate: { gte: today }, remainingStock: { lte: 0 } };
+    case "active":
+      return { isActive: true, startDate: { lte: today }, expiryDate: { gte: today }, remainingStock: { gt: 0 } };
+    default:
+      return {};
+  }
+}
+
 // GET /api/admin/vouchers — List vouchers (merchant-scoped for ADMIN role)
 adminVouchers.get("/", async (c) => {
   const adminAuth = c.get("adminAuth");
   const merchantIdQuery = c.req.query("merchantId");
   const search = c.req.query("search");
+  const status = c.req.query("status");
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "20");
 
@@ -26,17 +62,34 @@ adminVouchers.get("/", async (c) => {
       ? adminAuth.merchantId
       : merchantIdQuery || undefined;
 
-  const where = {
+  const where: Prisma.VoucherWhereInput = {
     ...notDeleted,
     ...(merchantIdFilter && { merchantId: merchantIdFilter }),
-    ...(search && { title: { contains: search, mode: "insensitive" as const } }),
+    ...(search && { title: { contains: search, mode: "insensitive" } }),
+    ...voucherStatusWhere(status),
   };
+
+  const orderBy = buildOrderBy<Prisma.VoucherOrderByWithRelationInput>(
+    parseSort(c),
+    {
+      title: (dir) => ({ title: dir }),
+      merchant: (dir) => ({ merchant: { name: dir } }),
+      basePrice: (dir) => ({ basePrice: dir }),
+      remainingStock: (dir) => ({ remainingStock: dir }),
+      totalStock: (dir) => ({ totalStock: dir }),
+      expiryDate: (dir) => ({ expiryDate: dir }),
+      startDate: (dir) => ({ startDate: dir }),
+      isActive: (dir) => ({ isActive: dir }),
+      createdAt: (dir) => ({ createdAt: dir }),
+    },
+    (dir) => ({ createdAt: dir }),
+  );
 
   const [vouchersList, total, feeConfig] = await Promise.all([
     prisma.voucher.findMany({
       where,
       include: { merchant: true },
-      orderBy: { createdAt: "desc" },
+      orderBy,
       skip: (page - 1) * limit,
       take: limit,
     }),
