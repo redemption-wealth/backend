@@ -194,6 +194,29 @@ redemptions.post("/:id/reconcile", requireUser, async (c) => {
   });
 });
 
+// POST /api/redemptions/:id/cancel — User: cancel a pre-broadcast pending
+// (e.g. wallet signature failed on insufficient gas) so it leaves no history.
+redemptions.post("/:id/cancel", requireUser, async (c) => {
+  const id = c.req.param("id");
+  const user = c.get("userAuth");
+
+  const owned = await prisma.redemption.findFirst({
+    where: { id, userEmail: user.userEmail },
+    select: { id: true, status: true, txHash: true },
+  });
+  if (!owned) {
+    return c.json({ error: "Redemption not found" }, 404);
+  }
+  // Only cancel a PENDING redemption that never broadcast a transaction. Once a
+  // txHash exists the transfer is on-chain — leave it for confirm/reconcile.
+  if (owned.status !== "PENDING" || owned.txHash) {
+    return c.json({ ok: false });
+  }
+
+  const released = await releasePendingRedemption(id);
+  return c.json({ ok: released });
+});
+
 // PATCH /api/redemptions/:id/submit-tx — User: submit txHash
 redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
   const id = c.req.param("id");
