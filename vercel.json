@@ -10,7 +10,7 @@
   "crons": [
     {
       "path": "/api/cron/expire-pending-redemptions",
-      "schedule": "0 * * * *"
+      "schedule": "0 19 * * *"
     }
   ]
 }
