@@ -3,7 +3,6 @@ import bcryptjs from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import { prisma } from "../db.js";
 import { requireAdmin, type AuthEnv } from "../middleware/auth.js";
-import { auth } from "../lib/auth.js";
 import { loginLimiter, setPasswordLimiter } from "../middleware/rate-limit.js";
 import { signInSchema, setupPasswordSchema, changePasswordSchema } from "../schemas/auth.js";
 

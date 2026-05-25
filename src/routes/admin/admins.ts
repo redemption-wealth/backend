@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import bcryptjs from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import { prisma } from "../../db.js";
 import { requireOwner, type AuthEnv } from "../../middleware/auth.js";

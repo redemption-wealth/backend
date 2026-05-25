@@ -64,15 +64,6 @@ export const setPasswordLimiter = createRateLimiter({
   },
 });
 
-export const userSyncLimiter = createRateLimiter({
-  maxAttempts: 10,
-  windowMs: 60 * 1000, // 1 minute
-  keyFn: (c) => {
-    const ip = c.req.header("x-forwarded-for") || "unknown";
-    return `user-sync:${ip}`;
-  },
-});
-
 export const qrScanLimiter = createRateLimiter({
   maxAttempts: 60,
   windowMs: 60 * 1000, // 1 minute

@@ -26,9 +26,9 @@
 ## ✨ Features
 
 ### 🔐 Security First
-- ✅ JWT authentication for admins (24h expiration)
+- ✅ Better Auth session authentication for admins (7-day expiration, bearer tokens)
 - ✅ Privy integration for user authentication
-- ✅ Role-based access control (Admin/Owner)
+- ✅ Role-based access control (Owner/Manager/Admin)
 - ✅ Rate limiting on auth endpoints
 - ✅ Input validation with Zod schemas
 - ✅ SQL injection & XSS protection
@@ -39,7 +39,7 @@
 - ✅ Voucher management (stock, dates, pricing)
 - ✅ Multi-QR redemption (1 or 2 QR per voucher)
 - ✅ 3-component pricing (base + app fee + gas fee)
-- ✅ Real-time $WEALTH price from CoinGecko
+- ✅ Real-time $WEALTH price from CoinMarketCap (USD/IDR via open.er-api.com)
 - ✅ Gas fee configuration (hot-swappable)
 - ✅ Blockchain transaction tracking
 - ✅ Idempotent redemptions
@@ -91,13 +91,13 @@ pnpm db:seed
 pnpm dev
 ```
 
-Server running at `http://localhost:3000` 🎉
+Server running at `http://localhost:3001` 🎉
 
-**Default Admin:**
-- Email: `owner@wealth.com`
-- Password: `owner123`
+**Default Admin (seeded):**
+- Email: `owner@wealthcrypto.fund` (override with `INITIAL_OWNER_EMAIL`)
+- Password: _not seeded_ — the owner account is created with a NULL password and must set one via the first-login setup-token flow.
 
-⚠️ **Change password immediately after first login!**
+⚠️ **The first login issues a one-time setup token to create the password.**
 
 ---
 
@@ -105,9 +105,6 @@ Server running at `http://localhost:3000` 🎉
 
 | Document | Description |
 |----------|-------------|
-| [API Documentation](./docs/API_DOCUMENTATION.md) | Complete API reference with examples |
-| [Quick Start Guide](./docs/QUICK_START.md) | Get started in 5 minutes |
-| [Deployment Guide](./docs/DEPLOYMENT.md) | Deploy to Railway, Vercel, Docker, etc. |
 | [Architecture Overview](./docs/ARCHITECTURE.md) | System design, security model, scaling |
 
 ---
@@ -118,39 +115,52 @@ Server running at `http://localhost:3000` 🎉
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/auth/user-sync` | Sync user from Privy |
 | `GET` | `/api/merchants` | List active merchants |
 | `GET` | `/api/merchants/:id` | Get merchant details |
 | `GET` | `/api/vouchers` | List available vouchers |
 | `POST` | `/api/vouchers/:id/redeem` | Initiate redemption |
 | `GET` | `/api/redemptions` | User's redemptions |
 | `PATCH` | `/api/redemptions/:id/submit-tx` | Submit blockchain tx hash |
-| `GET` | `/api/transactions` | User's transaction history |
 | `GET` | `/api/price/wealth` | Current $WEALTH price (IDR) |
 
 ### Admin Routes (Back-office)
 
+#### Auth
+
 | Method | Endpoint | Description | Role |
 |--------|----------|-------------|------|
-| `POST` | `/api/auth/login` | Admin login | - |
-| `POST` | `/api/auth/set-password` | First-login password | - |
-| `GET` | `/api/admin/merchants` | List all merchants | Admin |
-| `POST` | `/api/admin/merchants` | Create merchant | Admin |
-| `PUT` | `/api/admin/merchants/:id` | Update merchant | Admin |
-| `DELETE` | `/api/admin/merchants/:id` | Delete merchant | Owner |
-| `POST` | `/api/admin/vouchers` | Create voucher | Admin |
-| `PUT` | `/api/admin/vouchers/:id` | Update voucher | Admin |
-| `POST` | `/api/admin/qr-codes` | Upload QR code | Admin |
-| `POST` | `/api/admin/qr-codes/:id/mark-used` | Mark QR as used | Admin |
-| `GET` | `/api/admin/redemptions` | View all redemptions | Admin |
-| `GET` | `/api/admin/settings` | Get app settings | Admin |
-| `PUT` | `/api/admin/settings` | Update settings | Owner |
-| `POST` | `/api/admin/fee-settings` | Create gas fee | Admin |
-| `POST` | `/api/admin/fee-settings/:id/activate` | Activate fee | Owner |
-| `GET` | `/api/admin/analytics/summary` | Dashboard stats | Owner |
-| `GET` | `/api/admin/admins` | User management | Owner |
+| `POST` | `/api/auth/sign-in/email` | Admin login | - |
+| `POST` | `/api/auth/sign-out` | Sign out current session | Authenticated |
+| `POST` | `/api/auth/sign-out-others` | Sign out all other sessions | Authenticated |
+| `POST` | `/api/auth/setup-password` | First-login password (setup token) | - |
+| `POST` | `/api/auth/change-password` | Change password | Authenticated |
+| `GET` | `/api/auth/get-session` | Current session info | Authenticated |
 
-**See [API Documentation](./docs/API_DOCUMENTATION.md) for complete details.**
+#### Admin (Back-office)
+
+| Method | Endpoint | Description | Role |
+|--------|----------|-------------|------|
+| `GET` | `/api/admin/merchants` | List merchants | Authenticated |
+| `POST` | `/api/admin/merchants` | Create merchant | Manager+ |
+| `PUT` | `/api/admin/merchants/:id` | Update merchant | Manager+ |
+| `DELETE` | `/api/admin/merchants/:id` | Delete merchant | Manager+ |
+| `GET` | `/api/admin/vouchers` | List vouchers | Authenticated |
+| `POST` | `/api/admin/vouchers` | Create voucher | Authenticated |
+| `PUT` | `/api/admin/vouchers/:id` | Update voucher | Authenticated |
+| `GET` | `/api/admin/qr-codes` | List QR codes | Authenticated |
+| `GET` | `/api/admin/qr-codes/counts` | QR counts by status | Manager/Admin |
+| `POST` | `/api/admin/qr-codes/scan` | Scan/redeem a QR code | Admin role |
+| `GET` | `/api/admin/redemptions` | View all redemptions | Owner |
+| `GET` | `/api/admin/settings` | Get app settings (incl. fees) | Manager+ |
+| `PUT` | `/api/admin/settings` | Update settings/fees | Manager+ |
+| `GET` | `/api/admin/analytics/summary` | Dashboard summary stats | Authenticated |
+| `GET` | `/api/admin/analytics/redemptions-over-time` | Redemptions trend | Authenticated |
+| `GET` | `/api/admin/analytics/merchant-categories` | Category distribution | Authenticated |
+| `GET` | `/api/admin/analytics/wealth-volume` | $WEALTH volume trend | Authenticated |
+| `GET` | `/api/admin/analytics/top-merchants` | Top merchants | Authenticated |
+| `GET` | `/api/admin/analytics/top-vouchers` | Top vouchers | Authenticated |
+| `GET` | `/api/admin/analytics/treasury-balance` | On-chain treasury balance | Authenticated |
+| `GET` | `/api/admin/admins` | User management | Owner |
 
 ---
 
@@ -227,16 +237,44 @@ open coverage/index.html
 ### Environment Variables
 
 ```env
-# Required
+# Database (Supabase PostgreSQL)
 DATABASE_URL="postgresql://..."
-ADMIN_JWT_SECRET="your-secure-32-char-secret"
-PRIVY_APP_ID="your-privy-id"
-PRIVY_APP_SECRET="your-privy-secret"
 
-# Optional
-PORT=3000
-NODE_ENV=production
-ALCHEMY_WEBHOOK_SIGNING_KEY="..."
+# Server
+PORT=3001
+CORS_ORIGINS="http://localhost:5173,https://..."
+
+# Better Auth (session secret, min 32 chars)
+BETTER_AUTH_SECRET="min-32-chars-change-this-in-production"
+
+# Privy (end-user auth verification)
+PRIVY_APP_ID="your-privy-app-id"
+PRIVY_APP_SECRET="your-privy-app-secret"
+
+# Blockchain
+WEALTH_CONTRACT_ADDRESS="0x..."
+DEV_WALLET_ADDRESS="0x..."
+ETHEREUM_CHAIN_ID=11155111   # 1 = mainnet, 11155111 = Sepolia
+ALCHEMY_RPC_URL="https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY"
+ALCHEMY_WEBHOOK_SIGNING_KEY="your-alchemy-webhook-signing-key"
+
+# Price feed (CoinMarketCap for WEALTH/USD, open.er-api.com for USD/IDR)
+CMC_API_KEY="your-coinmarketcap-api-key"
+WEALTH_CMC_SLUG="wealth-crypto"
+
+# Storage (Cloudflare R2)
+R2_ACCOUNT_ID=""
+R2_ACCESS_KEY_ID=""
+R2_SECRET_ACCESS_KEY=""
+R2_QR_BUCKET_NAME="wealth-qr-codes"
+R2_LOGO_BUCKET_NAME="wealth-logos"
+R2_LOGO_PUBLIC_URL=""
+
+# Cron (Vercel Cron auth)
+CRON_SECRET="your-cron-secret"
+
+# Seed
+INITIAL_OWNER_EMAIL="owner@wealthcrypto.fund"
 ```
 
 ---
@@ -253,7 +291,7 @@ ALCHEMY_WEBHOOK_SIGNING_KEY="..."
 
 ### Authentication
 
-- **Admin:** JWT (jose)
+- **Admin:** [Better Auth](https://better-auth.com) session tokens (bearer, 7-day expiry, bcrypt cost 12)
 - **User:** [Privy](https://privy.io) (Web3 auth)
 
 ### Validation & Security
@@ -270,7 +308,7 @@ ALCHEMY_WEBHOOK_SIGNING_KEY="..."
 
 ### External APIs
 
-- **Price:** CoinGecko (free tier)
+- **Price:** CoinMarketCap (WEALTH/USD) + open.er-api.com (USD/IDR)
 - **Blockchain:** Alchemy Webhooks
 
 ---
@@ -321,21 +359,22 @@ pnpm build            # Build for production
 pnpm start            # Start production server
 
 # Database
-pnpm db:migrate       # Run Prisma migrations
-pnpm db:seed          # Seed database
-pnpm db:studio        # Open Prisma Studio
-pnpm db:reset         # Reset database (⚠️ deletes data)
+pnpm db:generate        # Generate Prisma client
+pnpm db:migrate         # Run Prisma migrations (dev)
+pnpm db:migrate:deploy  # Apply migrations (prod)
+pnpm db:seed            # Seed database
+pnpm db:studio          # Open Prisma Studio
+
+# Maintenance
+pnpm cleanup:stale-pending  # Expire stale pending redemptions
 
 # Testing
 pnpm test             # Run all tests
 pnpm test:unit        # Unit tests only
 pnpm test:integration # Integration tests only
+pnpm test:e2e         # E2E tests only
 pnpm test:coverage    # With coverage report
 pnpm test:watch       # Watch mode
-
-# Code Quality
-pnpm lint             # Run ESLint
-pnpm typecheck        # Check TypeScript
 ```
 
 ---
@@ -362,12 +401,12 @@ Vouchers support 1 or 2 QR codes per redemption:
 
 ### Security Model
 
-- **Admin Auth:** JWT (HS256, 24h expiration)
+- **Admin Auth:** Better Auth session tokens (bearer, 7-day expiration; bcrypt cost 12)
 - **User Auth:** Privy token verification
-- **RBAC:** Admin vs Owner roles
-- **Rate Limiting:** Login, set-password, user-sync
+- **RBAC:** Three roles — `OWNER`, `MANAGER`, `ADMIN` (guards: `requireOwner`, `requireManager`, `requireManagerOrAdmin`, `requireAdminRole`)
+- **Rate Limiting:** Login (per email), set-password (per IP), qr-scan (per admin)
 - **Input Validation:** Zod schemas on all routes
-- **Data Scoping:** Users see only their own data
+- **Data Scoping:** Users see only their own data; `ADMIN` role is scoped to its merchant
 
 **See [Architecture Overview](./docs/ARCHITECTURE.md) for details.**
 

@@ -18,7 +18,7 @@
                                      │
                                      ▼
                             ┌──────────────────┐
-                            │  CoinGecko API   │
+                            │ CoinMarketCap API│
                             └──────────────────┘
 
 ┌─────────────────┐         ┌──────────────────┐
@@ -43,37 +43,39 @@ backend/
 │   ├── index.ts                  # Server entry point
 │   ├── db.ts                     # Prisma client
 │   ├── middleware/
-│   │   ├── auth.ts               # JWT & Privy auth middleware
+│   │   ├── auth.ts               # Better Auth session & Privy auth middleware
 │   │   └── rate-limit.ts         # Rate limiting middleware
 │   ├── routes/
-│   │   ├── auth.ts               # Public auth (login, set-password)
+│   │   ├── auth.ts               # Admin auth (sign-in, setup-password, session)
 │   │   ├── merchants.ts          # Public merchant routes
 │   │   ├── vouchers.ts           # Public voucher routes
 │   │   ├── redemptions.ts        # User redemption routes
-│   │   ├── transactions.ts       # User transaction history
 │   │   ├── price.ts              # $WEALTH price endpoint
 │   │   ├── webhook.ts            # Alchemy webhook
+│   │   ├── cron.ts               # Vercel cron routes
 │   │   └── admin/
+│   │       ├── overview.ts       # Overview/categories
 │   │       ├── merchants.ts      # Admin merchant CRUD
 │   │       ├── vouchers.ts       # Admin voucher CRUD
 │   │       ├── qr-codes.ts       # Admin QR management
 │   │       ├── redemptions.ts    # Admin redemption view
 │   │       ├── admins.ts         # User management (owner-only)
-│   │       ├── settings.ts       # App settings
-│   │       ├── fee-settings.ts   # Gas fee settings
+│   │       ├── settings.ts       # App settings (incl. fees)
+│   │       ├── upload.ts         # Asset uploads (R2)
 │   │       └── analytics.ts      # Dashboard stats
 │   ├── services/
 │   │   ├── redemption.ts         # Core redemption logic
-│   │   ├── price.ts              # CoinGecko integration
+│   │   ├── price.ts              # CoinMarketCap integration
 │   │   ├── pricing.ts            # 3-component pricing calc
-│   │   ├── fee-setting.ts        # Fee management
+│   │   ├── qr-generator.ts       # QR code generation
+│   │   ├── r2.ts                 # Cloudflare R2 storage
 │   │   └── analytics.ts          # Stats aggregation
 │   └── schemas/
 │       ├── auth.ts               # Zod schemas for auth
 │       ├── merchant.ts           # Merchant validation
 │       ├── voucher.ts            # Voucher validation
+│       ├── qr-code.ts            # QR code validation
 │       ├── admin.ts              # Admin validation
-│       ├── fee-setting.ts        # Fee validation
 │       ├── settings.ts           # Settings validation
 │       └── common.ts             # Shared schemas
 ├── prisma/
@@ -85,9 +87,6 @@ backend/
 │   ├── integration/              # Integration tests (real DB)
 │   └── e2e/                      # End-to-end tests
 └── docs/
-    ├── API_DOCUMENTATION.md      # API reference
-    ├── QUICK_START.md            # Getting started
-    ├── DEPLOYMENT.md             # Deploy guide
     └── ARCHITECTURE.md           # This file
 ```
 
@@ -105,7 +104,7 @@ backend/
 
 ### Authentication
 
-- **Admin Auth:** JWT (jose library)
+- **Admin Auth:** Better Auth session tokens (bearer; 7-day expiry)
 - **User Auth:** Privy (Web3 auth)
 
 ### Validation
@@ -121,7 +120,7 @@ backend/
 
 ### External Services
 
-- **Price Feed:** CoinGecko API (free tier)
+- **Price Feed:** CoinMarketCap API (WEALTH/USD) + open.er-api.com (USD/IDR)
 - **Blockchain Events:** Alchemy Webhooks
 
 ---
@@ -131,8 +130,8 @@ backend/
 ### Core Tables
 
 1. **Admin** - Back-office users
-   - JWT-based auth
-   - Roles: admin, owner
+   - Better Auth session-based auth
+   - Roles: OWNER, MANAGER, ADMIN
    - First-login flow support (nullable password)
 
 2. **User** - App users
@@ -189,10 +188,10 @@ Admin 1:N Merchant (createdBy)
 ### Authentication
 
 **Admin:**
-- JWT tokens (HS256 algorithm)
-- 24-hour expiration
-- Secrets >= 32 characters
-- Password hashing: bcrypt (10 rounds)
+- Better Auth session tokens (bearer)
+- 7-day expiration
+- `BETTER_AUTH_SECRET` >= 32 characters
+- Password hashing: bcrypt (cost 12)
 
 **User:**
 - Privy token verification
@@ -203,13 +202,20 @@ Admin 1:N Merchant (createdBy)
 
 **RBAC (Role-Based Access Control):**
 
-| Route | Admin | Owner |
-|-------|-------|-------|
-| Public routes | ❌ | ❌ |
-| Admin CRUD | ✅ | ✅ |
-| User management | ❌ | ✅ |
-| Analytics | ❌ | ✅ |
-| Settings (write) | ❌ | ✅ |
+Three roles, enforced by middleware guards that run after `requireAdmin`:
+- `requireOwner` — OWNER only
+- `requireManager` — OWNER or MANAGER
+- `requireManagerOrAdmin` — OWNER, MANAGER, or ADMIN
+- `requireAdminRole` — ADMIN only (merchant-scoped operations, e.g. QR scan)
+
+| Capability | OWNER | MANAGER | ADMIN |
+|------------|-------|---------|-------|
+| User management (`/admins`) | ✅ | ❌ | ❌ |
+| View all redemptions | ✅ | ❌ | ❌ |
+| Merchant create/update/delete | ✅ | ✅ | ❌ |
+| Settings (read/write, incl. fees) | ✅ | ✅ | ❌ |
+| QR scan / mark used | ❌ | ❌ | ✅ |
+| Vouchers, analytics, QR list | ✅ | ✅ | ✅ (merchant-scoped) |
 
 **User Access Control:**
 - Users can only access their own data
@@ -227,17 +233,17 @@ Admin 1:N Merchant (createdBy)
 ### Rate Limiting
 
 **Protected Endpoints:**
-- Login: 5 attempts per email per 15 min
-- Set password: 3 attempts per email per 15 min
-- User sync: 10 requests per IP per minute
+- Login (`loginLimiter`): keyed per email, 15-min window
+- Set password (`setPasswordLimiter`): keyed per IP, 15-min window
+- QR scan (`qrScanLimiter`): 60 requests per admin per minute
 
 **Implementation:** In-memory Map with TTL
 
 ### Data Protection
 
 - Database credentials in environment variables
-- JWT secrets in environment variables
-- Sensitive fields excluded from responses (passwordHash)
+- Auth secrets (`BETTER_AUTH_SECRET`) in environment variables
+- Sensitive fields excluded from responses (password hashes)
 - HTTPS enforced in production
 
 ---
@@ -270,9 +276,9 @@ Admin 1:N Merchant (createdBy)
    - Decrements voucher stock
    - Creates transaction ledger entry
    ↓
-6. Merchant marks QR as used (POST /api/admin/qr-codes/:id/mark-used)
-   - QR status: assigned → used
-   - Sets usedAt timestamp
+6. Merchant scans QR to mark it used (POST /api/admin/qr-codes/scan)
+   - QR status: REDEEMED → USED
+   - Sets usedAt timestamp; completes the slot when all its QRs are used
 ```
 
 ### 3-Component Pricing
@@ -518,9 +524,9 @@ wealthAmount = 30,750 / 850 = 36.176 WEALTH
 ✅ SQL injection prevention (Prisma)
 ✅ XSS prevention (Prisma escaping)
 ✅ Rate limiting (brute force protection)
-✅ JWT expiration (24h)
-✅ Password hashing (bcrypt)
-✅ RBAC (admin/owner roles)
+✅ Session expiration (7d, Better Auth)
+✅ Password hashing (bcrypt cost 12)
+✅ RBAC (OWNER/MANAGER/ADMIN roles)
 ✅ User data scoping
 ✅ HTTPS enforcement
 ✅ Webhook signature verification
@@ -594,9 +600,6 @@ wealthAmount = 30,750 / 850 = 36.176 WEALTH
 
 ## 📚 Additional Resources
 
-- [API Documentation](./API_DOCUMENTATION.md)
-- [Quick Start Guide](./QUICK_START.md)
-- [Deployment Guide](./DEPLOYMENT.md)
 - [Prisma Docs](https://www.prisma.io/docs)
 - [Hono Docs](https://hono.dev)
 - [Vitest Docs](https://vitest.dev)
