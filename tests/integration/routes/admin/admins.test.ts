@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
 import { jsonPost, jsonPut, authGet, authDelete } from "../../../helpers/request.js";
-import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/auth.js";
+import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/admin-session.js";
 
 const fixtures = createFixtures(testPrisma);
 
@@ -29,41 +29,68 @@ describe("GET /api/admin/admins", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.admins.length).toBeGreaterThanOrEqual(2);
+    // No password material is ever exposed on the admin list.
     expect(body.admins[0].passwordHash).toBeUndefined();
+    expect(body.admins[0].password).toBeUndefined();
   });
 });
 
 describe("POST /api/admin/admins", () => {
-  test("creates admin with null passwordHash", async () => {
+  test("creates MANAGER admin (pending setup, no password yet)", async () => {
     const { token } = await createOwnerWithToken();
     const res = await jsonPost("/api/admin/admins", {
-      email: `newadmin-${Date.now()}@test.com`,
+      email: `newmanager-${Date.now()}@test.com`,
+      role: "MANAGER",
+    }, token);
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.admin.pendingSetup).toBe(true);
+    expect(body.setupToken).toBeDefined();
+  });
+
+  test("creates ADMIN admin scoped to a merchant", async () => {
+    const { token } = await createOwnerWithToken();
+    const merchant = await fixtures.createMerchant();
+    const res = await jsonPost("/api/admin/admins", {
+      email: `scoped-${Date.now()}@test.com`,
+      role: "ADMIN",
+      merchantId: merchant.id,
     }, token);
     expect(res.status).toBe(201);
   });
 
-  test("creates admin with password", async () => {
+  test("returns 422 when ADMIN role has no merchantId", async () => {
     const { token } = await createOwnerWithToken();
     const res = await jsonPost("/api/admin/admins", {
-      email: `withpass-${Date.now()}@test.com`,
-      password: "password-123",
+      email: `noscope-${Date.now()}@test.com`,
+      role: "ADMIN",
     }, token);
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(422);
   });
 
-  test("returns 400 for duplicate email", async () => {
-    const existing = await fixtures.createAdmin({ email: "dup@test.com" });
+  test("returns 409 for duplicate email", async () => {
+    await fixtures.createAdmin({ email: "dup@test.com" });
     const { token } = await createOwnerWithToken();
     const res = await jsonPost("/api/admin/admins", {
       email: "dup@test.com",
+      role: "MANAGER",
+    }, token);
+    expect(res.status).toBe(409);
+  });
+
+  test("returns 400 for invalid data (bad email)", async () => {
+    const { token } = await createOwnerWithToken();
+    const res = await jsonPost("/api/admin/admins", {
+      email: "not-an-email",
+      role: "MANAGER",
     }, token);
     expect(res.status).toBe(400);
   });
 
-  test("returns 400 for invalid data", async () => {
+  test("returns 400 for missing role", async () => {
     const { token } = await createOwnerWithToken();
     const res = await jsonPost("/api/admin/admins", {
-      email: "not-an-email",
+      email: `norole-${Date.now()}@test.com`,
     }, token);
     expect(res.status).toBe(400);
   });
@@ -73,6 +100,7 @@ describe("POST /api/admin/admins", () => {
     const token = await createTestAdminToken({ id: admin.id, role: "admin" });
     const res = await jsonPost("/api/admin/admins", {
       email: "test@test.com",
+      role: "MANAGER",
     }, token);
     expect(res.status).toBe(403);
   });
@@ -101,9 +129,11 @@ describe("DELETE /api/admin/admins/:id", () => {
     expect(res.status).toBe(200);
   });
 
-  test("returns 400 when deleting self", async () => {
+  test("returns 403 + CANNOT_DELETE_SELF when deleting self", async () => {
     const { owner, token } = await createOwnerWithToken();
     const res = await authDelete(`/api/admin/admins/${owner.id}`, token);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe("CANNOT_DELETE_SELF");
   });
 });

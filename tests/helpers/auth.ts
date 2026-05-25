@@ -1,95 +1,43 @@
-import * as jose from "jose";
+// Pure (no-DB) auth helpers — safe to import from unit tests.
+//
+// Admin auth is now Better Auth session-based (a valid admin token = a real
+// Session row). The DB-backed session helpers live in helpers/admin-session.ts
+// and are imported only by integration/e2e tests. The functions here generate
+// opaque token strings for which NO Session row exists, which is exactly what
+// the unit middleware tests need for negative-auth assertions (any unknown /
+// malformed bearer token → getSession null → 401).
+import { randomBytes } from "node:crypto";
 
-const TEST_JWT_SECRET = new TextEncoder().encode(
-  process.env.ADMIN_JWT_SECRET || "test-secret-min-32-chars-for-vitest-testing"
-);
-
-export async function createTestAdminToken(overrides?: {
-  id?: string;
-  email?: string;
-  role?: "admin" | "owner" | "manager";
-  merchantId?: string;
-  expiresIn?: string;
-}) {
-  const payload: Record<string, unknown> = {
-    id: overrides?.id ?? "test-admin-id",
-    email: overrides?.email ?? "admin@test.com",
-    role: overrides?.role ?? "admin",
-  };
-
-  if (overrides?.merchantId) {
-    payload.merchantId = overrides.merchantId;
-  }
-
-  return new jose.SignJWT(payload)
-    .setProtectedHeader({ alg: "HS256" })
-    .setExpirationTime(overrides?.expiresIn ?? "1h")
-    .sign(TEST_JWT_SECRET);
+/** Opaque random token with no backing Session row → 401 (unit-only stub). */
+export function createTestAdminToken(): string {
+  return randomBytes(32).toString("hex");
 }
 
-export async function createTestOwnerToken(overrides?: {
-  id?: string;
-  email?: string;
-  expiresIn?: string;
-}) {
-  return createTestAdminToken({
-    ...overrides,
-    role: "owner",
-    id: overrides?.id ?? "test-owner-id",
-    email: overrides?.email ?? "owner@test.com",
-  });
-}
-
-export async function createTestManagerToken(overrides?: {
-  id?: string;
-  email?: string;
-  expiresIn?: string;
-}) {
-  return createTestAdminToken({
-    ...overrides,
-    role: "manager",
-    id: overrides?.id ?? "test-manager-id",
-    email: overrides?.email ?? "manager@test.com",
-  });
-}
-
-export async function createExpiredAdminToken() {
-  const payload = { id: "test-admin-id", email: "admin@test.com", role: "admin" as const };
-
-  return new jose.SignJWT(payload)
-    .setProtectedHeader({ alg: "HS256" })
-    .setExpirationTime("0s")
-    .sign(TEST_JWT_SECRET);
-}
-
-export async function createTokenWithWrongSecret() {
-  const wrongSecret = new TextEncoder().encode("wrong-secret-that-is-also-32-chars-long");
-  const payload = { id: "test-admin-id", email: "admin@test.com", role: "admin" as const };
-
-  return new jose.SignJWT(payload)
-    .setProtectedHeader({ alg: "HS256" })
-    .setExpirationTime("1h")
-    .sign(wrongSecret);
+/** Opaque random token with no backing Session row → 401 (unit-only stub). */
+export function createTestOwnerToken(): string {
+  return randomBytes(32).toString("hex");
 }
 
 /**
- * Create a mock Privy token for testing user authentication
+ * Create a mock Privy token for testing user authentication.
+ * The mocked Privy client (setup.integration.ts) resolves verifyAuthToken to
+ * whatever mockVerifyAuthToken returns, so the token string is just a handle.
  */
 export function createTestUserToken(overrides?: {
   privyUserId?: string;
   email?: string;
-}) {
+}): string {
   const privyUserId = overrides?.privyUserId ?? "test-privy-user-id";
   const email = overrides?.email ?? "user@test.com";
   return `mock-privy-token-${privyUserId}-${email}`;
 }
 
 /**
- * Setup Privy mock to return specific user claims for a token
+ * Build the claims shape the mocked Privy verifyAuthToken should resolve to.
  */
 export function mockPrivyVerification(privyUserId: string, email: string) {
   return {
     userId: privyUserId,
-    email,
+    email: { address: email },
   };
 }

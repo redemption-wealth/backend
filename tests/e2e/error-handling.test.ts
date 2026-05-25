@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import app from "@/app.js";
 import { testPrisma } from "../setup.integration.js";
 import { createFixtures } from "../helpers/fixtures.js";
-import { createTestAdminToken } from "../helpers/auth.js";
+import { createTestAdminToken } from "../helpers/admin-session.js";
 
 const fixtures = createFixtures(testPrisma);
 

@@ -8,9 +8,9 @@ const fixtures = createFixtures(testPrisma);
 describe("GET /api/merchants", () => {
   beforeEach(async () => {
     const admin = await fixtures.createAdmin({ role: "admin" });
-    await fixtures.createMerchant(admin.id, { name: "Active Merchant", categoryName: "kuliner" });
-    await fixtures.createMerchant(admin.id, { name: "Inactive Merchant", categoryName: "hiburan", isActive: false });
-    await fixtures.createMerchant(admin.id, { name: "Travel Merchant", categoryName: "travel" });
+    await fixtures.createMerchant(admin.id, { name: "Active Merchant", category: "kuliner" });
+    await fixtures.createMerchant(admin.id, { name: "Inactive Merchant", category: "hiburan", isActive: false });
+    await fixtures.createMerchant(admin.id, { name: "Travel Merchant", category: "lifestyle" });
   });
 
   test("returns paginated active merchants", async () => {
@@ -22,16 +22,11 @@ describe("GET /api/merchants", () => {
   });
 
   test("filters by category", async () => {
-    // Get kuliner category ID
-    const category = await testPrisma.category.findUnique({
-      where: { name: "kuliner" },
-    });
-
-    const res = await app.request(`/api/merchants?categoryId=${category!.id}`);
+    const res = await app.request(`/api/merchants?category=kuliner`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.merchants.length).toBeGreaterThanOrEqual(1);
-    expect(body.merchants[0].category.name).toBe("kuliner");
+    expect(body.merchants[0].category).toBe("kuliner");
   });
 
   test("search by name (case-insensitive)", async () => {

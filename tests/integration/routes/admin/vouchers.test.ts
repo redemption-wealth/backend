@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
 import { jsonPost, jsonPut, authDelete } from "../../../helpers/request.js";
-import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/auth.js";
+import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/admin-session.js";
 
 const fixtures = createFixtures(testPrisma);
 
@@ -18,7 +18,7 @@ describe("POST /api/admin/vouchers", () => {
   test("creates voucher with valid data", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
-    await fixtures.createFeeSetting({ isActive: true });
+    await fixtures.createAppSettings({ gasFeeAmount: 500 });
 
     const res = await jsonPost("/api/admin/vouchers", {
       merchantId: merchant.id,
@@ -40,7 +40,7 @@ describe("POST /api/admin/vouchers", () => {
   test("returns 400 for expiryDate < startDate", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
-    await fixtures.createFeeSetting({ isActive: true });
+    await fixtures.createAppSettings({ gasFeeAmount: 500 });
 
     const res = await jsonPost("/api/admin/vouchers", {
       merchantId: merchant.id,
@@ -56,7 +56,7 @@ describe("POST /api/admin/vouchers", () => {
   test("returns 400 for negative totalStock", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
-    await fixtures.createFeeSetting({ isActive: true });
+    await fixtures.createAppSettings({ gasFeeAmount: 500 });
 
     const res = await jsonPost("/api/admin/vouchers", {
       merchantId: merchant.id,
@@ -72,7 +72,7 @@ describe("POST /api/admin/vouchers", () => {
   test("accepts qrPerSlot = 2", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
-    await fixtures.createFeeSetting({ isActive: true });
+    await fixtures.createAppSettings({ gasFeeAmount: 500 });
 
     const res = await jsonPost("/api/admin/vouchers", {
       merchantId: merchant.id,

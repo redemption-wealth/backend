@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
 import { authGet } from "../../../helpers/request.js";
-import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/auth.js";
+import { createTestAdminToken, createTestOwnerToken } from "../../../helpers/admin-session.js";
 
 const fixtures = createFixtures(testPrisma);
 
@@ -42,24 +42,5 @@ describe("GET /api/admin/analytics/summary", () => {
     const body = await res.json();
     expect(body.summary).toBeDefined();
     expect(body.summary.totalRedemptions).toBe(0);
-  });
-});
-
-describe("GET /api/admin/analytics/recent-activity", () => {
-  test("returns 200 for admin", async () => {
-    const admin = await fixtures.createAdmin({ role: "admin" });
-    const token = await createTestAdminToken({ id: admin.id, role: "admin" });
-    const res = await authGet("/api/admin/analytics/recent-activity", token);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.activities).toBeDefined();
-  });
-
-  test("returns activity list", async () => {
-    const { token } = await createOwnerWithToken();
-    const res = await authGet("/api/admin/analytics/recent-activity?limit=5", token);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.activities).toBeDefined();
   });
 });

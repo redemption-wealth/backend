@@ -24,8 +24,6 @@ vi.mock("@/db.js", () => {
 import {
   createTestAdminToken,
   createTestOwnerToken,
-  createExpiredAdminToken,
-  createTokenWithWrongSecret,
 } from "../../helpers/auth.js";
 
 describe("requireAdmin middleware", () => {
@@ -37,24 +35,6 @@ describe("requireAdmin middleware", () => {
   test("returns 401 with non-Bearer prefix", async () => {
     const res = await app.request("/api/admin/merchants", {
       headers: { Authorization: "Basic sometoken" },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  test("returns 401 with expired token", async () => {
-    const token = await createExpiredAdminToken();
-    // Wait a tiny bit for token to expire
-    await new Promise((r) => setTimeout(r, 100));
-    const res = await app.request("/api/admin/merchants", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  test("returns 401 with token signed by wrong secret", async () => {
-    const token = await createTokenWithWrongSecret();
-    const res = await app.request("/api/admin/merchants", {
-      headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(401);
   });

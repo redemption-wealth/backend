@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
 import { jsonPost, jsonPut, authGet, authDelete } from "../../../helpers/request.js";
-import { createTestAdminToken, createTestOwnerToken, createTestManagerToken } from "../../../helpers/auth.js";
+import { createTestAdminToken, createTestOwnerToken, createTestManagerToken } from "../../../helpers/admin-session.js";
 
 const fixtures = createFixtures(testPrisma);
 
@@ -41,15 +41,9 @@ describe("POST /api/admin/merchants", () => {
   test("creates merchant with valid data (manager)", async () => {
     const { token } = await createAdminWithToken("manager");
 
-    const category = await testPrisma.category.upsert({
-      where: { name: "kuliner" },
-      update: {},
-      create: { name: "kuliner", isActive: true },
-    });
-
     const res = await jsonPost("/api/admin/merchants", {
       name: "New Merchant",
-      categoryId: category.id,
+      category: "kuliner",
     }, token);
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -59,15 +53,9 @@ describe("POST /api/admin/merchants", () => {
   test("returns 403 for admin role (merchant-scoped)", async () => {
     const { token } = await createAdminWithToken("admin");
 
-    const category = await testPrisma.category.upsert({
-      where: { name: "kuliner" },
-      update: {},
-      create: { name: "kuliner", isActive: true },
-    });
-
     const res = await jsonPost("/api/admin/merchants", {
       name: "New Merchant",
-      categoryId: category.id,
+      category: "kuliner",
     }, token);
     expect(res.status).toBe(403);
   });
@@ -75,15 +63,9 @@ describe("POST /api/admin/merchants", () => {
   test("returns 400 for invalid data", async () => {
     const { token } = await createAdminWithToken("manager");
 
-    const category = await testPrisma.category.upsert({
-      where: { name: "kuliner" },
-      update: {},
-      create: { name: "kuliner", isActive: true },
-    });
-
     const res = await jsonPost("/api/admin/merchants", {
       name: "A", // too short
-      categoryId: category.id,
+      category: "kuliner",
     }, token);
     expect(res.status).toBe(400);
   });
@@ -132,7 +114,8 @@ describe("PUT /api/admin/merchants/:id", () => {
 });
 
 describe("DELETE /api/admin/merchants/:id", () => {
-  test("returns 403 for non-owner admin", async () => {
+  // DELETE is guarded by requireManager (ADMIN role → 403).
+  test("returns 403 for admin role", async () => {
     const { admin, token } = await createAdminWithToken("admin");
     const merchant = await fixtures.createMerchant(admin.id);
 
@@ -140,8 +123,8 @@ describe("DELETE /api/admin/merchants/:id", () => {
     expect(res.status).toBe(403);
   });
 
-  test("deletes merchant for owner", async () => {
-    const { admin, token } = await createAdminWithToken("owner");
+  test("deletes merchant for manager", async () => {
+    const { admin, token } = await createAdminWithToken("manager");
     const merchant = await fixtures.createMerchant(admin.id);
 
     const res = await authDelete(`/api/admin/merchants/${merchant.id}`, token);

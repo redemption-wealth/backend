@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
 import { authGet } from "../../../helpers/request.js";
-import { createTestOwnerToken } from "../../../helpers/auth.js";
+import { createTestOwnerToken } from "../../../helpers/admin-session.js";
 
 const fixtures = createFixtures(testPrisma);
 

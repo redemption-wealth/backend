@@ -3,7 +3,7 @@ import { testPrisma } from "../setup.integration.js";
 import { createFixtures } from "../helpers/fixtures.js";
 import app from "@/app.js";
 import { jsonPost, authGet } from "../helpers/request.js";
-import { createTestAdminToken, createTestOwnerToken } from "../helpers/auth.js";
+import { createTestAdminToken, createTestOwnerToken } from "../helpers/admin-session.js";
 
 const fixtures = createFixtures(testPrisma);
 
@@ -64,18 +64,20 @@ describe("Security Hardening", () => {
     expect([201, 400]).toContain(res.status);
   });
 
-  test("deactivated admin with valid JWT — login returns 401", async () => {
+  test("deactivated admin sign-in returns 403 + ACCOUNT_INACTIVE", async () => {
     await fixtures.createAdmin({
       email: "deactivated@test.com",
-      password: "password-123",
+      password: "Password123",
       isActive: false,
     });
 
-    const res = await jsonPost("/api/auth/login", {
+    const res = await jsonPost("/api/auth/sign-in/email", {
       email: "deactivated@test.com",
-      password: "password-123",
+      password: "Password123",
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe("ACCOUNT_INACTIVE");
   });
 
   test("settings update requires owner, not admin", async () => {
