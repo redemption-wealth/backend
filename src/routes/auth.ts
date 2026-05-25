@@ -34,8 +34,14 @@ authRoutes.post("/sign-in/email", loginLimiter, async (c) => {
     },
   });
 
-  if (!admin || !admin.isActive) {
+  if (!admin) {
     return c.json({ error: "Invalid email or password" }, 401);
+  }
+
+  // Deactivated account: distinct 403 so the UI can tell the user to contact
+  // the owner instead of showing a misleading "wrong password" message.
+  if (!admin.isActive) {
+    return c.json({ error: "Account is not active", code: "ACCOUNT_INACTIVE" }, 403);
   }
 
   const account = admin.user.accounts[0];
