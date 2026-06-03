@@ -48,6 +48,7 @@ adminQrCodes.post("/scan", requireAdminRole, qrScanLimiter, async (c) => {
           title: true,
           merchantId: true,
           isActive: true,
+          startDate: true,
           expiryDate: true,
           merchant: { select: { name: true } },
         },
@@ -72,13 +73,27 @@ adminQrCodes.post("/scan", requireAdminRole, qrScanLimiter, async (c) => {
     return c.json({ error: "ALREADY_USED", code: "QR_ALREADY_USED" }, 409);
   }
 
-  // Voucher validity: a redeemed QR must still be honored only while its voucher
-  // is active and within its validity window. Reject expired/deactivated
-  // vouchers so a stale QR can't be used at the counter after the promo closed.
-  // Valid through the entire expiry day in WIB (UTC+7).
+  // Voucher validity: a redeemed QR must be honored only while its voucher is
+  // active and within its masa berlaku (validity window, WIB, UTC+7). Reject a
+  // not-yet-started or expired/deactivated voucher so a QR can't be used at the
+  // counter outside the promo window.
+  const now = new Date();
+  const startDay = new Date(qrCode.voucher.startDate);
+  startDay.setUTCHours(-7, 0, 0, 0); // 00:00 WIB = 17:00 UTC previous day
   const expiryEnd = new Date(qrCode.voucher.expiryDate);
   expiryEnd.setUTCHours(16, 59, 59, 999); // 23:59:59 WIB = 16:59:59 UTC
-  if (!qrCode.voucher.isActive || expiryEnd < new Date()) {
+  if (startDay > now) {
+    return c.json(
+      {
+        error: "VOUCHER_NOT_STARTED",
+        code: "VOUCHER_NOT_STARTED",
+        voucherTitle: qrCode.voucher.title,
+        merchantName: qrCode.voucher.merchant.name,
+      },
+      422,
+    );
+  }
+  if (!qrCode.voucher.isActive || expiryEnd < now) {
     return c.json(
       {
         error: "VOUCHER_EXPIRED",

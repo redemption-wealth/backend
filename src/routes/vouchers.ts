@@ -80,11 +80,19 @@ vouchers.get("/:id", async (c) => {
     return c.json({ error: "Voucher not found" }, 404);
   }
 
-  // Hide "Akan Datang" vouchers from the public app until their start day (WIB).
+  // Only expose vouchers within their masa berlaku (validity window, WIB) and
+  // still active — mirrors the public list filter so an early/stale link 404s
+  // just like an "Akan Datang" or expired voucher is hidden from the list.
   const nowWib = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
   nowWib.setHours(0, 0, 0, 0);
   const todayDateUtc = new Date(nowWib.getTime());
-  if (voucher.startDate > todayDateUtc) {
+  const expiryEnd = new Date(voucher.expiryDate);
+  expiryEnd.setUTCHours(16, 59, 59, 999); // 23:59:59 WIB = 16:59:59 UTC
+  const outsideValidity =
+    !voucher.isActive ||
+    voucher.startDate > todayDateUtc || // not started yet ("Akan Datang")
+    expiryEnd < new Date(); // past its expiry day
+  if (outsideValidity) {
     return c.json({ error: "Voucher not found" }, 404);
   }
 
