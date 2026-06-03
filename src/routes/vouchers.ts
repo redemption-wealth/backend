@@ -27,11 +27,16 @@ vouchers.get("/", async (c) => {
   const nowWib = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
   nowWib.setHours(0, 0, 0, 0);
   const todayStartUtc = new Date(nowWib.getTime() - 7 * 60 * 60 * 1000);
+  // Today's WIB calendar date at UTC midnight — startDate/expiryDate are @db.Date
+  // columns stored at 00:00Z, so this lets us compare on the WIB calendar day.
+  const todayDateUtc = new Date(todayStartUtc.getTime() + 7 * 60 * 60 * 1000);
 
   const where = {
     isActive: true,
     deletedAt: null,
     remainingStock: { gt: 0 },
+    // Hide "Akan Datang" vouchers: only list those whose start day has arrived.
+    startDate: { lte: todayDateUtc },
     expiryDate: { gte: todayStartUtc },
     merchant: {
       isActive: true,
@@ -72,6 +77,14 @@ vouchers.get("/:id", async (c) => {
   });
 
   if (!voucher || voucher.deletedAt || !voucher.merchant?.isActive || voucher.merchant?.deletedAt) {
+    return c.json({ error: "Voucher not found" }, 404);
+  }
+
+  // Hide "Akan Datang" vouchers from the public app until their start day (WIB).
+  const nowWib = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }));
+  nowWib.setHours(0, 0, 0, 0);
+  const todayDateUtc = new Date(nowWib.getTime());
+  if (voucher.startDate > todayDateUtc) {
     return c.json({ error: "Voucher not found" }, 404);
   }
 

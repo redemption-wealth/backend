@@ -51,6 +51,7 @@ export async function initiateRedemption({
         id: true,
         remainingStock: true,
         isActive: true,
+        startDate: true,
         expiryDate: true,
         basePrice: true,
         qrPerSlot: true,
@@ -60,6 +61,10 @@ export async function initiateRedemption({
 
     if (!voucher) throw new Error("Voucher not found");
     if (!voucher.isActive) throw new Error("Voucher is not active");
+    // Block redeeming "Akan Datang" vouchers before their start day (WIB).
+    const startDay = new Date(voucher.startDate);
+    startDay.setUTCHours(-7, 0, 0, 0); // 00:00 WIB = 17:00 UTC previous day
+    if (startDay > new Date()) throw new Error("Voucher is not active yet");
     if (voucher.remainingStock <= 0) throw new Error("Voucher out of stock");
     // Voucher is valid through the entire expiry day in WIB (UTC+7)
     const expiryEnd = new Date(voucher.expiryDate);
