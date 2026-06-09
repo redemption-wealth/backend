@@ -14,6 +14,12 @@ const adminVouchers = new Hono<AuthEnv>();
 
 const notDeleted = { deletedAt: null };
 
+// Hard ceiling on QR rows materialized per voucher (totalStock × qrPerSlot).
+// Creation pre-creates one slot + qrPerSlot QR rows per unit in a single
+// transaction; beyond this the bulk insert risks exceeding the transaction
+// timeout. 10k is far above any realistic merchant voucher.
+const MAX_QR_PER_VOUCHER = 10_000;
+
 // Midnight (UTC) of today's WIB calendar date — matches how @db.Date values are
 // stored, so date-only comparisons for derived voucher status are correct.
 function wibTodayUtcMidnight(): Date {
@@ -143,6 +149,18 @@ adminVouchers.post("/", async (c) => {
   const { title, description, startDate, expiryDate, totalStock, basePrice, qrPerSlot } =
     parsed.data;
 
+  if (totalStock * qrPerSlot > MAX_QR_PER_VOUCHER) {
+    return c.json(
+      {
+        error: `Total QR (stok × QR per slot) melebihi batas maksimal ${MAX_QR_PER_VOUCHER.toLocaleString("id-ID")}. Kurangi stok atau QR per slot.`,
+        code: "STOCK_LIMIT_EXCEEDED",
+        max: MAX_QR_PER_VOUCHER,
+        requested: totalStock * qrPerSlot,
+      },
+      422,
+    );
+  }
+
   const basePriceDecimal = new Prisma.Decimal(basePrice.toString());
 
   const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
@@ -214,7 +232,7 @@ adminVouchers.post("/", async (c) => {
     });
 
     return { voucher, slotsCreated: slots.length, qrCodesCreated: qrCodes.length };
-  });
+  }, { timeout: 30_000, maxWait: 5_000 });
 
   return c.json({
     ...result,
@@ -253,6 +271,18 @@ adminVouchers.put("/:id", async (c) => {
   const newTotalStock = parsed.data.totalStock;
 
   if (newTotalStock !== undefined && newTotalStock !== existing.totalStock) {
+    if (newTotalStock * existing.qrPerSlot > MAX_QR_PER_VOUCHER) {
+      return c.json(
+        {
+          error: `Total QR (stok × QR per slot) melebihi batas maksimal ${MAX_QR_PER_VOUCHER.toLocaleString("id-ID")}. Kurangi stok.`,
+          code: "STOCK_LIMIT_EXCEEDED",
+          max: MAX_QR_PER_VOUCHER,
+          requested: newTotalStock * existing.qrPerSlot,
+        },
+        422,
+      );
+    }
+
     const floor = await prisma.redemptionSlot.count({
       where: {
         voucherId: id,
@@ -322,7 +352,7 @@ adminVouchers.put("/:id", async (c) => {
         where: { id },
         data: { ...data, totalStock: newTotalStock, remainingStock: availableCount },
       });
-    });
+    }, { timeout: 30_000, maxWait: 5_000 });
 
     const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
     return c.json({ voucher: injectFeeFields(result, appFeeRate, gasFeeAmount) });
