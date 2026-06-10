@@ -14,15 +14,6 @@ enum AdminRole {
   ADMIN
 }
 
-enum MerchantCategory {
-  kuliner
-  hiburan
-  event
-  kesehatan
-  lifestyle
-  lainnya
-}
-
 enum SlotStatus {
   AVAILABLE
   REDEEMED
@@ -142,7 +133,7 @@ model Merchant {
   name        String
   description String?
   logoUrl     String?
-  category    MerchantCategory @default(lainnya)
+  category    String           @default("Lifestyle")
   isActive    Boolean          @default(true)
   deletedAt   DateTime?
   createdAt   DateTime         @default(now())

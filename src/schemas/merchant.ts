@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { paginationSchema } from "./common.js";
+import { MERCHANT_CATEGORIES } from "../lib/categories.js";
 
-const merchantCategoryEnum = z.enum(["kuliner", "hiburan", "event", "kesehatan", "lifestyle", "lainnya"]);
+const merchantCategoryEnum = z.enum(MERCHANT_CATEGORIES);
 
 export const createMerchantSchema = z.object({
   name: z.string().min(2).max(200),

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
 import { requireManagerOrAdmin, type AuthEnv } from "../../middleware/auth.js";
+import { MERCHANT_CATEGORIES } from "../../lib/categories.js";
 
 const adminOverview = new Hono<AuthEnv>();
 
@@ -14,11 +15,9 @@ adminOverview.get("/overview", requireManagerOrAdmin, async (c) => {
   return c.json({ totalMerchants, totalVouchers, totalQrAvailable });
 });
 
-// GET /api/admin/categories — Static list of merchant category enum values
+// GET /api/admin/categories — Canonical merchant category list (labels).
 adminOverview.get("/categories", async (c) => {
-  return c.json({
-    categories: ["kuliner", "hiburan", "event", "kesehatan", "lifestyle", "lainnya"],
-  });
+  return c.json({ categories: [...MERCHANT_CATEGORIES] });
 });
 
 export default adminOverview;
