@@ -88,27 +88,105 @@ describe("createVoucherSchema", () => {
       false,
     );
   });
+
+  test("positive: defaults format=QR, assetSource=WEALTH_GENERATED", () => {
+    const r = createVoucherSchema.safeParse(base);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.format).toBe("QR");
+      expect(r.data.assetSource).toBe("WEALTH_GENERATED");
+    }
+  });
+
+  test("negative: WEALTH_GENERATED with non-QR format rejected", () => {
+    expect(
+      createVoucherSchema.safeParse({
+        ...base,
+        assetSource: "WEALTH_GENERATED",
+        format: "BARCODE",
+      }).success,
+    ).toBe(false);
+  });
+
+  test("negative: MERCHANT_UPLOADED without values rejected", () => {
+    expect(
+      createVoucherSchema.safeParse({
+        ...base,
+        assetSource: "MERCHANT_UPLOADED",
+        format: "CODE",
+      }).success,
+    ).toBe(false);
+  });
+
+  test("positive: MERCHANT_UPLOADED + CODE with values accepted", () => {
+    expect(
+      createVoucherSchema.safeParse({
+        ...base,
+        assetSource: "MERCHANT_UPLOADED",
+        format: "CODE",
+        values: ["A", "B"],
+      }).success,
+    ).toBe(true);
+  });
+
+  test("negative: BARCODE without symbology rejected", () => {
+    expect(
+      createVoucherSchema.safeParse({
+        ...base,
+        assetSource: "MERCHANT_UPLOADED",
+        format: "BARCODE",
+        values: ["123456789012"],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("positive: BARCODE with symbology accepted", () => {
+    expect(
+      createVoucherSchema.safeParse({
+        ...base,
+        assetSource: "MERCHANT_UPLOADED",
+        format: "BARCODE",
+        barcodeSymbology: "CODE128",
+        values: ["14804667519524101"],
+      }).success,
+    ).toBe(true);
+  });
+
+  test("negative: WEALTH_GENERATED with uploaded values rejected", () => {
+    expect(
+      createVoucherSchema.safeParse({
+        ...base,
+        assetSource: "WEALTH_GENERATED",
+        format: "QR",
+        values: ["X"],
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("updateVoucherSchema", () => {
-  test("positive: partial update (only totalStock) passes", () => {
-    expect(updateVoucherSchema.safeParse({ totalStock: 50 }).success).toBe(true);
+  test("positive: partial update (only title) passes", () => {
+    expect(updateVoucherSchema.safeParse({ title: "Judul Baru" }).success).toBe(true);
   });
 
   test("positive: empty object passes (all optional)", () => {
     expect(updateVoucherSchema.safeParse({}).success).toBe(true);
   });
 
-  test("negative: totalStock negative rejected", () => {
-    expect(updateVoucherSchema.safeParse({ totalStock: -5 }).success).toBe(
-      false,
-    );
+  test("totalStock is immutable: stripped from parsed data (not editable)", () => {
+    const r = updateVoucherSchema.safeParse({ title: "Judul", totalStock: 50 });
+    expect(r.success).toBe(true);
+    if (r.success) expect("totalStock" in r.data).toBe(false);
   });
 
   test("positive: description nullable", () => {
     expect(updateVoucherSchema.safeParse({ description: null }).success).toBe(
       true,
     );
+  });
+
+  test("positive: isActive editable", () => {
+    expect(updateVoucherSchema.safeParse({ isActive: false }).success).toBe(true);
   });
 });
 

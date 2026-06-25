@@ -15,9 +15,10 @@ export const BARCODE_SYMBOLOGIES = {
   EAN13: { bcid: "ean13", label: "EAN-13" },
 } as const;
 export type BarcodeSymbology = keyof typeof BARCODE_SYMBOLOGIES;
+// Non-empty tuple so it can be passed straight to z.enum().
 export const BARCODE_SYMBOLOGY_KEYS = Object.keys(
   BARCODE_SYMBOLOGIES,
-) as BarcodeSymbology[];
+) as [BarcodeSymbology, ...BarcodeSymbology[]];
 
 // Generous upper bound — QR can hold long payloads; codes/barcodes are short.
 export const MAX_ASSET_VALUE_LENGTH = 512;
