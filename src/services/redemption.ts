@@ -2,8 +2,9 @@ import { prisma } from "../db.js";
 import { Prisma } from "@prisma/client";
 import { createPublicClient, http } from "viem";
 import { resolveChain } from "../lib/chain.js";
-import { generateQrCode, deleteQrFiles } from "./qr-generator.js";
+import { generateQrCode, generateUploadedAsset, deleteQrFiles } from "./qr-generator.js";
 import { getWealthPrice } from "./price.js";
+import type { VoucherFormat, BarcodeSymbology } from "./asset-values.js";
 
 interface InitiateRedemptionParams {
   userEmail: string;
@@ -140,10 +141,13 @@ export async function ensureQrAssigned(redemptionId: string): Promise<void> {
     where: { id: redemptionId },
     select: {
       status: true,
+      voucher: {
+        select: { format: true, assetSource: true, barcodeSymbology: true },
+      },
       slot: {
         select: {
           qrCodes: {
-            select: { id: true, qrNumber: true, redemptionId: true },
+            select: { id: true, qrNumber: true, value: true, redemptionId: true },
             orderBy: { qrNumber: "asc" },
           },
         },
@@ -156,11 +160,45 @@ export async function ensureQrAssigned(redemptionId: string): Promise<void> {
   if (qrRecords.length === 0) return;
   if (qrRecords.every((q) => q.redemptionId === redemptionId)) return; // already assigned
 
+  const now = new Date();
+
+  if (redemption.voucher.assetSource === "MERCHANT_UPLOADED") {
+    // Render each slot's pre-stored value (CODE → no image). The value is never
+    // regenerated; only the rendered image + assignment metadata are written.
+    const format = redemption.voucher.format as VoucherFormat;
+    const symbology = redemption.voucher.barcodeSymbology as BarcodeSymbology | null;
+    const rendered = await Promise.all(
+      qrRecords.map((qr) =>
+        generateUploadedAsset(redemptionId, qr.qrNumber, {
+          format,
+          value: qr.value ?? "",
+          symbology,
+        }),
+      ),
+    );
+    await prisma.$transaction(
+      qrRecords.map((qr, i) =>
+        prisma.qrCode.update({
+          where: { id: qr.id },
+          data: {
+            status: "REDEEMED",
+            redemptionId,
+            assignedAt: now,
+            imageUrl: rendered[i].imageUrl, // null for CODE
+            // imageHash is @unique NOT NULL — keep the placeholder for CODE.
+            ...(rendered[i].imageHash ? { imageHash: rendered[i].imageHash } : {}),
+          },
+        }),
+      ),
+    );
+    return;
+  }
+
+  // Wealth-generated flow (unchanged): mint a token + render a QR per record.
   // R2 uploads happen outside the DB transaction (network calls).
   const qrData = await Promise.all(
     qrRecords.map((qr) => generateQrCode(redemptionId, qr.qrNumber)),
   );
-  const now = new Date();
   await prisma.$transaction(
     qrRecords.map((qr, i) =>
       prisma.qrCode.update({
@@ -308,7 +346,9 @@ export async function releasePendingRedemption(
     if (!current || current.status !== "PENDING") return false;
 
     // Detach any assigned QR codes back to AVAILABLE (no-op in the normal flow,
-    // where a PENDING redemption never has QR codes assigned).
+    // where a PENDING redemption never has QR codes assigned). NOTE: `value` is
+    // deliberately NOT reset — a merchant-uploaded value is bound to its slot at
+    // creation and must survive release so the slot can be reused as-is.
     await tx.qrCode.updateMany({
       where: { redemptionId },
       data: {

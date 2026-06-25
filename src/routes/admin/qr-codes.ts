@@ -47,6 +47,7 @@ adminQrCodes.post("/scan", requireAdminRole, qrScanLimiter, async (c) => {
           id: true,
           title: true,
           merchantId: true,
+          assetSource: true,
           isActive: true,
           startDate: true,
           expiryDate: true,
@@ -63,6 +64,21 @@ adminQrCodes.post("/scan", requireAdminRole, qrScanLimiter, async (c) => {
   // Admin role: enforce merchant ownership
   if (adminAuth.role === "ADMIN" && qrCode.voucher.merchantId !== adminAuth.merchantId) {
     return c.json({ error: "WRONG_MERCHANT" }, 403);
+  }
+
+  // Merchant-uploaded assets are verified on the merchant's own system, not via
+  // the Wealth back-office scanner — reject so the scan→USED stock flow (which
+  // decrements stock) can never run for them.
+  if (qrCode.voucher.assetSource === "MERCHANT_UPLOADED") {
+    return c.json(
+      {
+        error: "SCAN_NOT_SUPPORTED",
+        code: "SCAN_NOT_SUPPORTED",
+        voucherTitle: qrCode.voucher.title,
+        merchantName: qrCode.voucher.merchant.name,
+      },
+      422,
+    );
   }
 
   // Status checks

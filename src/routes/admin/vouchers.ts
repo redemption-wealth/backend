@@ -6,6 +6,7 @@ import {
   createVoucherSchema,
   updateVoucherSchema,
 } from "../../schemas/voucher.js";
+import { validateUploadedValues } from "../../services/asset-values.js";
 import { getLiveFeeConfig, injectFeeFields } from "../../services/pricing.js";
 import { parseSort, buildOrderBy } from "../../lib/list-query.js";
 import { randomUUID, randomBytes } from "crypto";
@@ -146,8 +147,19 @@ adminVouchers.post("/", async (c) => {
   const merchantId =
     adminAuth.role === "ADMIN" ? adminAuth.merchantId! : parsed.data.merchantId;
 
-  const { title, description, startDate, expiryDate, totalStock, basePrice, qrPerSlot } =
-    parsed.data;
+  const {
+    title,
+    description,
+    startDate,
+    expiryDate,
+    totalStock,
+    basePrice,
+    qrPerSlot,
+    format,
+    assetSource,
+    barcodeSymbology,
+    values,
+  } = parsed.data;
 
   if (totalStock * qrPerSlot > MAX_QR_PER_VOUCHER) {
     return c.json(
@@ -159,6 +171,31 @@ adminVouchers.post("/", async (c) => {
       },
       422,
     );
+  }
+
+  // Merchant-uploaded vouchers: the supplied values must exactly fill every QR
+  // slot, with no empties/duplicates and valid per-format/symbology content.
+  // Wealth-generated vouchers carry no values (the schema already enforced that).
+  if (assetSource === "MERCHANT_UPLOADED") {
+    const validation = validateUploadedValues({
+      format,
+      symbology: barcodeSymbology ?? null,
+      values: values ?? [],
+      totalStock,
+      qrPerSlot,
+    });
+    if (!validation.ok) {
+      return c.json(
+        {
+          error: "Validasi nilai yang diupload gagal",
+          code: "UPLOAD_VALIDATION_FAILED",
+          details: validation.errors,
+          expected: validation.expected,
+          received: validation.received,
+        },
+        422,
+      );
+    }
   }
 
   const basePriceDecimal = new Prisma.Decimal(basePrice.toString());
@@ -175,6 +212,7 @@ adminVouchers.post("/", async (c) => {
     slotId: string;
     qrNumber: number;
     token: string;
+    value: string | null;
     imageUrl: string;
     imageHash: string;
   }> = [];
@@ -183,11 +221,17 @@ adminVouchers.post("/", async (c) => {
     for (let qrNum = 1; qrNum <= qrPerSlot; qrNum++) {
       const qrId = randomUUID();
       const token = randomBytes(16).toString("hex");
+      // CSV row order: slot N, qr M → values[(N-1) * qrPerSlot + (M-1)].
+      const value =
+        assetSource === "MERCHANT_UPLOADED" && values
+          ? (values[(slot.slotIndex - 1) * qrPerSlot + (qrNum - 1)] ?? "").trim()
+          : null;
       qrCodes.push({
         id: qrId,
         slotId: slot.id,
         qrNumber: qrNum,
         token,
+        value,
         imageUrl: `https://placeholder.qr/${qrId}`,
         imageHash: `hash_${qrId}`,
       });
@@ -206,6 +250,9 @@ adminVouchers.post("/", async (c) => {
         remainingStock: totalStock,
         basePrice: basePriceDecimal,
         qrPerSlot,
+        format,
+        assetSource,
+        barcodeSymbology: format === "BARCODE" ? (barcodeSymbology ?? null) : null,
         appFeeSnapshot: appFeeRate,
         gasFeeSnapshot: gasFeeAmount,
       },
@@ -226,6 +273,7 @@ adminVouchers.post("/", async (c) => {
         slotId: qr.slotId,
         qrNumber: qr.qrNumber,
         token: qr.token,
+        value: qr.value,
         imageUrl: qr.imageUrl,
         imageHash: qr.imageHash,
       })),
@@ -248,7 +296,7 @@ adminVouchers.put("/:id", async (c) => {
 
   const existing = await prisma.voucher.findUnique({
     where: { id },
-    select: { merchantId: true, totalStock: true, qrPerSlot: true, deletedAt: true },
+    select: { merchantId: true, deletedAt: true },
   });
 
   if (!existing || existing.deletedAt) {
@@ -264,99 +312,12 @@ adminVouchers.put("/:id", async (c) => {
     return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
+  // Metadata-only update. Stock is immutable after creation (reducing was dropped;
+  // to add capacity, create a new voucher), so totalStock/qrPerSlot/format/source
+  // are never touched here — the schema doesn't even accept them.
   const data = { ...parsed.data } as Record<string, unknown>;
   if (data.startDate) data.startDate = new Date(data.startDate as string);
   if (data.expiryDate) data.expiryDate = new Date(data.expiryDate as string);
-
-  const newTotalStock = parsed.data.totalStock;
-
-  if (newTotalStock !== undefined && newTotalStock !== existing.totalStock) {
-    if (newTotalStock * existing.qrPerSlot > MAX_QR_PER_VOUCHER) {
-      return c.json(
-        {
-          error: `Total QR (stok × QR per slot) melebihi batas maksimal ${MAX_QR_PER_VOUCHER.toLocaleString("id-ID")}. Kurangi stok.`,
-          code: "STOCK_LIMIT_EXCEEDED",
-          max: MAX_QR_PER_VOUCHER,
-          requested: newTotalStock * existing.qrPerSlot,
-        },
-        422,
-      );
-    }
-
-    const floor = await prisma.redemptionSlot.count({
-      where: {
-        voucherId: id,
-        status: { in: ["REDEEMED", "FULLY_USED"] },
-      },
-    });
-
-    if (newTotalStock < floor) {
-      return c.json(
-        { error: "Cannot reduce stock below floor", code: "BELOW_FLOOR", floor, requested: newTotalStock },
-        422
-      );
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      if (newTotalStock > existing.totalStock) {
-        const newSlots = Array.from(
-          { length: newTotalStock - existing.totalStock },
-          (_, i) => ({ id: randomUUID(), slotIndex: existing.totalStock + i + 1 })
-        );
-
-        const newQrCodes: Array<{
-          id: string; slotId: string; qrNumber: number; token: string; imageUrl: string; imageHash: string;
-        }> = [];
-
-        for (const slot of newSlots) {
-          for (let qrNum = 1; qrNum <= existing.qrPerSlot; qrNum++) {
-            const qrId = randomUUID();
-            newQrCodes.push({
-              id: qrId,
-              slotId: slot.id,
-              qrNumber: qrNum,
-              token: randomBytes(16).toString("hex"),
-              imageUrl: `https://placeholder.qr/${qrId}`,
-              imageHash: `hash_${qrId}`,
-            });
-          }
-        }
-
-        await tx.redemptionSlot.createMany({
-          data: newSlots.map((slot) => ({ id: slot.id, voucherId: id, slotIndex: slot.slotIndex })),
-        });
-
-        await tx.qrCode.createMany({
-          data: newQrCodes.map((qr) => ({
-            id: qr.id, voucherId: id, slotId: qr.slotId, qrNumber: qr.qrNumber,
-            token: qr.token, imageUrl: qr.imageUrl, imageHash: qr.imageHash,
-          })),
-        });
-      } else if (newTotalStock < existing.totalStock) {
-        const slotsToDelete = await tx.redemptionSlot.findMany({
-          where: { voucherId: id, status: "AVAILABLE", slotIndex: { gt: newTotalStock } },
-          select: { id: true },
-          orderBy: { slotIndex: "desc" },
-        });
-
-        const slotIds = slotsToDelete.map((s) => s.id);
-        await tx.qrCode.deleteMany({ where: { slotId: { in: slotIds } } });
-        await tx.redemptionSlot.deleteMany({ where: { id: { in: slotIds } } });
-      }
-
-      const availableCount = await tx.redemptionSlot.count({
-        where: { voucherId: id, status: "AVAILABLE" },
-      });
-
-      return tx.voucher.update({
-        where: { id },
-        data: { ...data, totalStock: newTotalStock, remainingStock: availableCount },
-      });
-    }, { timeout: 30_000, maxWait: 5_000 });
-
-    const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
-    return c.json({ voucher: injectFeeFields(result, appFeeRate, gasFeeAmount) });
-  }
 
   try {
     const voucher = await prisma.voucher.update({ where: { id }, data });
@@ -388,8 +349,12 @@ adminVouchers.post("/:id/toggle-active", requireManagerOrAdmin, async (c) => {
   return c.json({ voucher: updated });
 });
 
-// DELETE /api/admin/vouchers/:id — Soft delete
-adminVouchers.delete("/:id", async (c) => {
+// DELETE /api/admin/vouchers/:id — Soft delete (manager & admin only).
+// Deletion is always allowed; any uploaded/issued codes for this voucher are
+// voided ("hangus"). The UI warns before calling this. Soft-delete (deletedAt)
+// keeps redemption FK references intact; rendered R2 files are intentionally
+// left in place (a separate cron can sweep them later).
+adminVouchers.delete("/:id", requireManagerOrAdmin, async (c) => {
   const id = c.req.param("id");
   const adminAuth = c.get("adminAuth");
 
@@ -404,17 +369,6 @@ adminVouchers.delete("/:id", async (c) => {
 
   if (adminAuth.role === "ADMIN" && voucher.merchantId !== adminAuth.merchantId) {
     return c.json({ error: "Access denied" }, 403);
-  }
-
-  const activeQrCount = await prisma.qrCode.count({
-    where: { voucherId: id, status: { in: ["REDEEMED", "USED"] } },
-  });
-
-  if (activeQrCount > 0) {
-    return c.json(
-      { error: "Cannot delete voucher with active QR codes", code: "VOUCHER_HAS_ACTIVE_QR" },
-      422
-    );
   }
 
   try {

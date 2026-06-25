@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import qrcode from "qrcode";
-import bwipjs from "bwip-js";
+import bwipjs from "bwip-js/node";
 import { uploadFile } from "./r2.js";
 import {
   BARCODE_SYMBOLOGIES,
