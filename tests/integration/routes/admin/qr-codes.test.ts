@@ -87,6 +87,27 @@ describe("POST /api/admin/qr-codes/scan", () => {
     expect(body.error).toBe("ALREADY_USED");
   });
 
+  test("returns 422 SCAN_NOT_SUPPORTED for a merchant-uploaded voucher", async () => {
+    const owner = await fixtures.createAdmin({ role: "owner" });
+    const merchant = await fixtures.createMerchant(owner.id);
+    const { qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 1, {
+      assetSource: "MERCHANT_UPLOADED",
+      format: "CODE",
+      values: ["UPLOADED-1"],
+    });
+    const { token } = await createScopedAdmin(merchant.id);
+
+    const qr = await testPrisma.qrCode.update({
+      where: { id: qrCodes[0].id },
+      data: { status: "REDEEMED", assignedAt: new Date() },
+    });
+
+    const res = await jsonPost("/api/admin/qr-codes/scan", { token: qr.token }, token);
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe("SCAN_NOT_SUPPORTED");
+  });
+
   test("scoped admin gets 403 (WRONG_MERCHANT) for another merchant's QR", async () => {
     const owner = await fixtures.createAdmin({ role: "owner" });
     const merchant1 = await fixtures.createMerchant(owner.id);
