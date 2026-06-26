@@ -51,6 +51,27 @@ export const createVoucherSchema = z
     { message: "Barcode format requires a symbology", path: ["barcodeSymbology"] },
   );
 
+// Multipart (image-upload) create: numeric fields arrive as strings from
+// FormData, so coerce them. assetSource/assetInputType are implied
+// (MERCHANT_UPLOADED / IMAGE). Image upload is for QR or BARCODE only.
+export const createVoucherImageSchema = z
+  .object({
+    merchantId: z.string().min(1),
+    title: z.string().min(2).max(200),
+    description: z.string().max(2000).optional(),
+    startDate: z.string().or(z.date()),
+    expiryDate: z.string().or(z.date()),
+    totalStock: z.coerce.number().int().positive(),
+    basePrice: z.coerce.number().min(1000),
+    qrPerSlot: z.coerce.number().int().min(1).max(2).default(1),
+    format: z.enum(["QR", "BARCODE"]),
+    barcodeSymbology: z.enum(BARCODE_SYMBOLOGY_KEYS).optional(),
+  })
+  .refine(
+    (data) => new Date(data.expiryDate) >= new Date(data.startDate),
+    { message: "expiryDate must be after startDate", path: ["expiryDate"] },
+  );
+
 // totalStock / qrPerSlot / format / assetSource are immutable after creation.
 // basePrice is read-only; fees are computed from live settings.
 export const updateVoucherSchema = z.object({

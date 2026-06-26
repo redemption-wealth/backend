@@ -142,7 +142,12 @@ export async function ensureQrAssigned(redemptionId: string): Promise<void> {
     select: {
       status: true,
       voucher: {
-        select: { format: true, assetSource: true, barcodeSymbology: true },
+        select: {
+          format: true,
+          assetSource: true,
+          assetInputType: true,
+          barcodeSymbology: true,
+        },
       },
       slot: {
         select: {
@@ -161,6 +166,23 @@ export async function ensureQrAssigned(redemptionId: string): Promise<void> {
   if (qrRecords.every((q) => q.redemptionId === redemptionId)) return; // already assigned
 
   const now = new Date();
+
+  if (
+    redemption.voucher.assetSource === "MERCHANT_UPLOADED" &&
+    redemption.voucher.assetInputType === "IMAGE"
+  ) {
+    // Pre-uploaded image files: the image is already stored on each row at
+    // creation. Just hand it over (mark REDEEMED) — nothing is rendered.
+    await prisma.$transaction(
+      qrRecords.map((qr) =>
+        prisma.qrCode.update({
+          where: { id: qr.id },
+          data: { status: "REDEEMED", redemptionId, assignedAt: now },
+        }),
+      ),
+    );
+    return;
+  }
 
   if (redemption.voucher.assetSource === "MERCHANT_UPLOADED") {
     // Render each slot's pre-stored value (CODE → no image). The value is never

@@ -1,7 +1,24 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
+import AdmZip from "adm-zip";
 import { testPrisma } from "../../../setup.integration.js";
 import { createFixtures } from "../../../helpers/fixtures.js";
-import { jsonPost, jsonPut, authDelete } from "../../../helpers/request.js";
+import { jsonPost, jsonPut, authDelete, multipartPost } from "../../../helpers/request.js";
+import { renderAssetImage } from "@/services/asset-renderer.js";
+
+// Don't hit real R2 when storing uploaded images during create.
+vi.mock("@/services/r2.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/r2.js")>();
+  return { ...actual, uploadFile: vi.fn(async () => ({ success: true, key: "k" })) };
+});
+
+async function zipOf(count: number): Promise<Blob> {
+  const zip = new AdmZip();
+  for (let i = 1; i <= count; i++) {
+    const png = await renderAssetImage({ format: "BARCODE", value: `${i}00000000000`, symbology: "CODE128" });
+    zip.addFile(`${i}.png`, png!);
+  }
+  return new Blob([zip.toBuffer()]);
+}
 import {
   createTestAdminToken,
   createTestOwnerToken,
@@ -170,6 +187,56 @@ describe("POST /api/admin/vouchers", () => {
     expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.code).toBe("UPLOAD_VALIDATION_FAILED");
+  });
+
+  test("creates MERCHANT_UPLOADED + IMAGE voucher from a ZIP (multipart)", async () => {
+    const { admin, token } = await createAdminWithToken();
+    const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createAppSettings({ gasFeeAmount: 500 });
+
+    const form = new FormData();
+    form.set("merchantId", merchant.id);
+    form.set("title", "Uploaded Images");
+    form.set("startDate", "2026-01-01");
+    form.set("expiryDate", "2026-12-31");
+    form.set("totalStock", "2");
+    form.set("basePrice", "25000");
+    form.set("qrPerSlot", "1");
+    form.set("format", "BARCODE");
+    form.set("images", await zipOf(2), "barcodes.zip");
+
+    const res = await multipartPost("/api/admin/vouchers", form, token);
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.voucher.assetInputType).toBe("IMAGE");
+    expect(body.voucher.assetSource).toBe("MERCHANT_UPLOADED");
+
+    const qrs = await testPrisma.qrCode.findMany({ where: { voucherId: body.voucher.id } });
+    expect(qrs).toHaveLength(2);
+    expect(qrs.every((q) => q.imageUrl?.startsWith("voucher-assets/"))).toBe(true);
+    expect(qrs.every((q) => q.value === null)).toBe(true);
+  });
+
+  test("returns 422 when image count mismatches stock × qrPerSlot", async () => {
+    const { admin, token } = await createAdminWithToken();
+    const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createAppSettings({ gasFeeAmount: 500 });
+
+    const form = new FormData();
+    form.set("merchantId", merchant.id);
+    form.set("title", "Too Few Images");
+    form.set("startDate", "2026-01-01");
+    form.set("expiryDate", "2026-12-31");
+    form.set("totalStock", "3");
+    form.set("basePrice", "25000");
+    form.set("qrPerSlot", "1");
+    form.set("format", "BARCODE");
+    form.set("images", await zipOf(2), "barcodes.zip"); // need 3
+
+    const res = await multipartPost("/api/admin/vouchers", form, token);
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe("IMAGE_VALIDATION_FAILED");
   });
 
   test("returns 400 for WEALTH_GENERATED with non-QR format", async () => {

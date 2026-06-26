@@ -99,4 +99,42 @@ describe("Merchant-uploaded Redemption Flow E2E", () => {
     const updated = await testPrisma.voucher.findUnique({ where: { id: voucher.id } });
     expect(updated!.remainingStock).toBe(1);
   });
+
+  test("IMAGE upload: confirm assigns the pre-uploaded image, no re-render", async () => {
+    const admin = await fixtures.createAdmin();
+    const merchant = await fixtures.createMerchant(admin.id);
+    const { voucher, qrCodes } = await fixtures.createVoucherWithQrCodes(merchant.id, 1, {
+      totalStock: 1,
+      qrPerSlot: 1,
+      format: "BARCODE",
+      assetSource: "MERCHANT_UPLOADED",
+      assetInputType: "IMAGE",
+      barcodeSymbology: "CODE128",
+    });
+    const presetImageUrl = qrCodes[0].imageUrl; // set at creation, must survive confirm
+    await fixtures.createAppSettings({ appFeeRate: 3, gasFeeAmount: 5000 });
+
+    const user = fixtures.createUser();
+    const { initiateRedemption, confirmRedemption } = await import(
+      "@/services/redemption.js"
+    );
+    const { redemption } = await initiateRedemption({
+      userEmail: user.email,
+      voucherId: voucher.id,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    await testPrisma.redemption.update({
+      where: { id: redemption.id },
+      data: { txHash: "0x" + "f".repeat(64) },
+    });
+    await confirmRedemption("0x" + "f".repeat(64));
+
+    const assigned = await testPrisma.qrCode.findMany({
+      where: { redemptionId: redemption.id },
+    });
+    expect(assigned.length).toBe(1);
+    expect(assigned[0].status).toBe("REDEEMED");
+    // Pre-uploaded image is handed over unchanged (never re-rendered).
+    expect(assigned[0].imageUrl).toBe(presetImageUrl);
+  });
 });

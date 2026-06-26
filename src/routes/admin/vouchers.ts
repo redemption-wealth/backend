@@ -1,12 +1,18 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db.js";
 import { requireOwner, requireManagerOrAdmin, type AuthEnv } from "../../middleware/auth.js";
 import {
   createVoucherSchema,
+  createVoucherImageSchema,
   updateVoucherSchema,
 } from "../../schemas/voucher.js";
 import { validateUploadedValues } from "../../services/asset-values.js";
+import {
+  extractZipImages,
+  validateImageUpload,
+  storeVoucherAssetImage,
+} from "../../services/asset-images.js";
 import { getLiveFeeConfig, injectFeeFields } from "../../services/pricing.js";
 import { parseSort, buildOrderBy } from "../../lib/list-query.js";
 import { randomUUID, randomBytes } from "crypto";
@@ -134,9 +140,225 @@ adminVouchers.get("/:id", async (c) => {
   return c.json({ voucher: injectFeeFields(voucher, appFeeRate, gasFeeAmount) });
 });
 
-// POST /api/admin/vouchers — Create voucher with atomic slot + QR generation
+// Shared persistence for both create paths (value/CSV via JSON, image via
+// multipart): builds voucher + slots + QR rows atomically. The caller pre-builds
+// the qrCodes (value-based carries `value`; image-based carries a real
+// `imageUrl`), so there is a single transaction shape — no duplication.
+async function persistVoucherWithAssets(params: {
+  voucherId: string;
+  merchantId: string;
+  title: string;
+  description?: string | null;
+  startDate: string | Date;
+  expiryDate: string | Date;
+  totalStock: number;
+  basePrice: number;
+  qrPerSlot: number;
+  format: "QR" | "CODE" | "BARCODE";
+  assetSource: "WEALTH_GENERATED" | "MERCHANT_UPLOADED";
+  assetInputType: "VALUE" | "IMAGE";
+  barcodeSymbology?: string | null;
+  appFeeRate: Prisma.Decimal;
+  gasFeeAmount: Prisma.Decimal;
+  slots: Array<{ id: string; slotIndex: number }>;
+  qrCodes: Array<{
+    id: string;
+    slotId: string;
+    qrNumber: number;
+    token: string;
+    value: string | null;
+    imageUrl: string;
+    imageHash: string;
+  }>;
+}) {
+  const basePriceDecimal = new Prisma.Decimal(params.basePrice.toString());
+  return prisma.$transaction(
+    async (tx) => {
+      const voucher = await tx.voucher.create({
+        data: {
+          id: params.voucherId,
+          merchantId: params.merchantId,
+          title: params.title,
+          description: params.description ?? undefined,
+          startDate: new Date(params.startDate),
+          expiryDate: new Date(params.expiryDate),
+          totalStock: params.totalStock,
+          remainingStock: params.totalStock,
+          basePrice: basePriceDecimal,
+          qrPerSlot: params.qrPerSlot,
+          format: params.format,
+          assetSource: params.assetSource,
+          assetInputType: params.assetInputType,
+          barcodeSymbology:
+            params.format === "BARCODE" ? (params.barcodeSymbology ?? null) : null,
+          appFeeSnapshot: params.appFeeRate,
+          gasFeeSnapshot: params.gasFeeAmount,
+        },
+      });
+
+      await tx.redemptionSlot.createMany({
+        data: params.slots.map((slot) => ({
+          id: slot.id,
+          voucherId: voucher.id,
+          slotIndex: slot.slotIndex,
+        })),
+      });
+
+      await tx.qrCode.createMany({
+        data: params.qrCodes.map((qr) => ({
+          id: qr.id,
+          voucherId: voucher.id,
+          slotId: qr.slotId,
+          qrNumber: qr.qrNumber,
+          token: qr.token,
+          value: qr.value,
+          imageUrl: qr.imageUrl,
+          imageHash: qr.imageHash,
+        })),
+      });
+
+      return {
+        voucher,
+        slotsCreated: params.slots.length,
+        qrCodesCreated: params.qrCodes.length,
+      };
+    },
+    { timeout: 30_000, maxWait: 5_000 },
+  );
+}
+
+// Create a MERCHANT_UPLOADED + IMAGE voucher from a ZIP of finished image files.
+// The images are stored as-is and shown unchanged at redeem (no rendering) — used
+// when the exact original barcode/QR must be preserved (e.g. GS1).
+async function createVoucherFromImages(c: Context<AuthEnv>) {
+  const adminAuth = c.get("adminAuth");
+  const form = await c.req.parseBody();
+
+  const parsed = createVoucherImageSchema.safeParse(form);
+  if (!parsed.success) {
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
+  }
+
+  const file = form["images"];
+  if (!file || typeof file === "string" || typeof (file as File).arrayBuffer !== "function") {
+    return c.json(
+      { error: "File ZIP gambar wajib diupload (field 'images')", code: "IMAGE_FILE_REQUIRED" },
+      400,
+    );
+  }
+
+  const merchantId =
+    adminAuth.role === "ADMIN" ? adminAuth.merchantId! : parsed.data.merchantId;
+  const { title, description, startDate, expiryDate, totalStock, basePrice, qrPerSlot, format, barcodeSymbology } =
+    parsed.data;
+
+  if (totalStock * qrPerSlot > MAX_QR_PER_VOUCHER) {
+    return c.json(
+      {
+        error: `Total aset (stok × per slot) melebihi batas maksimal ${MAX_QR_PER_VOUCHER.toLocaleString("id-ID")}.`,
+        code: "STOCK_LIMIT_EXCEEDED",
+        max: MAX_QR_PER_VOUCHER,
+        requested: totalStock * qrPerSlot,
+      },
+      422,
+    );
+  }
+
+  let entries;
+  try {
+    entries = extractZipImages(Buffer.from(await (file as File).arrayBuffer()));
+  } catch {
+    return c.json({ error: "File ZIP tidak valid", code: "INVALID_ZIP" }, 400);
+  }
+
+  const validation = await validateImageUpload({ entries, totalStock, qrPerSlot });
+  if (!validation.ok) {
+    return c.json(
+      {
+        error: "Validasi gambar gagal",
+        code: "IMAGE_VALIDATION_FAILED",
+        details: validation.errors,
+        expected: validation.expected,
+        received: validation.received,
+      },
+      422,
+    );
+  }
+
+  const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
+  const voucherId = randomUUID();
+  const slots = Array.from({ length: totalStock }, (_, i) => ({
+    id: randomUUID(),
+    slotIndex: i + 1,
+  }));
+
+  // Upload each image to R2 (outside the DB transaction) in file order, mapped
+  // slot N / qr M → entries[(N-1) * qrPerSlot + (M-1)].
+  const qrCodes: Array<{
+    id: string;
+    slotId: string;
+    qrNumber: number;
+    token: string;
+    value: string | null;
+    imageUrl: string;
+    imageHash: string;
+  }> = [];
+  for (const slot of slots) {
+    for (let qrNum = 1; qrNum <= qrPerSlot; qrNum++) {
+      const idx = (slot.slotIndex - 1) * qrPerSlot + (qrNum - 1);
+      const { imageUrl, imageHash } = await storeVoucherAssetImage(
+        voucherId,
+        slot.slotIndex,
+        qrNum,
+        entries[idx].data,
+      );
+      qrCodes.push({
+        id: randomUUID(),
+        slotId: slot.id,
+        qrNumber: qrNum,
+        token: randomBytes(16).toString("hex"),
+        value: null,
+        imageUrl,
+        imageHash,
+      });
+    }
+  }
+
+  const result = await persistVoucherWithAssets({
+    voucherId,
+    merchantId,
+    title,
+    description,
+    startDate,
+    expiryDate,
+    totalStock,
+    basePrice,
+    qrPerSlot,
+    format,
+    assetSource: "MERCHANT_UPLOADED",
+    assetInputType: "IMAGE",
+    barcodeSymbology,
+    appFeeRate,
+    gasFeeAmount,
+    slots,
+    qrCodes,
+  });
+
+  return c.json(
+    { ...result, voucher: injectFeeFields(result.voucher, appFeeRate, gasFeeAmount) },
+    201,
+  );
+}
+
+// POST /api/admin/vouchers — Create voucher with atomic slot + QR generation.
+// JSON body = Wealth-generated or merchant value/CSV; multipart = image upload.
 adminVouchers.post("/", async (c) => {
   const adminAuth = c.get("adminAuth");
+  const contentType = c.req.header("content-type") ?? "";
+  if (contentType.includes("multipart/form-data")) {
+    return createVoucherFromImages(c);
+  }
+
   const body = await c.req.json();
 
   const parsed = createVoucherSchema.safeParse(body);
@@ -198,8 +420,6 @@ adminVouchers.post("/", async (c) => {
     }
   }
 
-  const basePriceDecimal = new Prisma.Decimal(basePrice.toString());
-
   const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
 
   const slots = Array.from({ length: totalStock }, (_, i) => ({
@@ -238,49 +458,25 @@ adminVouchers.post("/", async (c) => {
     }
   }
 
-  const result = await prisma.$transaction(async (tx) => {
-    const voucher = await tx.voucher.create({
-      data: {
-        merchantId,
-        title,
-        description,
-        startDate: new Date(startDate),
-        expiryDate: new Date(expiryDate),
-        totalStock,
-        remainingStock: totalStock,
-        basePrice: basePriceDecimal,
-        qrPerSlot,
-        format,
-        assetSource,
-        barcodeSymbology: format === "BARCODE" ? (barcodeSymbology ?? null) : null,
-        appFeeSnapshot: appFeeRate,
-        gasFeeSnapshot: gasFeeAmount,
-      },
-    });
-
-    await tx.redemptionSlot.createMany({
-      data: slots.map((slot) => ({
-        id: slot.id,
-        voucherId: voucher.id,
-        slotIndex: slot.slotIndex,
-      })),
-    });
-
-    await tx.qrCode.createMany({
-      data: qrCodes.map((qr) => ({
-        id: qr.id,
-        voucherId: voucher.id,
-        slotId: qr.slotId,
-        qrNumber: qr.qrNumber,
-        token: qr.token,
-        value: qr.value,
-        imageUrl: qr.imageUrl,
-        imageHash: qr.imageHash,
-      })),
-    });
-
-    return { voucher, slotsCreated: slots.length, qrCodesCreated: qrCodes.length };
-  }, { timeout: 30_000, maxWait: 5_000 });
+  const result = await persistVoucherWithAssets({
+    voucherId: randomUUID(),
+    merchantId,
+    title,
+    description,
+    startDate,
+    expiryDate,
+    totalStock,
+    basePrice,
+    qrPerSlot,
+    format,
+    assetSource,
+    assetInputType: "VALUE",
+    barcodeSymbology,
+    appFeeRate,
+    gasFeeAmount,
+    slots,
+    qrCodes,
+  });
 
   return c.json({
     ...result,

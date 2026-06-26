@@ -139,6 +139,7 @@ export function createFixtures(prisma: PrismaClient) {
         expiryDate: Date;
         format: "QR" | "CODE" | "BARCODE";
         assetSource: "WEALTH_GENERATED" | "MERCHANT_UPLOADED";
+        assetInputType: "VALUE" | "IMAGE";
         barcodeSymbology: string;
         values: string[];
       }>,
@@ -150,6 +151,7 @@ export function createFixtures(prisma: PrismaClient) {
       const gasFeeSnapshot = overrides?.gasFeeSnapshot ?? 500;
       const format = overrides?.format ?? "QR";
       const assetSource = overrides?.assetSource ?? "WEALTH_GENERATED";
+      const assetInputType = overrides?.assetInputType ?? "VALUE";
       const values = overrides?.values;
 
       const voucher = await prisma.voucher.create({
@@ -166,6 +168,7 @@ export function createFixtures(prisma: PrismaClient) {
           qrPerSlot,
           format,
           assetSource,
+          assetInputType,
           barcodeSymbology: overrides?.barcodeSymbology ?? null,
           isActive: overrides?.isActive ?? true,
         },

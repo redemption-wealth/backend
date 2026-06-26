@@ -48,3 +48,10 @@ export function authDelete(path: string, token: string) {
     headers: new Headers({ Authorization: `Bearer ${token}` }),
   });
 }
+
+// Multipart POST — do NOT set Content-Type; the FormData body sets the boundary.
+export function multipartPost(path: string, form: FormData, token?: string) {
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return app.request(path, { method: "POST", body: form, headers });
+}
