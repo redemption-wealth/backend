@@ -61,4 +61,11 @@ describe("storeAssetImage", () => {
     expect(arg.key).toBe("qr-codes/redemption-1/2.png");
     expect(arg.contentType).toBe("image/png");
   });
+
+  test("same image bytes at different keys produce different hashes (no collision)", async () => {
+    const buffer = Buffer.from("identical-image");
+    const a = await storeAssetImage("redemption-A", 1, buffer);
+    const b = await storeAssetImage("redemption-B", 1, buffer);
+    expect(a.imageHash).not.toBe(b.imageHash);
+  });
 });

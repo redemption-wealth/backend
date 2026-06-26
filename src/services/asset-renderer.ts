@@ -57,8 +57,11 @@ export async function storeAssetImage(
   index: number,
   buffer: Buffer,
 ): Promise<{ imageUrl: string; imageHash: string }> {
-  const imageHash = createHash("sha256").update(buffer).digest("hex");
   const key = `qr-codes/${redemptionId}/${index}.png`;
+  // Hash includes the (unique) storage key so two assets that render to an
+  // identical image — e.g. the same merchant-uploaded value reused across
+  // different vouchers — don't collide on the `imageHash` unique constraint.
+  const imageHash = createHash("sha256").update(buffer).update(key).digest("hex");
   await uploadFile({ bucket: QR_BUCKET, key, body: buffer, contentType: "image/png" });
   return { imageUrl: key, imageHash };
 }
