@@ -217,6 +217,52 @@ describe("POST /api/admin/vouchers", () => {
     expect(qrs.every((q) => q.value === null)).toBe(true);
   });
 
+  test("creates image voucher with qrPerSlot=2 (4 images → 4 assets)", async () => {
+    const { admin, token } = await createAdminWithToken();
+    const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createAppSettings({ gasFeeAmount: 500 });
+
+    const form = new FormData();
+    form.set("merchantId", merchant.id);
+    form.set("title", "BOGO Images");
+    form.set("startDate", "2026-01-01");
+    form.set("expiryDate", "2026-12-31");
+    form.set("totalStock", "2");
+    form.set("basePrice", "25000");
+    form.set("qrPerSlot", "2");
+    form.set("format", "BARCODE");
+    form.set("images", await zipOf(4), "barcodes.zip");
+
+    const res = await multipartPost("/api/admin/vouchers", form, token);
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    const qrs = await testPrisma.qrCode.findMany({ where: { voucherId: body.voucher.id } });
+    expect(qrs).toHaveLength(4);
+    expect(qrs.every((q) => q.imageUrl?.startsWith("voucher-assets/"))).toBe(true);
+  });
+
+  test("returns 400 for a corrupt ZIP", async () => {
+    const { admin, token } = await createAdminWithToken();
+    const merchant = await fixtures.createMerchant(admin.id);
+    await fixtures.createAppSettings({ gasFeeAmount: 500 });
+
+    const form = new FormData();
+    form.set("merchantId", merchant.id);
+    form.set("title", "Bad Zip");
+    form.set("startDate", "2026-01-01");
+    form.set("expiryDate", "2026-12-31");
+    form.set("totalStock", "1");
+    form.set("basePrice", "25000");
+    form.set("qrPerSlot", "1");
+    form.set("format", "BARCODE");
+    form.set("images", new Blob([Buffer.from("this is not a zip")]), "bad.zip");
+
+    const res = await multipartPost("/api/admin/vouchers", form, token);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("INVALID_ZIP");
+  });
+
   test("returns 422 when image count mismatches stock × qrPerSlot", async () => {
     const { admin, token } = await createAdminWithToken();
     const merchant = await fixtures.createMerchant(admin.id);
