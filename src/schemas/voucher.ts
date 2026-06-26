@@ -8,14 +8,14 @@ import {
 
 export const createVoucherSchema = z
   .object({
-    merchantId: z.string().min(1), // accepts cuid or uuid
-    title: z.string().min(2).max(200),
-    description: z.string().max(2000).optional(),
+    merchantId: z.string().min(1, "Merchant wajib dipilih"),
+    title: z.string().min(2, "Judul minimal 2 karakter").max(200, "Judul maksimal 200 karakter"),
+    description: z.string().max(2000, "Deskripsi maksimal 2000 karakter").optional(),
     startDate: z.string().or(z.date()),
     expiryDate: z.string().or(z.date()),
-    totalStock: z.number().int().positive(),
-    basePrice: z.number().min(1000),
-    qrPerSlot: z.number().int().min(1).max(2).default(1),
+    totalStock: z.coerce.number().int("Stok harus bilangan bulat").positive("Stok minimal 1"),
+    basePrice: z.coerce.number().min(1000, "Harga minimal Rp 1.000"),
+    qrPerSlot: z.coerce.number().int().min(1).max(2).default(1),
     // Multi-format asset fields
     format: z.enum(VOUCHER_FORMATS).default("QR"),
     assetSource: z.enum(ASSET_SOURCES).default("WEALTH_GENERATED"),
@@ -24,31 +24,31 @@ export const createVoucherSchema = z
   })
   .refine(
     (data) => new Date(data.expiryDate) >= new Date(data.startDate),
-    { message: "expiryDate must be after startDate", path: ["expiryDate"] },
+    { message: "Tanggal kadaluarsa harus setelah tanggal mulai", path: ["expiryDate"] },
   )
   // Wealth-generated vouchers are QR-only and never carry uploaded values.
   .refine(
     (data) => data.assetSource !== "WEALTH_GENERATED" || data.format === "QR",
-    { message: "Wealth-generated vouchers must use QR format", path: ["format"] },
+    { message: "Voucher yang digenerate Wealth harus format QR", path: ["format"] },
   )
   .refine(
     (data) =>
       data.assetSource !== "WEALTH_GENERATED" ||
       !data.values ||
       data.values.length === 0,
-    { message: "Wealth-generated vouchers cannot include uploaded values", path: ["values"] },
+    { message: "Voucher Wealth tidak boleh menyertakan nilai upload", path: ["values"] },
   )
   // Merchant-uploaded vouchers require values; count/dedup/symbology checked in the route.
   .refine(
     (data) =>
       data.assetSource !== "MERCHANT_UPLOADED" ||
       (Array.isArray(data.values) && data.values.length > 0),
-    { message: "Merchant-uploaded vouchers require values", path: ["values"] },
+    { message: "Voucher upload wajib menyertakan nilai/kode", path: ["values"] },
   )
   // Barcode format needs a symbology to render.
   .refine(
     (data) => data.format !== "BARCODE" || !!data.barcodeSymbology,
-    { message: "Barcode format requires a symbology", path: ["barcodeSymbology"] },
+    { message: "Format barcode wajib memilih simbologi", path: ["barcodeSymbology"] },
   );
 
 // Multipart (image-upload) create: numeric fields arrive as strings from
@@ -56,20 +56,20 @@ export const createVoucherSchema = z
 // (MERCHANT_UPLOADED / IMAGE). Image upload is for QR or BARCODE only.
 export const createVoucherImageSchema = z
   .object({
-    merchantId: z.string().min(1),
-    title: z.string().min(2).max(200),
-    description: z.string().max(2000).optional(),
+    merchantId: z.string().min(1, "Merchant wajib dipilih"),
+    title: z.string().min(2, "Judul minimal 2 karakter").max(200, "Judul maksimal 200 karakter"),
+    description: z.string().max(2000, "Deskripsi maksimal 2000 karakter").optional(),
     startDate: z.string().or(z.date()),
     expiryDate: z.string().or(z.date()),
-    totalStock: z.coerce.number().int().positive(),
-    basePrice: z.coerce.number().min(1000),
+    totalStock: z.coerce.number().int("Stok harus bilangan bulat").positive("Stok minimal 1"),
+    basePrice: z.coerce.number().min(1000, "Harga minimal Rp 1.000"),
     qrPerSlot: z.coerce.number().int().min(1).max(2).default(1),
     format: z.enum(["QR", "BARCODE"]),
     barcodeSymbology: z.enum(BARCODE_SYMBOLOGY_KEYS).optional(),
   })
   .refine(
     (data) => new Date(data.expiryDate) >= new Date(data.startDate),
-    { message: "expiryDate must be after startDate", path: ["expiryDate"] },
+    { message: "Tanggal kadaluarsa harus setelah tanggal mulai", path: ["expiryDate"] },
   );
 
 // totalStock / qrPerSlot / format / assetSource are immutable after creation.
