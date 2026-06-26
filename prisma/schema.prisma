@@ -48,6 +48,15 @@ enum AssetSource {
   MERCHANT_UPLOADED
 }
 
+// For MERCHANT_UPLOADED vouchers: how the merchant supplied the asset.
+// VALUE = a code/value Wealth renders into a QR/barcode (or shows as text).
+// IMAGE = a finished image file uploaded by the merchant, stored & shown as-is
+// (used when the exact original barcode must be preserved, e.g. GS1).
+enum AssetInputType {
+  VALUE
+  IMAGE
+}
+
 // ─── Better Auth managed tables ─────────────────────────────────────────────
 // Field names must match Better Auth's expected schema exactly.
 
@@ -182,6 +191,7 @@ model Voucher {
   qrPerSlot      Int              @default(1)
   format         VoucherFormat    @default(QR)
   assetSource    AssetSource      @default(WEALTH_GENERATED)
+  assetInputType AssetInputType   @default(VALUE)
   barcodeSymbology String?        // only set when format = BARCODE (e.g. "CODE128", "EAN13")
   appFeeSnapshot Decimal          @db.Decimal(5, 2)
   gasFeeSnapshot Decimal          @db.Decimal(15, 2)
