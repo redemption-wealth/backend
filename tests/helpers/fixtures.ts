@@ -137,6 +137,11 @@ export function createFixtures(prisma: PrismaClient) {
         isActive: boolean;
         startDate: Date;
         expiryDate: Date;
+        format: "QR" | "CODE" | "BARCODE";
+        assetSource: "WEALTH_GENERATED" | "MERCHANT_UPLOADED";
+        assetInputType: "VALUE" | "IMAGE";
+        barcodeSymbology: string;
+        values: string[];
       }>,
     ) {
       const stock = overrides?.totalStock ?? qrCount;
@@ -144,6 +149,10 @@ export function createFixtures(prisma: PrismaClient) {
       const basePrice = overrides?.basePrice ?? 25000;
       const appFeeSnapshot = overrides?.appFeeSnapshot ?? 3;
       const gasFeeSnapshot = overrides?.gasFeeSnapshot ?? 500;
+      const format = overrides?.format ?? "QR";
+      const assetSource = overrides?.assetSource ?? "WEALTH_GENERATED";
+      const assetInputType = overrides?.assetInputType ?? "VALUE";
+      const values = overrides?.values;
 
       const voucher = await prisma.voucher.create({
         data: {
@@ -157,6 +166,10 @@ export function createFixtures(prisma: PrismaClient) {
           appFeeSnapshot,
           gasFeeSnapshot,
           qrPerSlot,
+          format,
+          assetSource,
+          assetInputType,
+          barcodeSymbology: overrides?.barcodeSymbology ?? null,
           isActive: overrides?.isActive ?? true,
         },
       });
@@ -177,12 +190,17 @@ export function createFixtures(prisma: PrismaClient) {
       for (const slot of slots) {
         for (let qrNum = 1; qrNum <= qrPerSlot; qrNum++) {
           const uid = uniqueSuffix();
+          // CSV row order: slot N, qr M → values[(N-1) * qrPerSlot + (M-1)].
+          const value = values
+            ? (values[(slot.slotIndex - 1) * qrPerSlot + (qrNum - 1)] ?? null)
+            : null;
           const qr = await prisma.qrCode.create({
             data: {
               voucherId: voucher.id,
               slotId: slot.id,
               qrNumber: qrNum,
               token: `tok-${voucher.id}-${slot.slotIndex}-${qrNum}-${uid}`,
+              value,
               imageUrl: `https://example.com/qr-${voucher.id}-${slot.slotIndex}-${qrNum}.png`,
               imageHash: `hash-${voucher.id}-${slot.slotIndex}-${qrNum}-${uid}`,
               status: "AVAILABLE",

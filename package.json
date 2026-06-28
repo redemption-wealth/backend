@@ -41,6 +41,7 @@
     "adm-zip": "^0.5.17",
     "bcryptjs": "^3.0.3",
     "better-auth": "^1.6.9",
+    "bwip-js": "^4.11.1",
     "dotenv": "^16.5.0",
     "file-type": "^22.0.1",
     "hono": "^4.7.11",

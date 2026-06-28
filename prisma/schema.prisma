@@ -33,6 +33,30 @@ enum QrStatus {
   USED
 }
 
+// Asset format presented to the user behind a redeemed voucher unit.
+enum VoucherFormat {
+  QR
+  CODE
+  BARCODE
+}
+
+// Where the asset values come from. WEALTH_GENERATED is the original flow
+// (Wealth mints a random QR token); MERCHANT_UPLOADED means the merchant
+// supplied the values (verified on the merchant's own system, not via scan).
+enum AssetSource {
+  WEALTH_GENERATED
+  MERCHANT_UPLOADED
+}
+
+// For MERCHANT_UPLOADED vouchers: how the merchant supplied the asset.
+// VALUE = a code/value Wealth renders into a QR/barcode (or shows as text).
+// IMAGE = a finished image file uploaded by the merchant, stored & shown as-is
+// (used when the exact original barcode must be preserved, e.g. GS1).
+enum AssetInputType {
+  VALUE
+  IMAGE
+}
+
 // ─── Better Auth managed tables ─────────────────────────────────────────────
 // Field names must match Better Auth's expected schema exactly.
 
@@ -165,6 +189,10 @@ model Voucher {
   totalStock     Int
   remainingStock Int
   qrPerSlot      Int              @default(1)
+  format         VoucherFormat    @default(QR)
+  assetSource    AssetSource      @default(WEALTH_GENERATED)
+  assetInputType AssetInputType   @default(VALUE)
+  barcodeSymbology String?        // only set when format = BARCODE (e.g. "CODE128", "EAN13")
   appFeeSnapshot Decimal          @db.Decimal(5, 2)
   gasFeeSnapshot Decimal          @db.Decimal(15, 2)
   startDate      DateTime         @db.Date
@@ -205,6 +233,7 @@ model QrCode {
   voucher      Voucher        @relation(fields: [voucherId], references: [id], onDelete: Restrict)
   qrNumber     Int            @db.SmallInt
   token        String         @unique
+  value        String?        // merchant-uploaded asset value (null for WEALTH_GENERATED)
   imageUrl     String?
   imageHash    String         @unique
   status       QrStatus       @default(AVAILABLE)
@@ -218,6 +247,7 @@ model QrCode {
   updatedAt    DateTime       @updatedAt
 
   @@unique([slotId, qrNumber])
+  @@unique([voucherId, value])
   @@index([voucherId, status])
   @@map("qr_codes")
 }
