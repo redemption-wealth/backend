@@ -1,0 +1,191 @@
+import { describe, test, expect, vi, beforeEach } from "vitest";
+
+// Mock the DB layer — these are pure logic tests, no real Postgres.
+vi.mock("@/db.js", () => {
+  const models = {
+    appUser: {
+      findUnique: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      count: vi.fn(),
+    },
+    redemption: { count: vi.fn() },
+    wpLedger: { findFirst: vi.fn(), aggregate: vi.fn(), create: vi.fn() },
+    wpRedemption: { count: vi.fn() },
+    quest: { findMany: vi.fn() },
+    questCompletion: { findUnique: vi.fn(), create: vi.fn() },
+    appSettings: { findUnique: vi.fn() },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const prisma: any = { ...models, $executeRaw: vi.fn() };
+  prisma.$transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(prisma));
+  return { prisma };
+});
+
+import { prisma } from "@/db.js";
+import { syncAppUser, generateReferralCode } from "@/services/appUser.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = prisma as any;
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  db.$transaction.mockImplementation((cb: (tx: unknown) => unknown) => cb(db));
+  // Milestone eval (runs after a referee qualifies) — no milestone quests by default.
+  db.quest.findMany.mockResolvedValue([]);
+  // creditWithTx dependencies (cap check + balance) — permissive defaults.
+  db.appSettings.findUnique.mockResolvedValue({ wpMonthlyCapWp: 1_000_000 });
+});
+
+describe("generateReferralCode", () => {
+  test("returns an 8-char code from the unambiguous alphabet", () => {
+    const code = generateReferralCode();
+    expect(code).toHaveLength(8);
+    expect(code).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+    // no ambiguous glyphs
+    expect(code).not.toMatch(/[IO01]/);
+  });
+});
+
+describe("syncAppUser", () => {
+  test("creates a new AppUser with a generated referral code", async () => {
+    db.redemption.count.mockResolvedValue(0);
+    db.appUser.findUnique.mockResolvedValue(null); // privyId lookup → not found
+    db.appUser.create.mockImplementation(({ data }: any) =>
+      Promise.resolve({ id: "u1", ...data })
+    );
+
+    const res = await syncAppUser({
+      privyUserId: "privy_1",
+      userEmail: "a@x.com",
+    });
+
+    expect(db.appUser.create).toHaveBeenCalledTimes(1);
+    const arg = db.appUser.create.mock.calls[0][0];
+    expect(arg.data.referralCode).toMatch(/^[A-Z2-9]{8}$/);
+    expect(arg.data.hasDeposited).toBe(false);
+    expect(arg.data.qualifiedAt).toBeNull();
+    expect(res.id).toBe("u1");
+    expect(db.appUser.update).not.toHaveBeenCalled();
+  });
+
+  test("is idempotent: an existing user syncs via update, never re-creates", async () => {
+    db.redemption.count.mockResolvedValue(1);
+    db.appUser.findUnique.mockResolvedValue({
+      id: "u1",
+      hasDeposited: true,
+      referredById: null,
+    });
+    db.appUser.update.mockResolvedValue({ id: "u1", referredById: null });
+
+    const res = await syncAppUser({
+      privyUserId: "privy_1",
+      userEmail: "a@x.com",
+    });
+
+    expect(db.appUser.create).not.toHaveBeenCalled();
+    expect(db.appUser.update).toHaveBeenCalledTimes(1);
+    expect(res.id).toBe("u1");
+  });
+
+  test("records the referrer once, from a normalized referral code, on creation", async () => {
+    db.redemption.count.mockResolvedValue(0);
+    db.appUser.findUnique.mockImplementation(({ where }: any) => {
+      if (where.privyId) return Promise.resolve(null);
+      if (where.referralCode) return Promise.resolve({ id: "ref1" });
+      return Promise.resolve(null);
+    });
+    db.appUser.create.mockImplementation(({ data }: any) =>
+      Promise.resolve({ id: "u2", ...data })
+    );
+
+    await syncAppUser({ privyUserId: "privy_2", userEmail: "b@x.com" }, "friend01");
+
+    const createArg = db.appUser.create.mock.calls[0][0];
+    expect(createArg.data.referredById).toBe("ref1");
+    // lookup used the trimmed + uppercased code
+    const refLookup = db.appUser.findUnique.mock.calls.find(
+      (c: any) => c[0]?.where?.referralCode
+    );
+    expect(refLookup[0].where.referralCode).toBe("FRIEND01");
+  });
+
+  test("does not change the referrer for an existing user (set-once)", async () => {
+    db.redemption.count.mockResolvedValue(0);
+    db.appUser.findUnique.mockResolvedValue({
+      id: "u1",
+      hasDeposited: false,
+      referredById: null,
+    });
+    db.appUser.update.mockResolvedValue({ id: "u1", referredById: null });
+
+    await syncAppUser(
+      { privyUserId: "privy_1", userEmail: "a@x.com" },
+      "SOMECODE"
+    );
+
+    // referral lookup must NOT happen for existing users
+    const refLookup = db.appUser.findUnique.mock.calls.find(
+      (c: any) => c[0]?.where?.referralCode
+    );
+    expect(refLookup).toBeUndefined();
+    const updateArg = db.appUser.update.mock.calls[0][0];
+    expect(updateArg.data.referredById).toBeUndefined();
+  });
+
+  test("pays the referrer a one-time 10% bonus when a referee first qualifies", async () => {
+    db.redemption.count.mockResolvedValue(1); // referee now has a CONFIRMED redemption
+    db.appUser.findUnique.mockResolvedValue({
+      id: "u3",
+      hasDeposited: false, // was not qualified
+      referredById: "ref1",
+    });
+    db.appUser.update.mockResolvedValue({ id: "u3", referredById: "ref1" });
+    db.wpLedger.findFirst.mockResolvedValue(null); // no prior bonus
+    db.wpLedger.aggregate.mockResolvedValue({ _sum: { amount: 50 } });
+    db.wpLedger.create.mockResolvedValue({ id: "l1" });
+
+    await syncAppUser({ privyUserId: "privy_3", userEmail: "c@x.com" });
+
+    expect(db.wpLedger.create).toHaveBeenCalledTimes(1);
+    const arg = db.wpLedger.create.mock.calls[0][0];
+    expect(arg.data.appUserId).toBe("ref1"); // credited to the referrer
+    expect(arg.data.amount).toBe(5); // floor(50 * 0.1)
+    expect(arg.data.type).toBe("REFERRAL_BONUS");
+    expect(arg.data.refId).toBe("u3"); // one bonus per referee
+  });
+
+  test("does not double-pay the referral bonus", async () => {
+    db.redemption.count.mockResolvedValue(1);
+    db.appUser.findUnique.mockResolvedValue({
+      id: "u3",
+      hasDeposited: false,
+      referredById: "ref1",
+    });
+    db.appUser.update.mockResolvedValue({ id: "u3", referredById: "ref1" });
+    db.wpLedger.findFirst.mockResolvedValue({ id: "existing-bonus" }); // already paid
+
+    await syncAppUser({ privyUserId: "privy_3", userEmail: "c@x.com" });
+
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
+  });
+
+  test("referral bonus counts against the monthly cap (skipped when exhausted)", async () => {
+    db.redemption.count.mockResolvedValue(1);
+    db.appUser.findUnique.mockResolvedValue({
+      id: "u3",
+      hasDeposited: false,
+      referredById: "ref1",
+    });
+    db.appUser.update.mockResolvedValue({ id: "u3", referredById: "ref1" });
+    db.wpLedger.findFirst.mockResolvedValue(null); // no prior bonus
+    // referee balance 50 → bonus 5, but this month's issuance is already at cap
+    db.wpLedger.aggregate.mockResolvedValue({ _sum: { amount: 50 } });
+    db.appSettings.findUnique.mockResolvedValue({ wpMonthlyCapWp: 50 });
+
+    await syncAppUser({ privyUserId: "privy_3", userEmail: "c@x.com" });
+
+    // Routed through the capped credit path → WpCapExceededError swallowed, no row.
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
+  });
+});

@@ -73,3 +73,14 @@ export const qrScanLimiter = createRateLimiter({
     return `qr-scan:${auth?.adminId ?? "unknown"}`;
   },
 });
+
+// WP quest actions (check-in / task claim). Requires requireUser first — keyed
+// by Privy user id. Generous cap; the real guard is per-quest idempotency.
+export const questClaimLimiter = createRateLimiter({
+  maxAttempts: 30,
+  windowMs: 60 * 1000, // 1 minute
+  keyFn: (c) => {
+    const auth = (c as unknown as { get: (key: string) => { privyUserId?: string } | undefined }).get("userAuth");
+    return `quest:${auth?.privyUserId ?? "unknown"}`;
+  },
+});

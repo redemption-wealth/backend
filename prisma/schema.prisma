@@ -171,10 +171,13 @@ model Merchant {
 }
 
 model AppSettings {
-  id           String   @id @default("singleton")
-  appFeeRate   Decimal  @default(3.00) @db.Decimal(5, 2)
-  gasFeeAmount Decimal  @default(0)    @db.Decimal(15, 2)
-  updatedAt    DateTime @updatedAt
+  id             String   @id @default("singleton")
+  appFeeRate     Decimal  @default(3.00) @db.Decimal(5, 2)
+  gasFeeAmount   Decimal  @default(0)    @db.Decimal(15, 2)
+  // Anti-abuse: max WP that may be issued (earned) per calendar month.
+  // When the running total for the month exceeds this, claim endpoints reject.
+  wpMonthlyCapWp Int      @default(1000000)
+  updatedAt      DateTime @updatedAt
 
   @@map("app_settings")
 }
@@ -279,4 +282,133 @@ model Redemption {
   @@index([userEmail, status])
   @@index([voucherId])
   @@map("redemptions")
+}
+
+// ─── WEALTH Points (WP) — Quest & Rewards ────────────────────────────────────
+// End-user identity for the gamification layer. Distinct from the Better Auth
+// `User` model (which is admin-only). Keyed to Privy identity (privyId).
+
+model AppUser {
+  id            String    @id @default(cuid())
+  privyId       String    @unique
+  email         String
+  walletAddress String?
+  referralCode  String    @unique
+  referredById  String?
+  referredBy    AppUser?  @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals     AppUser[] @relation("Referrals")
+  // Anti-bot gate: true once the user has ≥1 CONFIRMED on-chain redemption.
+  // Redeeming WP for real rewards and paying referral bonuses require this.
+  hasDeposited  Boolean   @default(false)
+  qualifiedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  ledger        WpLedger[]
+  completions   QuestCompletion[]
+  streak        CheckinStreak?
+  wpRedemptions WpRedemption[]
+
+  @@index([referredById])
+  @@index([email])
+  @@map("app_users")
+}
+
+// Append-only WP transaction log. Balance = SUM(amount). Never store a
+// denormalized balance column (avoids desync).
+model WpLedger {
+  id        String   @id @default(cuid())
+  appUserId String
+  appUser   AppUser  @relation(fields: [appUserId], references: [id], onDelete: Cascade)
+  amount    Int // + earn, - spend/clawback
+  type      String // CHECKIN | TASK | REFERRAL_BONUS | REDEEM_SPEND | REDEEM_REFUND | ADMIN_ADJUST
+  refType   String? // quest | referral | reward | admin
+  refId     String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([appUserId, createdAt])
+  @@index([type, createdAt])
+  @@map("wp_ledger")
+}
+
+model Quest {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  title       String
+  description String?
+  category    String // DAILY | SOCIAL | REDEEM | INVITE
+  rewardWp    Int
+  cadence     String // ONCE | DAILY
+  targetCount Int      @default(1)
+  actionUrl   String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  completions QuestCompletion[]
+
+  @@map("quests")
+}
+
+model QuestCompletion {
+  id        String   @id @default(cuid())
+  appUserId String
+  appUser   AppUser  @relation(fields: [appUserId], references: [id], onDelete: Cascade)
+  questId   String
+  quest     Quest    @relation(fields: [questId], references: [id], onDelete: Cascade)
+  periodKey String // "once" | "2026-07-06" (WIB date for DAILY cadence)
+  createdAt DateTime @default(now())
+
+  @@unique([appUserId, questId, periodKey])
+  @@map("quest_completions")
+}
+
+model CheckinStreak {
+  appUserId       String    @id
+  appUser         AppUser   @relation(fields: [appUserId], references: [id], onDelete: Cascade)
+  currentStreak   Int       @default(0)
+  lastCheckinDate DateTime? @db.Date
+  updatedAt       DateTime  @updatedAt
+
+  @@map("checkin_streaks")
+}
+
+model WpReward {
+  id          String   @id @default(cuid())
+  title       String
+  category    String // VOUCHER | MERCH | SEMBAKO
+  partnerName String?
+  wpCost      Int
+  stock       Int? // null = unlimited
+  isActive    Boolean  @default(true)
+  imageUrl    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  redemptions WpRedemption[]
+
+  @@map("wp_rewards")
+}
+
+model WpRedemption {
+  id          String   @id @default(cuid())
+  appUserId   String
+  appUser     AppUser  @relation(fields: [appUserId], references: [id], onDelete: Restrict)
+  rewardId    String
+  reward      WpReward @relation(fields: [rewardId], references: [id], onDelete: Restrict)
+  wpSpent     Int
+  status      String   @default("PENDING") // PENDING | FULFILLED | REJECTED
+  note        String? // internal admin note (not shown to the end user)
+  // User-visible fulfillment note: a voucher code, shipping note, or any text the
+  // Manager wants the end user to see when the redemption is FULFILLED.
+  fulfillmentNote String?
+  fulfilledBy String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([appUserId])
+  @@map("wp_redemptions")
 }

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { expireStalePendingRedemptions } from "../services/redemption.js";
+import { expireStaleStreaks } from "../services/quest.js";
 
 const cron = new Hono();
 
@@ -40,6 +41,16 @@ cron.get("/expire-pending-redemptions", async (c) => {
   }
 
   return c.json({ ok: true, expired: totalExpired, ids });
+});
+
+// GET /api/cron/wp-daily — daily WP housekeeping: reset stale check-in streaks
+// so the displayed streak stays honest. Idempotent. Triggered by Vercel Cron.
+cron.get("/wp-daily", async (c) => {
+  if (!isAuthorized(c.req.header("authorization"))) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const streaksReset = await expireStaleStreaks();
+  return c.json({ ok: true, streaksReset });
 });
 
 export default cron;
