@@ -13,6 +13,7 @@ export interface WpOverview {
   monthlyCapWp: number;
   capUsedPct: number;
   pendingRedemptions: number;
+  pendingConversions: number;
   activeUsers: number;
   topEarnerWp: number | null;
 }
@@ -28,6 +29,7 @@ export async function getOverview(): Promise<WpOverview> {
     issuedAgg,
     settings,
     pendingRedemptions,
+    pendingConversions,
     activeUsers,
     top,
   ] = await Promise.all([
@@ -44,6 +46,7 @@ export async function getOverview(): Promise<WpOverview> {
       select: { wpMonthlyCapWp: true },
     }),
     prisma.wpRedemption.count({ where: { status: "PENDING" } }),
+    prisma.wpConversion.count({ where: { status: "PENDING" } }),
     prisma.appUser.count({ where: { ledger: { some: {} } } }),
     topEarners(1),
   ]);
@@ -57,6 +60,7 @@ export async function getOverview(): Promise<WpOverview> {
     monthlyCapWp,
     capUsedPct: monthlyCapWp > 0 ? (issuedThisMonth / monthlyCapWp) * 100 : 0,
     pendingRedemptions,
+    pendingConversions,
     activeUsers,
     topEarnerWp: top[0]?.totalWp ?? null,
   };

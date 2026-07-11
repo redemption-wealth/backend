@@ -34,6 +34,7 @@ import adminWpRedemptionRoutes from "./routes/admin/wp-redemptions.js";
 import adminWpFraudRoutes from "./routes/admin/wp-fraud.js";
 import adminWpOverviewRoutes from "./routes/admin/wp-overview.js";
 import adminWpSettingsRoutes from "./routes/admin/wp-settings.js";
+import adminWpConversionRoutes from "./routes/admin/wp-conversions.js";
 
 const app = new Hono();
 
@@ -94,6 +95,7 @@ admin.route("/wp-redemptions", adminWpRedemptionRoutes);
 admin.route("/wp-fraud", adminWpFraudRoutes);
 admin.route("/wp-overview", adminWpOverviewRoutes);
 admin.route("/wp-settings", adminWpSettingsRoutes);
+admin.route("/wp-conversions", adminWpConversionRoutes);
 app.route("/api/admin", admin);
 
 // ─── Error handler ────────────────────────────────────────────────────────────

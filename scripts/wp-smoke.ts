@@ -12,6 +12,12 @@ import {
 } from "../src/services/reward.js";
 import { evaluateMilestoneQuests, listQuestsForUser } from "../src/services/quest.js";
 import { getOverview } from "../src/services/wpAdmin.js";
+import {
+  convertWp,
+  fulfillConversion,
+  rejectConversion,
+  getConvertInfo,
+} from "../src/services/wpConversion.js";
 
 const PRIVY_ID = "e2e-wp-test-user";
 const EMAIL = "e2e-wp-test@example.com";
@@ -25,12 +31,65 @@ async function cleanup(appUserId?: string) {
   const id =
     appUserId ??
     (await prisma.appUser.findUnique({ where: { privyId: PRIVY_ID } }))?.id;
+  // Tear down the seeded confirmed-deposit fixtures (by email) regardless.
+  await teardownConfirmedDeposit();
   if (!id) return;
+  await prisma.wpConversion.deleteMany({ where: { appUserId: id } });
   await prisma.wpRedemption.deleteMany({ where: { appUserId: id } });
   await prisma.questCompletion.deleteMany({ where: { appUserId: id } });
   await prisma.wpLedger.deleteMany({ where: { appUserId: id } });
   await prisma.checkinStreak.deleteMany({ where: { appUserId: id } });
   await prisma.appUser.deleteMany({ where: { id } });
+}
+
+const DEPOSIT_MERCHANT = "smoke-convert-merchant";
+
+// Seed a CONFIRMED redemption for EMAIL so the anti-sybil deposit cap has
+// headroom (the deposit total is SUM of the user's CONFIRMED redemptions).
+async function seedConfirmedDeposit() {
+  await teardownConfirmedDeposit();
+  const merchant = await prisma.merchant.create({ data: { name: DEPOSIT_MERCHANT } });
+  const voucher = await prisma.voucher.create({
+    data: {
+      merchantId: merchant.id,
+      title: "smoke-convert-voucher",
+      basePrice: 1,
+      totalStock: 1,
+      remainingStock: 1,
+      appFeeSnapshot: 0,
+      gasFeeSnapshot: 0,
+      startDate: new Date("2020-01-01"),
+      expiryDate: new Date("2030-01-01"),
+    },
+  });
+  const slot = await prisma.redemptionSlot.create({
+    data: { voucherId: voucher.id, slotIndex: 0 },
+  });
+  await prisma.redemption.create({
+    data: {
+      userEmail: EMAIL,
+      voucherId: voucher.id,
+      merchantId: merchant.id,
+      slotId: slot.id,
+      wealthAmount: 1000, // 1000 $WEALTH confirmed deposit → ample cap headroom
+      priceIdrAtRedeem: 1,
+      wealthPriceIdrAtRedeem: 1,
+      appFeeAmount: 0,
+      gasFeeAmount: 0,
+      idempotencyKey: `smoke-convert-${Date.now()}`,
+      status: "CONFIRMED",
+      confirmedAt: new Date(),
+    },
+  });
+}
+
+async function teardownConfirmedDeposit() {
+  const merchant = await prisma.merchant.findFirst({ where: { name: DEPOSIT_MERCHANT } });
+  if (!merchant) return;
+  await prisma.redemption.deleteMany({ where: { merchantId: merchant.id } });
+  await prisma.redemptionSlot.deleteMany({ where: { voucher: { merchantId: merchant.id } } });
+  await prisma.voucher.deleteMany({ where: { merchantId: merchant.id } });
+  await prisma.merchant.delete({ where: { id: merchant.id } });
 }
 
 async function main() {
@@ -138,7 +197,77 @@ async function main() {
   const overview = await getOverview();
   assert(typeof overview.totalWpOutstanding === "number", "overview.totalWpOutstanding is numeric");
   assert(overview.pendingRedemptions >= 0, "overview.pendingRedemptions present");
+  assert(overview.pendingConversions >= 0, "overview.pendingConversions present");
   assert(overview.monthlyCapWp > 0 && overview.capUsedPct >= 0, "overview cap fields present");
+
+  // ─── WP → $WEALTH conversion (Wave 2) ──────────────────────────────────────
+  // Enable conversion + seed a confirmed deposit so the deposit cap has room.
+  const prevSettings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
+  await prisma.appSettings.upsert({
+    where: { id: "singleton" },
+    update: {
+      wpConversionEnabled: true,
+      wpConversionRate: 1000,
+      wpConvertMinWp: 1000,
+      wpConvertMaxWpPerMonth: 100000,
+      wpConversionMonthlyBudgetWealth: 100000,
+    },
+    create: {
+      id: "singleton",
+      wpConversionEnabled: true,
+      wpConversionRate: 1000,
+      wpConvertMinWp: 1000,
+      wpConvertMaxWpPerMonth: 100000,
+      wpConversionMonthlyBudgetWealth: 100000,
+    },
+  });
+  await seedConfirmedDeposit();
+
+  const TO_ADDR = "0x" + "a".repeat(40);
+  const convUser = { id: user.id, email: EMAIL, hasDeposited: true };
+
+  // 12. convert-info exposes limits the app needs to render the screen.
+  await adminAdjust(user.id, 20000, "convert top-up"); // ensure enough WP to burn
+  const info = await getConvertInfo(convUser);
+  assert(info.enabled === true && info.rate === 1000, "convert-info reports enabled + rate");
+  assert(info.minWp === 1000 && info.maxWpPerMonth === 100000, "convert-info reports min/max");
+  assert(info.remainingWpThisMonth === 100000, "convert-info remaining = full ceiling before any convert");
+
+  // 13. convert → fulfill (admin sends $WEALTH manually, records txHash).
+  const balBeforeConv = await getBalance(user.id);
+  const convA = await convertWp(convUser, 5000, TO_ADDR);
+  assert(convA.status === "PENDING" && convA.wpBurned === 5000, "convert A creates PENDING (WP burned)");
+  assert(convA.wealthAmount.toString() === "5", "convert A owes 5000/1000 = 5 $WEALTH");
+  assert((await getBalance(user.id)) === balBeforeConv - 5000, "WP debited after convert A");
+  const fulfilledConv = await fulfillConversion(convA.id, { txHash: "0xdeadbeef", fulfilledBy: "admin@e2e" });
+  assert(fulfilledConv.status === "FULFILLED" && fulfilledConv.txHash === "0xdeadbeef", "convert A fulfilled with txHash (no on-chain send)");
+  assert((await getBalance(user.id)) === balBeforeConv - 5000, "fulfill does NOT refund (WP stays burned)");
+
+  // 14. convert → reject → refund (frees the budget + deposit cap).
+  const balBeforeConvB = await getBalance(user.id);
+  const convB = await convertWp(convUser, 3000, TO_ADDR);
+  assert((await getBalance(user.id)) === balBeforeConvB - 3000, "WP debited after convert B");
+  const rejectedConv = await rejectConversion(convB.id, { note: "alamat salah", fulfilledBy: "admin@e2e" });
+  assert(rejectedConv.status === "REJECTED", "convert B rejected");
+  assert((await getBalance(user.id)) === balBeforeConvB, "WP refunded after reject (CONVERT_REFUND restores balance)");
+
+  // 15. remaining monthly ceiling reflects only PENDING+FULFILLED (B's reject freed its WP).
+  const info2 = await getConvertInfo(convUser);
+  assert(info2.remainingWpThisMonth === 100000 - 5000, "convert-info remaining reflects fulfilled 5000 only (rejected B excluded)");
+
+  // Restore prior settings.
+  if (prevSettings) {
+    await prisma.appSettings.update({
+      where: { id: "singleton" },
+      data: {
+        wpConversionEnabled: prevSettings.wpConversionEnabled,
+        wpConversionRate: prevSettings.wpConversionRate,
+        wpConvertMinWp: prevSettings.wpConvertMinWp,
+        wpConvertMaxWpPerMonth: prevSettings.wpConvertMaxWpPerMonth,
+        wpConversionMonthlyBudgetWealth: prevSettings.wpConversionMonthlyBudgetWealth,
+      },
+    });
+  }
 
   await cleanup(user.id);
   console.log("\n✅ E2E WP flow PASSED");

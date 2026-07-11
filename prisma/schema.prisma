@@ -33,6 +33,15 @@ enum QrStatus {
   USED
 }
 
+// WP → $WEALTH conversion request lifecycle. Treasury is MANUAL: the user burns
+// WP (PENDING), an admin sends $WEALTH off-system, then marks FULFILLED (or
+// REJECTED, which refunds the WP). There is no on-chain send in the backend.
+enum WpConversionStatus {
+  PENDING
+  FULFILLED
+  REJECTED
+}
+
 // Asset format presented to the user behind a redeemed voucher unit.
 enum VoucherFormat {
   QR
@@ -177,6 +186,20 @@ model AppSettings {
   // Anti-abuse: max WP that may be issued (earned) per calendar month.
   // When the running total for the month exceeds this, claim endpoints reject.
   wpMonthlyCapWp Int      @default(1000000)
+
+  // ─── WP → $WEALTH conversion (manual treasury) ──────────────────────────────
+  // Master switch — conversion endpoints reject while false.
+  wpConversionEnabled Boolean @default(false)
+  // Fixed admin-set exchange rate: how many WP burn for 1 $WEALTH.
+  wpConversionRate    Int     @default(1000)
+  // Minimum WP a user may convert in a single request.
+  wpConvertMinWp      Int     @default(1000)
+  // Per-user ceiling on WP converted per WIB calendar month (PENDING+FULFILLED).
+  wpConvertMaxWpPerMonth Int  @default(100000)
+  // Global monthly $WEALTH budget across all users (PENDING+FULFILLED this WIB
+  // month must stay at or under this). Same $WEALTH type as Redemption.wealthAmount.
+  wpConversionMonthlyBudgetWealth Decimal @default(10000) @db.Decimal(36, 18)
+
   updatedAt      DateTime @updatedAt
 
   @@map("app_settings")
@@ -308,6 +331,7 @@ model AppUser {
   completions   QuestCompletion[]
   streak        CheckinStreak?
   wpRedemptions WpRedemption[]
+  wpConversions WpConversion[]
 
   @@index([referredById])
   @@index([email])
@@ -321,8 +345,8 @@ model WpLedger {
   appUserId String
   appUser   AppUser  @relation(fields: [appUserId], references: [id], onDelete: Cascade)
   amount    Int // + earn, - spend/clawback
-  type      String // CHECKIN | TASK | REFERRAL_BONUS | REDEEM_SPEND | REDEEM_REFUND | ADMIN_ADJUST
-  refType   String? // quest | referral | reward | admin
+  type      String // CHECKIN | TASK | REFERRAL_BONUS | REDEEM_SPEND | REDEEM_REFUND | CONVERT_SPEND | CONVERT_REFUND | ADMIN_ADJUST
+  refType   String? // quest | referral | reward | conversion | admin
   refId     String?
   note      String?
   createdAt DateTime @default(now())
@@ -330,6 +354,33 @@ model WpLedger {
   @@index([appUserId, createdAt])
   @@index([type, createdAt])
   @@map("wp_ledger")
+}
+
+// WP → $WEALTH conversion request. The user burns WP (a CONVERT_SPEND ledger
+// row) to create a PENDING conversion. An admin sends $WEALTH manually
+// off-system, then marks it FULFILLED (optionally recording a txHash) or
+// REJECTED (which refunds the WP via a CONVERT_REFUND ledger row). The backend
+// never sends on-chain — there is no signer/private key.
+model WpConversion {
+  id           String             @id @default(cuid())
+  appUserId    String
+  appUser      AppUser            @relation(fields: [appUserId], references: [id], onDelete: Restrict)
+  wpBurned     Int
+  // $WEALTH owed for this conversion. Same type as Redemption.wealthAmount.
+  wealthAmount Decimal            @db.Decimal(36, 18)
+  // WP-per-$WEALTH rate captured at request time (snapshot of wpConversionRate).
+  rate         Int
+  toAddress    String
+  status       WpConversionStatus @default(PENDING)
+  txHash       String?
+  note         String?
+  fulfilledBy  String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([appUserId, createdAt])
+  @@index([status, createdAt])
+  @@map("wp_conversions")
 }
 
 model Quest {

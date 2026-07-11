@@ -11,6 +11,8 @@ export type WpLedgerType =
   | "REFERRAL_BONUS"
   | "REDEEM_SPEND"
   | "REDEEM_REFUND"
+  | "CONVERT_SPEND"
+  | "CONVERT_REFUND"
   | "ADMIN_ADJUST";
 
 // Types that count as "issuance" (new WP minted into circulation) and are

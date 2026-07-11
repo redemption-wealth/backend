@@ -49,11 +49,46 @@ export const redemptionStatusSchema = z.object({
   fulfillmentNote: z.string().max(500).optional(),
 });
 
-// WP settings cockpit (Wave 1 exposes only the monthly issuance cap). Kept as an
-// object so forward-compatible conversion settings can be added later.
-export const wpSettingsSchema = z.object({
-  wpMonthlyCapWp: z.coerce
-    .number()
-    .int()
-    .positive("Cap WP bulanan harus lebih dari 0"),
+// WP settings cockpit. Wave 1 exposed the monthly issuance cap; Wave 2 adds the
+// WP→$WEALTH conversion knobs. All fields optional — a PATCH updates only what
+// it sends, so `wpMonthlyCapWp` keeps working exactly as before.
+export const wpSettingsSchema = z
+  .object({
+    wpMonthlyCapWp: z.coerce
+      .number()
+      .int()
+      .positive("Cap WP bulanan harus lebih dari 0")
+      .optional(),
+    wpConversionEnabled: z.boolean().optional(),
+    wpConversionRate: z.coerce
+      .number()
+      .int()
+      .positive("Rate konversi harus lebih dari 0")
+      .optional(),
+    wpConvertMinWp: z.coerce
+      .number()
+      .int()
+      .positive("Minimal konversi harus lebih dari 0")
+      .optional(),
+    wpConvertMaxWpPerMonth: z.coerce
+      .number()
+      .int()
+      .positive("Kuota bulanan harus lebih dari 0")
+      .optional(),
+    wpConversionMonthlyBudgetWealth: z.coerce
+      .number()
+      .nonnegative("Anggaran tidak boleh negatif")
+      .optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, {
+    message: "Tidak ada perubahan",
+  });
+
+// Admin: fulfill or reject a WP→$WEALTH conversion. The admin already sent the
+// $WEALTH manually (FULFILLED) — this records the outcome. REJECTED refunds WP.
+export const conversionStatusSchema = z.object({
+  status: z.enum(["FULFILLED", "REJECTED"]),
+  // Optional on-chain tx hash the admin recorded after sending $WEALTH manually.
+  txHash: z.string().trim().max(120).optional(),
+  note: z.string().max(300).optional(),
 });
