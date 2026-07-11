@@ -16,6 +16,7 @@ import questRoutes from "./routes/quests.js";
 import referralRoutes from "./routes/referral.js";
 import rewardRoutes from "./routes/rewards.js";
 import wpRoutes from "./routes/wp.js";
+import userRoutes from "./routes/users.js";
 
 // Admin routes (require session auth)
 import adminOverviewRoutes from "./routes/admin/overview.js";
@@ -74,6 +75,7 @@ app.route("/api/quests", questRoutes);
 app.route("/api/referral", referralRoutes);
 app.route("/api/rewards", rewardRoutes);
 app.route("/api/wp", wpRoutes);
+app.route("/api/users", userRoutes);
 
 // ─── Admin routes (session-protected) ────────────────────────────────────────
 

@@ -316,6 +316,11 @@ model AppUser {
   privyId       String    @unique
   email         String
   walletAddress String?
+  // Editable profile fields (PATCH /api/users/me). username is unique.
+  name          String?
+  username      String?   @unique
+  phone         String?
+  avatarUrl     String?
   referralCode  String    @unique
   referredById  String?
   referredBy    AppUser?  @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
