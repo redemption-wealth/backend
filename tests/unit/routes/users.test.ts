@@ -83,7 +83,30 @@ describe("PATCH /api/users/me", () => {
     });
   });
 
-  test("username taken → 409", async () => {
+  test("username taken → 409 (PrismaPg driver-adapter P2002 shape)", async () => {
+    // Prisma 7 + PrismaPg adapter no longer populates meta.target; the violated
+    // fields live at meta.driverAdapterError.cause.constraint.fields. The old
+    // meta.target?.includes("username") check returned 500 for this shape — this
+    // test reproduces the real driver error so it fails-before / passes-after.
+    appUserUpdate.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "7.7.0",
+        meta: {
+          driverAdapterError: {
+            cause: { constraint: { fields: ["username"] } },
+          },
+        },
+      })
+    );
+
+    const res = await patch({ username: "taken_name" });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "Username sudah dipakai" });
+  });
+
+  test("username taken → 409 (legacy meta.target shape still works)", async () => {
     appUserUpdate.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
         code: "P2002",

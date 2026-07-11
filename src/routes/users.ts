@@ -1,9 +1,9 @@
 import { Hono } from "hono";
-import { Prisma } from "@prisma/client";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { getOrCreateAppUser } from "../services/appUser.js";
 import { prisma } from "../db.js";
 import { updateProfileSchema } from "../schemas/user.js";
+import { uniqueViolationOn } from "../lib/prisma-errors.js";
 
 const users = new Hono<AuthEnv>();
 
@@ -69,12 +69,9 @@ users.patch("/me", requireUser, async (c) => {
     });
     return c.json({ user: toUserResponse(updated) });
   } catch (e) {
-    // Unique constraint on username → someone already took it.
-    if (
-      e instanceof Prisma.PrismaClientKnownRequestError &&
-      e.code === "P2002" &&
-      (e.meta?.["target"] as string[] | undefined)?.includes("username")
-    ) {
+    // Unique constraint on username → someone already took it. Reads both the
+    // legacy meta.target and the PrismaPg driver-adapter constraint shape.
+    if (uniqueViolationOn(e, "username")) {
       return c.json({ error: "Username sudah dipakai" }, 409);
     }
     throw e;

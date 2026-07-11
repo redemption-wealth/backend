@@ -1,4 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
+import { Prisma } from "@prisma/client";
 
 // Mock the DB layer — these are pure logic tests, no real Postgres.
 vi.mock("@/db.js", () => {
@@ -67,6 +68,40 @@ describe("syncAppUser", () => {
     expect(arg.data.qualifiedAt).toBeNull();
     expect(res.id).toBe("u1");
     expect(db.appUser.update).not.toHaveBeenCalled();
+  });
+
+  test("retries on a referral-code collision (PrismaPg driver-adapter P2002 shape)", async () => {
+    db.redemption.count.mockResolvedValue(0);
+    db.appUser.findUnique.mockResolvedValue(null); // privyId lookup → not found
+    // First create() collides on referralCode via the driver-adapter shape
+    // (meta.target is undefined under PrismaPg); the second succeeds. The old
+    // meta.target-only guard would not retry and would throw instead.
+    let calls = 0;
+    db.appUser.create.mockImplementation(({ data }: any) => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.reject(
+          new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+            code: "P2002",
+            clientVersion: "7.7.0",
+            meta: {
+              driverAdapterError: {
+                cause: { constraint: { fields: ["referralCode"] } },
+              },
+            },
+          })
+        );
+      }
+      return Promise.resolve({ id: "u1", ...data });
+    });
+
+    const res = await syncAppUser({
+      privyUserId: "privy_1",
+      userEmail: "a@x.com",
+    });
+
+    expect(db.appUser.create).toHaveBeenCalledTimes(2); // retried after collision
+    expect(res.id).toBe("u1");
   });
 
   test("is idempotent: an existing user syncs via update, never re-creates", async () => {

@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
 import { creditWithTx, WpCapExceededError } from "./wp.js";
 import { evaluateMilestoneQuests } from "./quest.js";
+import { uniqueViolationOn } from "../lib/prisma-errors.js";
 
 // End-user (AppUser) identity for the WEALTH Points gamification layer.
 // Keyed to Privy (privyId). Distinct from the Better Auth `User` (admins only).
@@ -184,10 +184,9 @@ async function createAppUserWithUniqueCode(data: CreateAppUserData) {
         data: { ...data, referralCode: generateReferralCode() },
       });
     } catch (e) {
-      const isCodeCollision =
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === "P2002" &&
-        (e.meta?.["target"] as string[] | undefined)?.includes("referralCode");
+      // Robust across Prisma versions: reads both meta.target and the PrismaPg
+      // driver-adapter constraint shape.
+      const isCodeCollision = uniqueViolationOn(e, "referralCode");
       if (isCodeCollision && attempt < MAX_ATTEMPTS - 1) continue;
       throw e;
     }
