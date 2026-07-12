@@ -275,6 +275,7 @@ export async function getWealthVolumeOverTime(
 }
 
 export async function getTopMerchants(
+  period: "daily" | "yearly" | "monthly",
   limit: number = 3,
   merchantId?: string
 ): Promise<
@@ -287,12 +288,14 @@ export async function getTopMerchants(
   }>
 > {
   const cacheKey = merchantId
-    ? `top-merchants-${limit}:${merchantId}`
-    : `top-merchants-${limit}`;
+    ? `top-merchants-${period}-${limit}:${merchantId}`
+    : `top-merchants-${period}-${limit}`;
   return getCachedOrCalculate(cacheKey, async () => {
+    const { startDate } = getDateRange(period);
     const redemptions = await prisma.redemption.findMany({
       where: {
         status: "CONFIRMED",
+        createdAt: { gte: startDate },
         ...(merchantId && { voucher: { merchantId } }),
       },
       include: { voucher: { include: { merchant: true } } },
@@ -325,6 +328,7 @@ export async function getTopMerchants(
 }
 
 export async function getTopVouchers(
+  period: "daily" | "yearly" | "monthly",
   limit: number = 3,
   merchantId?: string
 ): Promise<
@@ -337,12 +341,14 @@ export async function getTopVouchers(
   }>
 > {
   const cacheKey = merchantId
-    ? `top-vouchers-${limit}:${merchantId}`
-    : `top-vouchers-${limit}`;
+    ? `top-vouchers-${period}-${limit}:${merchantId}`
+    : `top-vouchers-${period}-${limit}`;
   return getCachedOrCalculate(cacheKey, async () => {
+    const { startDate } = getDateRange(period);
     const redemptions = await prisma.redemption.findMany({
       where: {
         status: "CONFIRMED",
+        createdAt: { gte: startDate },
         ...(merchantId && { voucher: { merchantId } }),
       },
       include: { voucher: { include: { merchant: true } } },
@@ -483,13 +489,18 @@ export async function getKpiTrends(
  * from getMerchantCategoryDistribution, which counts merchants, not redemptions.
  */
 export async function getRedemptionSourceBreakdown(
+  period: "daily" | "yearly" | "monthly",
   merchantId?: string
 ): Promise<Array<{ categoryName: string; count: number; percentage: number }>> {
-  const cacheKey = merchantId ? `redemption-sources:${merchantId}` : "redemption-sources";
+  const cacheKey = merchantId
+    ? `redemption-sources-${period}:${merchantId}`
+    : `redemption-sources-${period}`;
   return getCachedOrCalculate(cacheKey, async () => {
+    const { startDate } = getDateRange(period);
     const redemptions = await prisma.redemption.findMany({
       where: {
         status: "CONFIRMED",
+        createdAt: { gte: startDate },
         ...(merchantId && { voucher: { merchantId } }),
       },
       select: { voucher: { select: { merchant: { select: { category: true } } } } },
