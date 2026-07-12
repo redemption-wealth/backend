@@ -17,6 +17,7 @@ import { prisma } from "@/db.js";
 import {
   redeemReward,
   NotQualifiedError,
+  AccountUnderReviewError,
   OutOfStockError,
 } from "@/services/reward.js";
 import { InsufficientWpError } from "@/services/wp.js";
@@ -51,6 +52,69 @@ describe("redeemReward — anti-bot gate", () => {
     );
     expect(db.wpLedger.create).not.toHaveBeenCalled();
     expect(db.wpRedemption.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("redeemReward — fraud-review gate (FLAGGED)", () => {
+  test("blocks a FLAGGED user before spending WP", async () => {
+    db.appUser.findUnique.mockResolvedValue({
+      hasDeposited: true,
+      fraudReviewStatus: "FLAGGED",
+    });
+
+    await expect(redeemReward("u1", "r1")).rejects.toBeInstanceOf(
+      AccountUnderReviewError
+    );
+    // No WP spent, no request created — gate is early.
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
+    expect(db.wpRedemption.create).not.toHaveBeenCalled();
+  });
+
+  test("carries the Indonesian message for the app to surface", async () => {
+    db.appUser.findUnique.mockResolvedValue({
+      hasDeposited: true,
+      fraudReviewStatus: "FLAGGED",
+    });
+    await expect(redeemReward("u1", "r1")).rejects.toThrow(
+      "Akun kamu sedang ditinjau. Penukaran & konversi dinonaktifkan sementara."
+    );
+  });
+
+  test.each(["NONE", "REVIEWING", "CLEARED"] as const)(
+    "%s is a pure label — redeem works normally",
+    async (status) => {
+      db.appUser.findUnique.mockResolvedValue({
+        hasDeposited: true,
+        fraudReviewStatus: status,
+      });
+      db.wpReward.findUnique.mockResolvedValue(REWARD);
+      db.wpLedger.aggregate.mockResolvedValue({ _sum: { amount: 1000 } });
+
+      const res = await redeemReward("u1", "r1");
+      expect(res).toMatchObject({ status: "PENDING", wpSpent: 300 });
+    }
+  );
+
+  test("reversible: flipping FLAGGED → NONE restores access", async () => {
+    // First call: FLAGGED → blocked.
+    db.appUser.findUnique.mockResolvedValueOnce({
+      hasDeposited: true,
+      fraudReviewStatus: "FLAGGED",
+    });
+    await expect(redeemReward("u1", "r1")).rejects.toBeInstanceOf(
+      AccountUnderReviewError
+    );
+
+    // Admin resets to NONE → next read succeeds (no state to undo).
+    db.appUser.findUnique.mockResolvedValue({
+      hasDeposited: true,
+      fraudReviewStatus: "NONE",
+    });
+    db.wpReward.findUnique.mockResolvedValue(REWARD);
+    db.wpLedger.aggregate.mockResolvedValue({ _sum: { amount: 1000 } });
+
+    const res = await redeemReward("u1", "r1");
+    expect(res).toMatchObject({ status: "PENDING", wpSpent: 300 });
   });
 });
 

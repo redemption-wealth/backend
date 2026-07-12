@@ -10,6 +10,7 @@ import {
   rejectRedemption,
   listUserRedemptions,
   NotQualifiedError,
+  AccountUnderReviewError,
 } from "../src/services/reward.js";
 import { evaluateMilestoneQuests, listQuestsForUser } from "../src/services/quest.js";
 import {
@@ -256,7 +257,38 @@ async function main() {
   await seedConfirmedDeposit();
 
   const TO_ADDR = "0x" + "a".repeat(40);
-  const convUser = { id: user.id, email: EMAIL, hasDeposited: true };
+  const convUser = {
+    id: user.id,
+    email: EMAIL,
+    hasDeposited: true,
+    fraudReviewStatus: "NONE" as const,
+  };
+
+  // 11d. FLAGGED fraud-review gate blocks value-out (redeem + convert) but never
+  //      earning; it is reversible. Uses the real setFraudReviewStatus label.
+  await setFraudReviewStatus(user.id, "FLAGGED");
+  let redeemBlocked = false;
+  try {
+    await redeemReward(user.id, reward.id);
+  } catch (e) {
+    redeemBlocked = e instanceof AccountUnderReviewError;
+  }
+  assert(redeemBlocked, "FLAGGED user blocked from redeem (403 fraud-review gate)");
+  let convertBlocked = false;
+  try {
+    await convertWp({ ...convUser, fraudReviewStatus: "FLAGGED" }, 5000, TO_ADDR);
+  } catch (e) {
+    convertBlocked = e instanceof AccountUnderReviewError;
+  }
+  assert(convertBlocked, "FLAGGED user blocked from convert (403 fraud-review gate)");
+  // Earning is unaffected while FLAGGED.
+  const flaggedClaim = await claimTask(user.id, "social-follow-ig");
+  assert(flaggedClaim.reward > 0, "FLAGGED user can still EARN (claim credited)");
+  // Reversible: reset to NONE restores value-out access immediately.
+  await setFraudReviewStatus(user.id, "NONE");
+  const afterUnflagRedeem = await redeemReward(user.id, reward.id);
+  assert(afterUnflagRedeem.status === "PENDING", "FLAGGED→NONE restores redeem access");
+  await rejectRedemption(afterUnflagRedeem.id, "admin@e2e", "smoke cleanup");
 
   // 12. convert-info exposes limits the app needs to render the screen.
   await adminAdjust(user.id, 20000, "convert top-up"); // ensure enough WP to burn

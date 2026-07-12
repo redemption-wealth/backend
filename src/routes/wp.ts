@@ -3,7 +3,12 @@ import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { questClaimLimiter } from "../middleware/rate-limit.js";
 import { getOrCreateAppUser } from "../services/appUser.js";
 import { getBalance, InsufficientWpError } from "../services/wp.js";
-import { getLedger, listUserRedemptions, NotQualifiedError } from "../services/reward.js";
+import {
+  getLedger,
+  listUserRedemptions,
+  NotQualifiedError,
+  AccountUnderReviewError,
+} from "../services/reward.js";
 import {
   convertWp,
   getConvertInfo,
@@ -70,6 +75,7 @@ wp.get("/convert-info", requireUser, async (c) => {
     id: appUser.id,
     email: appUser.email,
     hasDeposited: appUser.hasDeposited,
+    fraudReviewStatus: appUser.fraudReviewStatus,
   });
   return c.json(info);
 });
@@ -100,13 +106,19 @@ wp.post("/convert", requireUser, questClaimLimiter, async (c) => {
   });
   try {
     const conversion = await convertWp(
-      { id: appUser.id, email: appUser.email, hasDeposited: appUser.hasDeposited },
+      {
+        id: appUser.id,
+        email: appUser.email,
+        hasDeposited: appUser.hasDeposited,
+        fraudReviewStatus: appUser.fraudReviewStatus,
+      },
       parsed.data.wpAmount,
       parsed.data.toAddress
     );
     return c.json({ conversion }, 201);
   } catch (e) {
     if (e instanceof ConversionDisabledError) return c.json({ error: e.message }, 409);
+    if (e instanceof AccountUnderReviewError) return c.json({ error: e.message }, 403);
     if (e instanceof NotQualifiedError) return c.json({ error: e.message }, 403);
     if (e instanceof ConversionBelowMinError) return c.json({ error: e.message }, 400);
     if (e instanceof MonthlyWpLimitError) return c.json({ error: e.message }, 400);

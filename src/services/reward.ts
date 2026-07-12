@@ -13,6 +13,20 @@ export class NotQualifiedError extends Error {
   }
 }
 
+/**
+ * Thrown when a user whose manual `fraudReviewStatus` is FLAGGED attempts a
+ * "value-out" action (redeeming a reward or converting WP → $WEALTH). It is a
+ * reversible label: setting the user back to NONE/CLEARED lifts the block
+ * immediately. Earning (check-in / claim / referral) is never affected. Mapped
+ * to HTTP 403 by the routes.
+ */
+export class AccountUnderReviewError extends Error {
+  constructor() {
+    super("Akun kamu sedang ditinjau. Penukaran & konversi dinonaktifkan sementara.");
+    this.name = "AccountUnderReviewError";
+  }
+}
+
 export class RewardNotAvailableError extends Error {
   constructor(public rewardId: string) {
     super(`Reward tidak tersedia: ${rewardId}`);
@@ -46,9 +60,12 @@ export async function redeemReward(appUserId: string, rewardId: string) {
 
     const user = await tx.appUser.findUnique({
       where: { id: appUserId },
-      select: { hasDeposited: true },
+      select: { hasDeposited: true, fraudReviewStatus: true },
     });
     if (!user) throw new RewardNotAvailableError(rewardId);
+    // Manual fraud-review gate: a FLAGGED user is blocked from this value-out
+    // action (reversible — reading the current label restores access instantly).
+    if (user.fraudReviewStatus === "FLAGGED") throw new AccountUnderReviewError();
     if (!user.hasDeposited) throw new NotQualifiedError(); // anti-bot gate
 
     const reward = await tx.wpReward.findUnique({ where: { id: rewardId } });

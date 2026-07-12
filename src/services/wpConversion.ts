@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
 import { spendWithTx, creditWithTx } from "./wp.js";
-import { NotQualifiedError } from "./reward.js";
+import { NotQualifiedError, AccountUnderReviewError } from "./reward.js";
 import { wibMonthStartUtc } from "../lib/time.js";
 
 // WP → $WEALTH conversion. Treasury is MANUAL: the user burns WP (CONVERT_SPEND)
@@ -164,6 +164,7 @@ export interface ConvertUser {
   id: string;
   email: string;
   hasDeposited: boolean;
+  fraudReviewStatus: "NONE" | "REVIEWING" | "CLEARED" | "FLAGGED";
 }
 
 /**
@@ -185,6 +186,9 @@ export async function convertWp(
 
   const settings = await loadSettings(prisma);
   if (!settings.wpConversionEnabled) throw new ConversionDisabledError();
+  // Manual fraud-review gate: a FLAGGED user is blocked from this value-out
+  // action (reversible — set back to NONE/CLEARED to restore access instantly).
+  if (appUser.fraudReviewStatus === "FLAGGED") throw new AccountUnderReviewError();
   if (!appUser.hasDeposited) throw new NotQualifiedError(); // anti-bot gate
   if (wpAmount < settings.wpConvertMinWp) {
     throw new ConversionBelowMinError(settings.wpConvertMinWp);

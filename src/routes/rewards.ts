@@ -6,6 +6,7 @@ import {
   listRewards,
   redeemReward,
   NotQualifiedError,
+  AccountUnderReviewError,
   RewardNotAvailableError,
   OutOfStockError,
 } from "../services/reward.js";
@@ -31,6 +32,8 @@ rewards.post("/:id/redeem", requireUser, questClaimLimiter, async (c) => {
     const redemption = await redeemReward(appUser.id, rewardId);
     return c.json({ redemption }, 201);
   } catch (e) {
+    if (e instanceof AccountUnderReviewError)
+      return c.json({ error: e.message }, 403);
     if (e instanceof NotQualifiedError) return c.json({ error: e.message }, 403);
     if (e instanceof RewardNotAvailableError)
       return c.json({ error: "Reward tidak tersedia" }, 404);

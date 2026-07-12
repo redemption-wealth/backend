@@ -37,7 +37,7 @@ import {
   MonthlyBudgetError,
   ConversionNotPendingError,
 } from "@/services/wpConversion.js";
-import { NotQualifiedError } from "@/services/reward.js";
+import { NotQualifiedError, AccountUnderReviewError } from "@/services/reward.js";
 import { InsufficientWpError } from "@/services/wp.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -53,7 +53,12 @@ const SETTINGS = {
   wpConversionMonthlyBudgetWealth: D(10_000),
 };
 
-const USER = { id: "u1", email: "a@b.com", hasDeposited: true };
+const USER = {
+  id: "u1",
+  email: "a@b.com",
+  hasDeposited: true,
+  fraudReviewStatus: "NONE" as const,
+};
 
 // Route wpConversion.aggregate calls by what they select / filter on.
 function mockConversionAggs(opts: {
@@ -121,6 +126,45 @@ describe("convertWp — gates & caps", () => {
       convertWp({ ...USER, hasDeposited: false }, 5000, "0x" + "a".repeat(40))
     ).rejects.toBeInstanceOf(NotQualifiedError);
     expect(db.wpLedger.create).not.toHaveBeenCalled();
+  });
+
+  test("blocks a FLAGGED user (fraud-review gate) with a 403 message", async () => {
+    await expect(
+      convertWp({ ...USER, fraudReviewStatus: "FLAGGED" }, 5000, "0x" + "a".repeat(40))
+    ).rejects.toThrow(
+      "Akun kamu sedang ditinjau. Penukaran & konversi dinonaktifkan sementara."
+    );
+    await expect(
+      convertWp({ ...USER, fraudReviewStatus: "FLAGGED" }, 5000, "0x" + "a".repeat(40))
+    ).rejects.toBeInstanceOf(AccountUnderReviewError);
+    // No WP burned, no conversion opened.
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
+    expect(db.wpConversion.create).not.toHaveBeenCalled();
+  });
+
+  test.each(["NONE", "REVIEWING", "CLEARED"] as const)(
+    "%s is a pure label — convert works normally",
+    async (status) => {
+      const conv = await convertWp(
+        { ...USER, fraudReviewStatus: status },
+        5000,
+        "0x" + "a".repeat(40)
+      );
+      expect(conv).toMatchObject({ status: "PENDING", wpBurned: 5000 });
+    }
+  );
+
+  test("reversible: flipping FLAGGED → NONE restores conversion access", async () => {
+    await expect(
+      convertWp({ ...USER, fraudReviewStatus: "FLAGGED" }, 5000, "0x" + "a".repeat(40))
+    ).rejects.toBeInstanceOf(AccountUnderReviewError);
+
+    const conv = await convertWp(
+      { ...USER, fraudReviewStatus: "NONE" },
+      5000,
+      "0x" + "a".repeat(40)
+    );
+    expect(conv).toMatchObject({ status: "PENDING", wpBurned: 5000 });
   });
 
   test("rejects below the minimum", async () => {
