@@ -25,6 +25,11 @@ async function getCachedOrCalculate<T>(
 
 const WIB_TZ = "Asia/Jakarta";
 
+// WP ledger `type` values that represent positive issuance (earning) of WP.
+// Mirrors ISSUANCE_TYPES in services/wpAdmin.ts — spend/refund/adjust types are
+// excluded so "distributed" only counts WP actually handed out to users.
+const WP_ISSUANCE_TYPES = ["CHECKIN", "TASK", "REFERRAL_BONUS"];
+
 function nowWib() {
   const fmt = new Intl.DateTimeFormat("en-CA", {
     timeZone: WIB_TZ,
@@ -505,6 +510,170 @@ export async function getRedemptionSourceBreakdown(
       }))
       .sort((a, b) => b.count - a.count);
   });
+}
+
+// ─── WP distribution metrics (dashboard "WP klaim" area chart + KPI) ─────────
+
+export interface WpMetrics {
+  /** All-time SUM of positive WP issuance (CHECKIN | TASK | REFERRAL_BONUS). */
+  totalDistributed: number;
+  /** Current window vs the immediately-preceding equal window (mirrors kpi-trends). */
+  distributed: { current: number; previous: number; deltaPct: number | null };
+  /** WP issued per period bucket across the current window (zero-filled). */
+  series: Array<{ period: string; wp: number }>;
+}
+
+/**
+ * WP issuance metrics for the back-office dashboard. Not merchant-scoped — the WP
+ * economy has no merchant dimension (WpLedger has no merchant relation), so this
+ * is global for every admin role. `series` powers the "WP klaim" area chart and
+ * is bucketed exactly like getRedemptionsOverTime; `distributed` mirrors the
+ * getKpiTrends current-vs-previous window logic.
+ */
+export async function getWpMetrics(
+  period: "daily" | "yearly" | "monthly"
+): Promise<WpMetrics> {
+  return getCachedOrCalculate(`wp-metrics-${period}`, async () => {
+    const { startDate, endDate, bucketCount } = getDateRange(period);
+    const windowMs = endDate.getTime() - startDate.getTime();
+    const prevStart = new Date(startDate.getTime() - windowMs);
+
+    const issuanceWhere = { amount: { gt: 0 }, type: { in: WP_ISSUANCE_TYPES } };
+
+    const [totalAgg, curAgg, prevAgg, rows] = await Promise.all([
+      prisma.wpLedger.aggregate({ _sum: { amount: true }, where: issuanceWhere }),
+      prisma.wpLedger.aggregate({
+        _sum: { amount: true },
+        where: { ...issuanceWhere, createdAt: { gte: startDate, lte: endDate } },
+      }),
+      prisma.wpLedger.aggregate({
+        _sum: { amount: true },
+        where: { ...issuanceWhere, createdAt: { gte: prevStart, lt: startDate } },
+      }),
+      prisma.wpLedger.findMany({
+        where: { ...issuanceWhere, createdAt: { gte: startDate } },
+        select: { createdAt: true, amount: true },
+        orderBy: { createdAt: "asc" },
+      }),
+    ]);
+
+    const current = curAgg._sum.amount ?? 0;
+    const previous = prevAgg._sum.amount ?? 0;
+
+    const grouped = new Map<string, number>();
+    rows.forEach((r) => {
+      const p = formatDateLabel(r.createdAt, period);
+      grouped.set(p, (grouped.get(p) ?? 0) + r.amount);
+    });
+
+    return {
+      totalDistributed: totalAgg._sum.amount ?? 0,
+      distributed: { current, previous, deltaPct: deltaPct(current, previous) },
+      series: buildBuckets(period, bucketCount).map((label) => ({
+        period: label,
+        wp: grouped.get(label) ?? 0,
+      })),
+    };
+  });
+}
+
+// ─── Per-entity redemption analytics (merchant/voucher detail pages) ─────────
+
+export interface MerchantAnalytics {
+  /** Count of CONFIRMED redemptions across this merchant's vouchers. */
+  totalRedemptions: number;
+  /** SUM of $WEALTH for those confirmed redemptions, decimal string, 4dp. */
+  wealthVolume: string;
+}
+
+/** Confirmed-redemption count + $WEALTH volume for a single merchant. */
+export async function getMerchantAnalytics(
+  merchantId: string
+): Promise<MerchantAnalytics> {
+  return getCachedOrCalculate(`merchant-analytics:${merchantId}`, async () => {
+    const where = { status: "CONFIRMED" as const, voucher: { merchantId } };
+    const [totalRedemptions, volAgg] = await Promise.all([
+      prisma.redemption.count({ where }),
+      prisma.redemption.aggregate({ _sum: { wealthAmount: true }, where }),
+    ]);
+    return {
+      totalRedemptions,
+      wealthVolume: Number(volAgg._sum.wealthAmount ?? 0).toFixed(4),
+    };
+  });
+}
+
+export interface VoucherAnalytics {
+  /** Count of CONFIRMED (used) redemptions for this voucher. */
+  redemptionCount: number;
+  /** SUM of $WEALTH from this voucher's confirmed redemptions, decimal string, 4dp. */
+  wealthVolume: string;
+}
+
+/** Confirmed-redemption count + $WEALTH volume for a single voucher. */
+export async function getVoucherAnalytics(
+  voucherId: string
+): Promise<VoucherAnalytics> {
+  return getCachedOrCalculate(`voucher-analytics:${voucherId}`, async () => {
+    const where = { status: "CONFIRMED" as const, voucherId };
+    const [redemptionCount, volAgg] = await Promise.all([
+      prisma.redemption.count({ where }),
+      prisma.redemption.aggregate({ _sum: { wealthAmount: true }, where }),
+    ]);
+    return {
+      redemptionCount,
+      wealthVolume: Number(volAgg._sum.wealthAmount ?? 0).toFixed(4),
+    };
+  });
+}
+
+// ─── Merchant list enrichment (voucher count + assigned admins) ──────────────
+
+export interface MerchantListEnrichment {
+  /** Number of non-deleted vouchers belonging to the merchant. */
+  voucherCount: number;
+  /** Admins (any active state) whose merchantId is this merchant. */
+  assignedAdmins: Array<{ id: string; email: string }>;
+}
+
+/**
+ * Enrichment for a page of merchants in ONE groupBy (voucher counts) + ONE
+ * findMany (assigned admins) — no per-merchant N+1. Returns a Map keyed by
+ * merchant id; merchants with no vouchers/admins get { 0, [] }. Not cached
+ * (page-specific id set).
+ */
+export async function getMerchantListEnrichment(
+  merchantIds: string[]
+): Promise<Map<string, MerchantListEnrichment>> {
+  const result = new Map<string, MerchantListEnrichment>();
+  merchantIds.forEach((id) =>
+    result.set(id, { voucherCount: 0, assignedAdmins: [] })
+  );
+  if (merchantIds.length === 0) return result;
+
+  const [voucherGroups, admins] = await Promise.all([
+    prisma.voucher.groupBy({
+      by: ["merchantId"],
+      _count: { _all: true },
+      where: { merchantId: { in: merchantIds }, deletedAt: null },
+    }),
+    prisma.admin.findMany({
+      where: { merchantId: { in: merchantIds } },
+      select: { id: true, merchantId: true, user: { select: { email: true } } },
+    }),
+  ]);
+
+  voucherGroups.forEach((g) => {
+    const entry = result.get(g.merchantId);
+    if (entry) entry.voucherCount = g._count._all;
+  });
+  admins.forEach((a) => {
+    if (!a.merchantId) return;
+    const entry = result.get(a.merchantId);
+    if (entry) entry.assignedAdmins.push({ id: a.id, email: a.user.email });
+  });
+
+  return result;
 }
 
 export function clearAnalyticsCache(): void {

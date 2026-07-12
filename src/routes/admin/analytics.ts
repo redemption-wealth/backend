@@ -11,6 +11,7 @@ import {
   getTopVouchers,
   getKpiTrends,
   getRedemptionSourceBreakdown,
+  getWpMetrics,
 } from "../../services/analytics.js";
 
 const adminAnalytics = new Hono<AuthEnv>();
@@ -109,6 +110,20 @@ adminAnalytics.get("/redemption-sources", async (c) => {
   const adminAuth = c.get("adminAuth");
   const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
   const data = await getRedemptionSourceBreakdown(merchantId);
+  return c.json({ data });
+});
+
+// GET /api/admin/analytics/wp-metrics?period=daily|monthly|yearly — WP issuance
+// (distributed) totals + per-bucket series for the dashboard "WP klaim" chart.
+// Global (WP has no merchant dimension), so not merchant-scoped.
+adminAnalytics.get("/wp-metrics", async (c) => {
+  const period = (c.req.query("period") || "monthly") as "daily" | "yearly" | "monthly";
+
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
+  }
+
+  const data = await getWpMetrics(period);
   return c.json({ data });
 });
 

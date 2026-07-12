@@ -14,6 +14,7 @@ import {
   storeVoucherAssetImage,
 } from "../../services/asset-images.js";
 import { getLiveFeeConfig, injectFeeFields } from "../../services/pricing.js";
+import { getVoucherAnalytics } from "../../services/analytics.js";
 import { parseSort, buildOrderBy } from "../../lib/list-query.js";
 import { randomUUID, randomBytes } from "crypto";
 
@@ -137,7 +138,10 @@ adminVouchers.get("/:id", async (c) => {
   }
 
   const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
-  return c.json({ voucher: injectFeeFields(voucher, appFeeRate, gasFeeAmount) });
+  const analytics = await getVoucherAnalytics(voucher.id);
+  return c.json({
+    voucher: { ...injectFeeFields(voucher, appFeeRate, gasFeeAmount), ...analytics },
+  });
 });
 
 // Shared persistence for both create paths (value/CSV via JSON, image via
