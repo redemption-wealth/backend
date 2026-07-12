@@ -29,7 +29,7 @@ const REWARDS = [
   { title: "Beras Premium 5 kg", category: "SEMBAKO", partnerName: "Sembako", wpCost: 2000, stock: 100 },
 ] as const;
 
-async function main() {
+export async function seedWp() {
   let sortOrder = 0;
   for (const q of QUESTS) {
     const actionUrl = "actionUrl" in q ? q.actionUrl : null;
@@ -78,9 +78,15 @@ async function main() {
   console.log(`✅ WP seed done — quests: ${quests}, rewards: ${rewards}`);
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(() => process.exit(0));
+// Only run standalone when invoked directly (pnpm db:seed:wp / tsx scripts/seed-wp.ts),
+// not when imported for its `seedWp` export (e.g. by scripts/wp-smoke.ts).
+const invokedDirectly =
+  process.argv[1] !== undefined && process.argv[1].endsWith("seed-wp.ts");
+if (invokedDirectly) {
+  seedWp()
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    })
+    .finally(() => process.exit(0));
+}

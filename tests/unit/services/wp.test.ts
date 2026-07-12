@@ -90,6 +90,27 @@ describe("credit", () => {
       credit({ appUserId: "u1", amount: 0, type: "TASK" })
     ).rejects.toThrow(/positive/);
   });
+
+  test("edge: issuance landing exactly on the cap is allowed (issued + amount === cap)", async () => {
+    db.appSettings.findUnique.mockResolvedValue({ wpMonthlyCapWp: 100 });
+    mockAggregate({ issued: 80, balance: 20 });
+    db.wpLedger.create.mockResolvedValue({ id: "l-edge" });
+
+    // 80 + 20 === 100 → NOT over cap (guard is strictly `>`).
+    await expect(
+      credit({ appUserId: "u1", amount: 20, type: "TASK" })
+    ).resolves.toMatchObject({ ledgerId: "l-edge" });
+    expect(db.wpLedger.create).toHaveBeenCalledTimes(1);
+  });
+
+  test("edge: one WP over the cap is rejected", async () => {
+    db.appSettings.findUnique.mockResolvedValue({ wpMonthlyCapWp: 100 });
+    mockAggregate({ issued: 80 });
+
+    await expect(
+      credit({ appUserId: "u1", amount: 21, type: "TASK" })
+    ).rejects.toBeInstanceOf(WpCapExceededError);
+  });
 });
 
 describe("spend", () => {
@@ -119,6 +140,21 @@ describe("spend", () => {
     ).rejects.toBeInstanceOf(InsufficientWpError);
     expect(db.wpLedger.create).not.toHaveBeenCalled();
   });
+
+  test("edge: spending exactly the balance succeeds (balance === amount)", async () => {
+    mockAggregate({ balance: 30 });
+    db.wpLedger.create.mockResolvedValue({ id: "l-exact" });
+
+    const res = await spend({ appUserId: "u1", amount: 30, type: "REDEEM_SPEND" });
+    expect(res.balance).toBe(0);
+    expect(db.wpLedger.create.mock.calls[0][0].data.amount).toBe(-30);
+  });
+
+  test("rejects a non-positive spend amount", async () => {
+    await expect(
+      spend({ appUserId: "u1", amount: 0, type: "REDEEM_SPEND" })
+    ).rejects.toThrow(/positive/);
+  });
 });
 
 describe("adminAdjust", () => {
@@ -145,5 +181,10 @@ describe("adminAdjust", () => {
 
   test("rejects a zero delta", async () => {
     await expect(adminAdjust("u1", 0)).rejects.toThrow();
+  });
+
+  test("rejects a non-integer delta", async () => {
+    await expect(adminAdjust("u1", 10.5)).rejects.toThrow(/integer/);
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
   });
 });

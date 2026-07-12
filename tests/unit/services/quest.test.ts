@@ -26,6 +26,7 @@ import {
   evaluateMilestoneQuests,
   QuestNotAvailableError,
 } from "@/services/quest.js";
+import { WpCapExceededError } from "@/services/wp.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -103,6 +104,33 @@ describe("checkin", () => {
     expect(res.streak).toBe(1);
     expect(res.reward).toBe(1);
   });
+
+  test("edge: day-7 reward caps at 64 (streak 6 → 7)", async () => {
+    db.checkinStreak.findUnique.mockResolvedValue({
+      currentStreak: 6,
+      lastCheckinDate: yesterday,
+    });
+
+    const res = await checkin("u1");
+
+    expect(res.streak).toBe(7);
+    expect(res.reward).toBe(64); // day 7 cap
+    expect(db.wpLedger.create.mock.calls[0][0].data.amount).toBe(64);
+  });
+
+  test("propagates WpCapExceededError when the monthly issuance cap is hit", async () => {
+    db.checkinStreak.findUnique.mockResolvedValue(null);
+    // Issuance already at the cap → creditWithTx throws.
+    db.appSettings.findUnique.mockResolvedValue({ wpMonthlyCapWp: 0 });
+    db.wpLedger.aggregate.mockImplementation(({ where }: any) =>
+      where?.type
+        ? Promise.resolve({ _sum: { amount: 0 } }) // issued this month
+        : Promise.resolve({ _sum: { amount: 0 } })
+    );
+
+    await expect(checkin("u1")).rejects.toBeInstanceOf(WpCapExceededError);
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("claimTask", () => {
@@ -160,6 +188,26 @@ describe("claimTask", () => {
     await expect(claimTask("u1", "nope")).rejects.toBeInstanceOf(
       QuestNotAvailableError
     );
+  });
+
+  test("throws for an inactive (isActive:false) quest", async () => {
+    db.quest.findUnique.mockResolvedValue({ ...quest, isActive: false });
+    await expect(claimTask("u1", "follow-x")).rejects.toBeInstanceOf(
+      QuestNotAvailableError
+    );
+  });
+
+  test("DAILY cadence keys the completion by today's WIB date (not 'once')", async () => {
+    db.quest.findUnique.mockResolvedValue({ ...quest, cadence: "DAILY" });
+    db.questCompletion.findUnique.mockResolvedValue(null);
+    db.appUser.findUnique.mockResolvedValue({ hasDeposited: false });
+
+    await claimTask("u1", "follow-x");
+
+    // The idempotency lookup + write use today's date as periodKey.
+    expect(db.questCompletion.findUnique.mock.calls[0][0].where
+      .appUserId_questId_periodKey.periodKey).toBe(today);
+    expect(db.questCompletion.create.mock.calls[0][0].data.periodKey).toBe(today);
   });
 });
 
@@ -249,5 +297,28 @@ describe("evaluateMilestoneQuests", () => {
       status: "FULFILLED",
     });
     expect(db.wpLedger.create.mock.calls[0][0].data.amount).toBe(150);
+  });
+
+  test("edge: exactly at target awards (progress === targetCount)", async () => {
+    db.quest.findMany.mockResolvedValue([redeemQuest]);
+    db.wpRedemption.count.mockResolvedValue(3); // exactly the target of 3
+    db.questCompletion.findUnique.mockResolvedValue(null);
+
+    await evaluateMilestoneQuests("u1");
+
+    expect(db.questCompletion.create).toHaveBeenCalledTimes(1);
+    expect(db.wpLedger.create).toHaveBeenCalledTimes(1);
+  });
+
+  test("cap reached → swallows WpCapExceededError (no completion, retried later)", async () => {
+    db.quest.findMany.mockResolvedValue([redeemQuest]);
+    db.wpRedemption.count.mockResolvedValue(3); // target met
+    db.questCompletion.findUnique.mockResolvedValue(null);
+    // Issuance already at cap so creditWithTx throws WpCapExceededError.
+    db.appSettings.findUnique.mockResolvedValue({ wpMonthlyCapWp: 0 });
+
+    // Must NOT throw — the engine continues and leaves the milestone unclaimed.
+    await expect(evaluateMilestoneQuests("u1")).resolves.toBeUndefined();
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
   });
 });

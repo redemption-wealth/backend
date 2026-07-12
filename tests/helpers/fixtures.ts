@@ -1,5 +1,6 @@
-import { PrismaClient, type AdminRole, type MerchantCategory } from "@prisma/client";
+import { PrismaClient, type AdminRole } from "@prisma/client";
 import bcryptjs from "bcryptjs";
+import { MERCHANT_CATEGORIES } from "@/lib/categories.js";
 
 function uniqueSuffix() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -17,20 +18,14 @@ function normalizeRole(role?: string): AdminRole {
   }
 }
 
-const VALID_CATEGORIES = new Set<MerchantCategory>([
-  "kuliner",
-  "hiburan",
-  "event",
-  "kesehatan",
-  "lifestyle",
-  "lainnya",
-]);
+// Merchant.category is a free-text column validated (only at the HTTP schema
+// layer) against the canonical MERCHANT_CATEGORIES label list. Fixtures write
+// directly to the DB, so any string is accepted; we default to a real label
+// and pass a provided one through verbatim.
+const DEFAULT_CATEGORY = MERCHANT_CATEGORIES[0]; // "F&B"
 
-function normalizeCategory(value?: string): MerchantCategory {
-  if (!value) return "kuliner";
-  return VALID_CATEGORIES.has(value as MerchantCategory)
-    ? (value as MerchantCategory)
-    : "lainnya";
+function normalizeCategory(value?: string): string {
+  return value && value.length > 0 ? value : DEFAULT_CATEGORY;
 }
 
 export function createFixtures(prisma: PrismaClient) {

@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { prisma } from "../src/db.js";
+import { seedWp } from "./seed-wp.js";
 import { syncAppUser } from "../src/services/appUser.js";
 import { checkin, claimTask } from "../src/services/quest.js";
 import { getBalance, adminAdjust } from "../src/services/wp.js";
@@ -100,6 +101,10 @@ async function teardownConfirmedDeposit() {
 
 async function main() {
   await cleanup();
+  // Ensure the default quests + reward catalog exist (idempotent). Keeps this
+  // smoke self-contained — integration tests wipe the quest/reward tables, so we
+  // can't assume a prior `pnpm db:seed:wp` survived.
+  await seedWp();
 
   // 1. Sync (provision)
   const user = await syncAppUser({ privyUserId: PRIVY_ID, userEmail: EMAIL });

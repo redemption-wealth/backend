@@ -8,9 +8,9 @@ const fixtures = createFixtures(testPrisma);
 describe("GET /api/merchants", () => {
   beforeEach(async () => {
     const admin = await fixtures.createAdmin({ role: "admin" });
-    await fixtures.createMerchant(admin.id, { name: "Active Merchant", category: "kuliner" });
-    await fixtures.createMerchant(admin.id, { name: "Inactive Merchant", category: "hiburan", isActive: false });
-    await fixtures.createMerchant(admin.id, { name: "Travel Merchant", category: "lifestyle" });
+    await fixtures.createMerchant(admin.id, { name: "Active Merchant", category: "Gaming" });
+    await fixtures.createMerchant(admin.id, { name: "Inactive Merchant", category: "Lifestyle", isActive: false });
+    await fixtures.createMerchant(admin.id, { name: "Travel Merchant", category: "Lifestyle" });
   });
 
   test("returns paginated active merchants", async () => {
@@ -22,11 +22,11 @@ describe("GET /api/merchants", () => {
   });
 
   test("filters by category", async () => {
-    const res = await app.request(`/api/merchants?category=kuliner`);
+    const res = await app.request(`/api/merchants?category=Gaming`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.merchants.length).toBeGreaterThanOrEqual(1);
-    expect(body.merchants[0].category).toBe("kuliner");
+    expect(body.merchants[0].category).toBe("Gaming");
   });
 
   test("search by name (case-insensitive)", async () => {

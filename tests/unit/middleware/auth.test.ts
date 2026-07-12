@@ -1,30 +1,60 @@
 import { describe, test, expect, vi } from "vitest";
-import app from "@/app.js";
 
-// Mock prisma for unit tests — requireAdmin now does a DB lookup on every request
-vi.mock("@/db.js", () => {
-  const admins: Record<string, object> = {
-    "test-admin-id": { id: "test-admin-id", email: "admin@test.com", role: "admin", merchantId: null, isActive: true },
-    "test-owner-id": { id: "test-owner-id", email: "owner@test.com", role: "owner", merchantId: null, isActive: true },
-    "test-manager-id": { id: "test-manager-id", email: "manager@test.com", role: "manager", merchantId: null, isActive: true },
-  };
-  return {
-    prisma: {
-      admin: {
-        findUnique: vi.fn(({ where }: { where: { id?: string } }) =>
-          Promise.resolve(where?.id ? (admins[where.id] ?? null) : null)
-        ),
-        findMany: vi.fn(() => Promise.resolve([])),
-        count: vi.fn(() => Promise.resolve(0)),
-      },
-      user: { findUnique: vi.fn(() => Promise.resolve(null)) },
+// ─── Mocks ───────────────────────────────────────────────────────────────────
+// requireAdmin does two things:
+//   1. auth.api.getSession({ headers }) — Better Auth reads the Bearer token and
+//      returns a Session row (or null).
+//   2. prisma.admin.findUnique({ where: { userId } }) — live DB check.
+// Unit-testing a *valid authenticated identity* therefore only needs those two
+// seams mocked (no real DB / no real Better Auth session store). The negative
+// paths fall out of the same mocks: any unknown/malformed bearer → getSession
+// null → 401.
+
+// Known valid session tokens → the userId they resolve to.
+const SESSIONS: Record<string, { userId: string; email: string; sessionId: string }> = {
+  "valid-admin-token": { userId: "user-admin", email: "admin@test.com", sessionId: "sess-admin" },
+  "valid-owner-token": { userId: "user-owner", email: "owner@test.com", sessionId: "sess-owner" },
+};
+
+// Admin rows keyed by userId (matches the middleware's `where: { userId }`).
+const ADMINS: Record<string, { id: string; role: string; merchantId: string | null; isActive: boolean }> = {
+  "user-admin": { id: "admin-id-1", role: "ADMIN", merchantId: "m1", isActive: true },
+  "user-owner": { id: "owner-id-1", role: "OWNER", merchantId: null, isActive: true },
+};
+
+vi.mock("@/lib/auth.js", () => ({
+  auth: {
+    api: {
+      getSession: vi.fn(async ({ headers }: { headers: Headers }) => {
+        const authHeader = headers.get("authorization") ?? "";
+        if (!authHeader.startsWith("Bearer ")) return null;
+        const token = authHeader.slice(7);
+        const s = SESSIONS[token];
+        if (!s) return null;
+        return {
+          user: { id: s.userId, email: s.email },
+          session: { id: s.sessionId },
+        };
+      }),
     },
-  };
-});
-import {
-  createTestAdminToken,
-  createTestOwnerToken,
-} from "../../helpers/auth.js";
+  },
+}));
+
+vi.mock("@/db.js", () => ({
+  prisma: {
+    admin: {
+      findUnique: vi.fn(({ where }: { where: { userId?: string } }) =>
+        Promise.resolve(where?.userId ? (ADMINS[where.userId] ?? null) : null),
+      ),
+      findMany: vi.fn(() => Promise.resolve([])),
+      count: vi.fn(() => Promise.resolve(0)),
+    },
+    user: { findUnique: vi.fn(() => Promise.resolve(null)) },
+    session: { delete: vi.fn(() => Promise.resolve()) },
+  },
+}));
+
+const { default: app } = await import("@/app.js");
 
 describe("requireAdmin middleware", () => {
   test("returns 401 without Authorization header", async () => {
@@ -46,50 +76,55 @@ describe("requireAdmin middleware", () => {
     expect(res.status).toBe(401);
   });
 
-  // The 3 cases below assert a *valid authenticated identity*. Admin auth
-  // moved from a hand-signed jose JWT to a DB-backed better-auth session
-  // (and /auth/me → /auth/get-session). Emulating a valid session requires
-  // a real Session row → integration territory, covered by
-  // tests/integration/routes/auth.test.ts (needs a test DB). Skipped here
-  // to keep the unit suite honest; negative-auth cases above still run.
-  test.skip("sets adminAuth context with valid token", async () => {
-    const token = await createTestAdminToken();
-    const res = await app.request("/api/auth/me", {
-      headers: { Authorization: `Bearer ${token}` },
+  test("sets adminAuth context with valid admin session token", async () => {
+    const res = await app.request("/api/auth/get-session", {
+      headers: { Authorization: "Bearer valid-admin-token" },
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.admin).toBeDefined();
-    expect(body.admin.role).toBe("admin");
+    expect(body.user).toBeDefined();
+    expect(body.user.role).toBe("ADMIN");
+    expect(body.user.email).toBe("admin@test.com");
   });
 
-  test.skip("sets correct role for owner", async () => {
-    const token = await createTestOwnerToken();
-    const res = await app.request("/api/auth/me", {
-      headers: { Authorization: `Bearer ${token}` },
+  test("sets correct role for owner", async () => {
+    const res = await app.request("/api/auth/get-session", {
+      headers: { Authorization: "Bearer valid-owner-token" },
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.admin.role).toBe("owner");
+    expect(body.user.role).toBe("OWNER");
+  });
+
+  test("returns 401 when session is valid but admin row is inactive", async () => {
+    // Temporarily flip the admin inactive.
+    const original = ADMINS["user-admin"];
+    ADMINS["user-admin"] = { ...original, isActive: false };
+    try {
+      const res = await app.request("/api/auth/get-session", {
+        headers: { Authorization: "Bearer valid-admin-token" },
+      });
+      expect(res.status).toBe(401);
+    } finally {
+      ADMINS["user-admin"] = original;
+    }
   });
 });
 
 describe("requireOwner middleware", () => {
-  // Skipped: requires a valid better-auth session (DB) — see note above.
-  test.skip("returns 403 for admin role (not owner)", async () => {
-    const token = await createTestAdminToken({ role: "admin" });
+  test("returns 403 for admin role (not owner)", async () => {
+    // /api/admin/admins is guarded by requireAdmin + requireOwner.
     const res = await app.request("/api/admin/admins", {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: "Bearer valid-admin-token" },
     });
     expect(res.status).toBe(403);
   });
 
   test("passes through for owner role", async () => {
-    const token = await createTestOwnerToken();
     const res = await app.request("/api/admin/admins", {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: "Bearer valid-owner-token" },
     });
-    // May be 200 or another status, but NOT 403
+    // Owner clears requireOwner — NOT 403 (may be 200 or downstream status).
     expect(res.status).not.toBe(403);
   });
 });

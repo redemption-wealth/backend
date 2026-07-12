@@ -60,7 +60,7 @@ describe("First-Login Admin Flow E2E", () => {
     // 5. The manager can create a merchant.
     const merchantRes = await jsonPost(
       "/api/admin/merchants",
-      { name: "First Login Merchant", category: "kuliner" },
+      { name: "First Login Merchant", category: "F&B" },
       token,
     );
     expect(merchantRes.status).toBe(201);
