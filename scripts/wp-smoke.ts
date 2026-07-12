@@ -11,7 +11,13 @@ import {
   NotQualifiedError,
 } from "../src/services/reward.js";
 import { evaluateMilestoneQuests, listQuestsForUser } from "../src/services/quest.js";
-import { getOverview } from "../src/services/wpAdmin.js";
+import {
+  getOverview,
+  listAppUsers,
+  getAppUserDetail,
+  getFraudReport,
+  setFraudReviewStatus,
+} from "../src/services/wpAdmin.js";
 import {
   convertWp,
   fulfillConversion,
@@ -199,6 +205,27 @@ async function main() {
   assert(overview.pendingRedemptions >= 0, "overview.pendingRedemptions present");
   assert(overview.pendingConversions >= 0, "overview.pendingConversions present");
   assert(overview.monthlyCapWp > 0 && overview.capUsedPct >= 0, "overview cap fields present");
+
+  // 11b. User-admin enrichment (Wave 4): tier / earned / lastActive.
+  const listed = await listAppUsers({ search: EMAIL, limit: 10 });
+  const listedUser = listed.items.find((u) => u.id === user.id);
+  assert(!!listedUser, "listAppUsers surfaces the smoke user");
+  assert(typeof listedUser!.totalEarnedWp === "number", "list item exposes totalEarnedWp");
+  assert(["Bronze", "Silver", "Gold"].includes(listedUser!.tier), "list item exposes a valid tier");
+  assert(listedUser!.lastActiveAt !== undefined, "list item exposes lastActiveAt");
+
+  const detail = await getAppUserDetail(user.id);
+  assert(!!detail && typeof detail.totalEarnedWp === "number", "detail exposes totalEarnedWp");
+  assert(!!detail && ["Bronze", "Silver", "Gold"].includes(detail.tier), "detail exposes a valid tier");
+
+  // 11c. Fraud report + manual review label round-trip (Wave 4).
+  const fraud = await getFraudReport(5);
+  assert(typeof fraud.summary.topEarnerWp === "number", "fraud summary topEarnerWp numeric");
+  assert(Array.isArray(fraud.topEarners), "fraud report has topEarners array");
+  const flagged = await setFraudReviewStatus(user.id, "FLAGGED");
+  assert(flagged?.fraudReviewStatus === "FLAGGED", "setFraudReviewStatus flags the user");
+  const cleared = await setFraudReviewStatus(user.id, "NONE");
+  assert(cleared?.fraudReviewStatus === "NONE", "review status resets to NONE (no earning block)");
 
   // ─── WP → $WEALTH conversion (Wave 2) ──────────────────────────────────────
   // Enable conversion + seed a confirmed deposit so the deposit cap has room.

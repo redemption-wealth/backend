@@ -9,6 +9,8 @@ import {
   getWealthVolumeOverTime,
   getTopMerchants,
   getTopVouchers,
+  getKpiTrends,
+  getRedemptionSourceBreakdown,
 } from "../../services/analytics.js";
 
 const adminAnalytics = new Hono<AuthEnv>();
@@ -83,6 +85,30 @@ adminAnalytics.get("/top-vouchers", async (c) => {
   const limit = Math.min(parseInt(c.req.query("limit") ?? "3"), 10);
   const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
   const data = await getTopVouchers(limit, merchantId);
+  return c.json({ data });
+});
+
+// GET /api/admin/analytics/kpi-trends?period=daily|monthly|yearly
+// Current-vs-previous-period deltas for the dashboard KPI trend chips.
+adminAnalytics.get("/kpi-trends", async (c) => {
+  const adminAuth = c.get("adminAuth");
+  const period = (c.req.query("period") || "monthly") as "daily" | "yearly" | "monthly";
+
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
+  }
+
+  const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
+  const data = await getKpiTrends(period, merchantId);
+  return c.json({ data });
+});
+
+// GET /api/admin/analytics/redemption-sources — confirmed redemptions grouped by
+// merchant category (donut).
+adminAnalytics.get("/redemption-sources", async (c) => {
+  const adminAuth = c.get("adminAuth");
+  const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
+  const data = await getRedemptionSourceBreakdown(merchantId);
   return c.json({ data });
 });
 

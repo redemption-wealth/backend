@@ -369,6 +369,144 @@ export async function getTopVouchers(
   });
 }
 
+// ─── KPI trend deltas (current period vs previous, equal-length window) ───────
+
+export interface TrendMetric {
+  current: number;
+  previous: number;
+  /** Percent change vs the previous window. null when previous is 0. */
+  deltaPct: number | null;
+}
+
+function deltaPct(current: number, previous: number): number | null {
+  if (previous === 0) return null;
+  return Math.round(((current - previous) / previous) * 10000) / 100;
+}
+
+/**
+ * KPI trend deltas powering the dashboard's "▲ x% vs last period" chips. For the
+ * given period we compare the current window [startDate, now] against the
+ * immediately-preceding equal-length window. Returns redemption count,
+ * confirmed-redemption count, and confirmed $WEALTH volume.
+ */
+export async function getKpiTrends(
+  period: "daily" | "yearly" | "monthly",
+  merchantId?: string
+): Promise<{
+  period: string;
+  redemptions: TrendMetric;
+  confirmedRedemptions: TrendMetric;
+  wealthVolume: { current: string; previous: string; deltaPct: number | null };
+}> {
+  const cacheKey = merchantId ? `kpi-trends-${period}:${merchantId}` : `kpi-trends-${period}`;
+  return getCachedOrCalculate(cacheKey, async () => {
+    const { startDate, endDate } = getDateRange(period);
+    const windowMs = endDate.getTime() - startDate.getTime();
+    const prevStart = new Date(startDate.getTime() - windowMs);
+
+    const scope = merchantId ? { voucher: { merchantId } } : {};
+
+    const [curCount, prevCount, curConfirmed, prevConfirmed, curVol, prevVol] =
+      await Promise.all([
+        prisma.redemption.count({
+          where: { createdAt: { gte: startDate, lte: endDate }, ...scope },
+        }),
+        prisma.redemption.count({
+          where: { createdAt: { gte: prevStart, lt: startDate }, ...scope },
+        }),
+        prisma.redemption.count({
+          where: {
+            status: "CONFIRMED",
+            confirmedAt: { gte: startDate, lte: endDate },
+            ...scope,
+          },
+        }),
+        prisma.redemption.count({
+          where: {
+            status: "CONFIRMED",
+            confirmedAt: { gte: prevStart, lt: startDate },
+            ...scope,
+          },
+        }),
+        prisma.redemption.aggregate({
+          _sum: { wealthAmount: true },
+          where: {
+            status: "CONFIRMED",
+            confirmedAt: { gte: startDate, lte: endDate },
+            ...scope,
+          },
+        }),
+        prisma.redemption.aggregate({
+          _sum: { wealthAmount: true },
+          where: {
+            status: "CONFIRMED",
+            confirmedAt: { gte: prevStart, lt: startDate },
+            ...scope,
+          },
+        }),
+      ]);
+
+    const curVolNum = Number(curVol._sum.wealthAmount ?? 0);
+    const prevVolNum = Number(prevVol._sum.wealthAmount ?? 0);
+
+    return {
+      period,
+      redemptions: {
+        current: curCount,
+        previous: prevCount,
+        deltaPct: deltaPct(curCount, prevCount),
+      },
+      confirmedRedemptions: {
+        current: curConfirmed,
+        previous: prevConfirmed,
+        deltaPct: deltaPct(curConfirmed, prevConfirmed),
+      },
+      wealthVolume: {
+        current: curVolNum.toFixed(4),
+        previous: prevVolNum.toFixed(4),
+        deltaPct: deltaPct(curVolNum, prevVolNum),
+      },
+    };
+  });
+}
+
+// ─── Redemption source breakdown (donut) ─────────────────────────────────────
+
+/**
+ * Where confirmed redemptions come from, grouped by the merchant category of the
+ * redeemed voucher. Powers the dashboard's redemption-source donut. Distinct
+ * from getMerchantCategoryDistribution, which counts merchants, not redemptions.
+ */
+export async function getRedemptionSourceBreakdown(
+  merchantId?: string
+): Promise<Array<{ categoryName: string; count: number; percentage: number }>> {
+  const cacheKey = merchantId ? `redemption-sources:${merchantId}` : "redemption-sources";
+  return getCachedOrCalculate(cacheKey, async () => {
+    const redemptions = await prisma.redemption.findMany({
+      where: {
+        status: "CONFIRMED",
+        ...(merchantId && { voucher: { merchantId } }),
+      },
+      select: { voucher: { select: { merchant: { select: { category: true } } } } },
+    });
+
+    const total = redemptions.length;
+    const grouped = new Map<string, number>();
+    redemptions.forEach((r) => {
+      const cat = r.voucher.merchant.category as string;
+      grouped.set(cat, (grouped.get(cat) || 0) + 1);
+    });
+
+    return Array.from(grouped.entries())
+      .map(([categoryName, count]) => ({
+        categoryName,
+        count,
+        percentage: total > 0 ? Math.round((count / total) * 100) : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+  });
+}
+
 export function clearAnalyticsCache(): void {
   analyticsCache.flushAll();
   console.log("[Analytics] Cache cleared");

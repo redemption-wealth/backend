@@ -36,6 +36,8 @@ import adminWpFraudRoutes from "./routes/admin/wp-fraud.js";
 import adminWpOverviewRoutes from "./routes/admin/wp-overview.js";
 import adminWpSettingsRoutes from "./routes/admin/wp-settings.js";
 import adminWpConversionRoutes from "./routes/admin/wp-conversions.js";
+import adminSearchRoutes from "./routes/admin/search.js";
+import adminNotificationRoutes from "./routes/admin/notifications.js";
 
 const app = new Hono();
 
@@ -98,6 +100,8 @@ admin.route("/wp-fraud", adminWpFraudRoutes);
 admin.route("/wp-overview", adminWpOverviewRoutes);
 admin.route("/wp-settings", adminWpSettingsRoutes);
 admin.route("/wp-conversions", adminWpConversionRoutes);
+admin.route("/search", adminSearchRoutes);
+admin.route("/notifications", adminNotificationRoutes);
 app.route("/api/admin", admin);
 
 // ─── Error handler ────────────────────────────────────────────────────────────

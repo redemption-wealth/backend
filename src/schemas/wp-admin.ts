@@ -35,6 +35,11 @@ export const updateRewardSchema = createRewardSchema
   .partial()
   .extend({ isActive: z.boolean().optional() });
 
+// Manual fraud-review label. Operational only — never blocks earn/spend.
+export const fraudReviewSchema = z.object({
+  status: z.enum(["NONE", "REVIEWING", "CLEARED", "FLAGGED"]),
+});
+
 // Manual WP grant/clawback. Non-zero; sign is the direction.
 export const wpAdjustSchema = z.object({
   amount: z.coerce.number().int().refine((n) => n !== 0, "Amount tidak boleh 0"),

@@ -42,6 +42,18 @@ enum WpConversionStatus {
   REJECTED
 }
 
+// Manual fraud-review state for an AppUser. This is an operational label only —
+// it NEVER blocks the user's earning or spending. Managers set it by hand from
+// the back-office WP Fraud tab (per product decision: manual review, no
+// auto-freeze). NONE = not reviewed, REVIEWING = under investigation,
+// CLEARED = investigated and fine, FLAGGED = confirmed suspicious.
+enum WpFraudReviewStatus {
+  NONE
+  REVIEWING
+  CLEARED
+  FLAGGED
+}
+
 // Asset format presented to the user behind a redeemed voucher unit.
 enum VoucherFormat {
   QR
@@ -329,6 +341,9 @@ model AppUser {
   // Redeeming WP for real rewards and paying referral bonuses require this.
   hasDeposited  Boolean   @default(false)
   qualifiedAt   DateTime?
+  // Manual fraud-review label (see WpFraudReviewStatus). Operational only — does
+  // NOT gate earning/spending. Set by managers from the WP Fraud tab.
+  fraudReviewStatus WpFraudReviewStatus @default(NONE)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
