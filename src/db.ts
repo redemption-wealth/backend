@@ -15,9 +15,15 @@ function createPrismaClient(): PrismaClient {
 
   const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    max: 1,
+    // A dashboard load fires ~10 analytics requests at once. With max:1 they
+    // serialised through a single connection and the tail queued past
+    // connectionTimeoutMillis → connection-timeout 500s under burst. A small
+    // pool lets the burst run in parallel. Kept modest so N serverless instances
+    // stay well under the Supabase pooler's connection ceiling; idleTimeoutMillis
+    // still releases each connection ~immediately after the burst.
+    max: 4,
     idleTimeoutMillis: 500,
-    connectionTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 20_000,
     allowExitOnIdle: true,
   });
 

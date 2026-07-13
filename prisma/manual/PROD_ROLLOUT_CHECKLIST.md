@@ -33,6 +33,7 @@ psql "$DATABASE_URL" -f prisma/manual/<file>.sql
 | Date | File | Change | Why |
 |------|------|--------|-----|
 | 2026-07-12 | `src/db.ts` | Added `transactionOptions: { maxWait: 15_000, timeout: 20_000 }` to `PrismaClient`. | Interactive `$transaction` (admin create = user+account+admin+token) must hold the single pooled connection (`max: 1`). Against the Supabase PgBouncer pooler a cold START exceeds Prisma's default `maxWait` (2s) → **P2028** → **admin create 500**. Verified: tx START takes ~6.7s on the pooler. Applies to prod (Vercel serverless uses the same pooler + `max:1`). |
+| 2026-07-13 | `src/db.ts` | Pool `max: 1 → 4`, `connectionTimeoutMillis: 10s → 20s`. | A dashboard load fires ~10 analytics requests at once; with `max:1` they serialised and the tail queued past the 10s connection timeout → **connection-timeout 500s under burst** (measured 14/15 concurrent failing, 43s). With `max:4` the burst runs in parallel → **0/15 fail, ~6s**. **Prod note:** each serverless instance can now hold up to 4 pooler connections (was 1). Kept modest so N concurrent instances stay under the Supabase pooler's ~15-connection ceiling; `idleTimeoutMillis:500` still releases each connection right after the burst. Monitor pooler connection count after deploy. |
 
 ---
 

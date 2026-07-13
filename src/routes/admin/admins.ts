@@ -223,6 +223,7 @@ adminAdmins.post("/", async (c) => {
 
 const updateAdminSchema = z.object({
   isActive: z.boolean().optional(),
+  role: z.enum(["ADMIN", "MANAGER", "OWNER"]).optional(),
   merchantId: z.string().cuid().nullable().optional(),
 }).strict();
 
@@ -237,7 +238,13 @@ adminAdmins.put("/:id", async (c) => {
   const target = await prisma.admin.findUnique({ where: { id }, select: { role: true } });
   if (!target) return c.json({ error: "Admin not found" }, 404);
 
-  if (parsed.data.merchantId !== undefined && target.role !== "ADMIN") {
+  // The effective role after this edit (may be changing it in the same request).
+  const effectiveRole = parsed.data.role ?? target.role;
+
+  // Only ADMIN is merchant-scoped. A non-ADMIN can't carry a merchant, so reject
+  // an explicit merchant assignment and null out any existing scope when the role
+  // moves away from ADMIN.
+  if (parsed.data.merchantId != null && effectiveRole !== "ADMIN") {
     return c.json({ error: "merchantId can only be set for ADMIN role" }, 422);
   }
 
@@ -249,12 +256,20 @@ adminAdmins.put("/:id", async (c) => {
     if (!merchant) return c.json({ error: "Merchant not found" }, 404);
   }
 
+  const merchantIdUpdate =
+    effectiveRole !== "ADMIN"
+      ? null // non-ADMIN never keeps a merchant scope
+      : parsed.data.merchantId !== undefined
+        ? parsed.data.merchantId
+        : undefined;
+
   try {
     const admin = await prisma.admin.update({
       where: { id },
       data: {
         ...(parsed.data.isActive !== undefined && { isActive: parsed.data.isActive }),
-        ...(parsed.data.merchantId !== undefined && { merchantId: parsed.data.merchantId }),
+        ...(parsed.data.role !== undefined && { role: parsed.data.role }),
+        ...(merchantIdUpdate !== undefined && { merchantId: merchantIdUpdate }),
       },
       select: adminSelect,
     });

@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
-import { requireManager, type AuthEnv } from "../../middleware/auth.js";
+import { type AuthEnv } from "../../middleware/auth.js";
 
+// Any authenticated admin (owner/manager/admin) can read notifications — the
+// global `requireAdmin` on /admin already gates auth. (Was manager-only, which
+// made the bell 403 for owners on every page.)
 const adminNotifications = new Hono<AuthEnv>();
-adminNotifications.use("*", requireManager);
 
 // Active rewards at or below this stock level surface as a notification.
 const LOW_STOCK_THRESHOLD = 5;

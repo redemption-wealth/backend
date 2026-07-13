@@ -62,13 +62,22 @@ adminRedemptions.get("/recent", requireOwner, async (c) => {
 
 // GET /api/admin/redemptions — List redemptions (owner only)
 adminRedemptions.get("/", requireOwner, async (c) => {
-  const status = c.req.query("status");
+  // Normalise + validate the status filter. The UI sends lowercase
+  // (?status=confirmed) but the enum is upper-case; passing the raw value to
+  // Prisma threw an enum error → 500. Ignore anything that isn't a real status.
+  const REDEMPTION_STATUSES = ["PENDING", "CONFIRMED", "FAILED"] as const;
+  const statusRaw = c.req.query("status")?.toUpperCase();
+  const status = REDEMPTION_STATUSES.includes(
+    statusRaw as (typeof REDEMPTION_STATUSES)[number],
+  )
+    ? (statusRaw as (typeof REDEMPTION_STATUSES)[number])
+    : undefined;
   const search = c.req.query("search")?.trim();
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "20");
 
   const where: Prisma.RedemptionWhereInput = {
-    ...(status && { status: status as never }),
+    ...(status && { status }),
     ...(search && {
       OR: [
         { userEmail: { contains: search, mode: "insensitive" } },
