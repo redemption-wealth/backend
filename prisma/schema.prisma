@@ -223,6 +223,7 @@ model Voucher {
   merchant       Merchant         @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   title          String
   description    String?
+  coverImageUrl  String?          // merchant-uploaded cover photo (full-bleed hero); falls back to merchant logo
   basePrice      Decimal          @db.Decimal(15, 2)
   totalStock     Int
   remainingStock Int

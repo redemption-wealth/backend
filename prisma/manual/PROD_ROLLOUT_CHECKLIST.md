@@ -19,6 +19,7 @@ Prisma columns are camelCase & unmapped → **quote them in raw SQL** (`"deleted
 | 4 | `wp_profile_devbypass_wave3.sql` | AppUser profile columns (name/username/phone/avatarUrl) + username unique index | ✅ yes |
 | 5 | `wp_backoffice_gaps_wave4.sql` | `fraudReviewStatus` enum + column on app users | ✅ yes |
 | 6 | `fix_merchant_category_to_text.sql` | **`merchants.category` ENUM → text.** Legacy Postgres enum `MerchantCategory` rejected the app's free-form labels ("Sport & Fitness", …) → create/edit merchant returned 500. Idempotent. | ✅ applied 2026-07-12 |
+| 7 | `add_voucher_cover_image.sql` | **`vouchers.coverImageUrl` (text, nullable).** Merchant-uploaded cover photo shown full-bleed as the voucher hero (falls back to merchant logo → monogram). Idempotent, no backfill. Ships with voucher create/update code that reads/writes it. | ✅ applied to dev 2026-07-13 |
 
 To apply a file:
 ```bash

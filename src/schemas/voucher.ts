@@ -11,6 +11,7 @@ export const createVoucherSchema = z
     merchantId: z.string().min(1, "Merchant wajib dipilih"),
     title: z.string().min(2, "Judul minimal 2 karakter").max(200, "Judul maksimal 200 karakter"),
     description: z.string().max(2000, "Deskripsi maksimal 2000 karakter").optional(),
+    coverImageUrl: z.string().url("URL gambar tidak valid").optional(),
     startDate: z.string().or(z.date()),
     expiryDate: z.string().or(z.date()),
     totalStock: z.coerce.number().int("Stok harus bilangan bulat").positive("Stok minimal 1"),
@@ -59,6 +60,7 @@ export const createVoucherImageSchema = z
     merchantId: z.string().min(1, "Merchant wajib dipilih"),
     title: z.string().min(2, "Judul minimal 2 karakter").max(200, "Judul maksimal 200 karakter"),
     description: z.string().max(2000, "Deskripsi maksimal 2000 karakter").optional(),
+    coverImageUrl: z.string().url("URL gambar tidak valid").optional(),
     startDate: z.string().or(z.date()),
     expiryDate: z.string().or(z.date()),
     totalStock: z.coerce.number().int("Stok harus bilangan bulat").positive("Stok minimal 1"),
@@ -77,6 +79,7 @@ export const createVoucherImageSchema = z
 export const updateVoucherSchema = z.object({
   title: z.string().min(2).max(200).optional(),
   description: z.string().max(2000).optional().nullable(),
+  coverImageUrl: z.string().url().optional().nullable(),
   startDate: z.string().or(z.date()).optional(),
   expiryDate: z.string().or(z.date()).optional(),
   isActive: z.boolean().optional(),
