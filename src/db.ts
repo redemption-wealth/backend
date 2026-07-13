@@ -28,7 +28,16 @@ function createPrismaClient(): PrismaClient {
   });
 
   globalForPrisma.pool = pool;
-  const client = new PrismaClient({ adapter: new PrismaPg(pool) });
+  const client = new PrismaClient({
+    adapter: new PrismaPg(pool),
+    // Interactive transactions ($transaction(async (tx) => …)) must hold the
+    // single pooled connection (max: 1) for their whole duration. Against the
+    // Supabase PgBouncer pooler a cold START can take several seconds, which
+    // blows past Prisma's default maxWait (2s) → P2028 "Unable to start a
+    // transaction in the given time" → 500 (e.g. admin create). Give the pooler
+    // room to hand over the connection and finish the tx.
+    transactionOptions: { maxWait: 15_000, timeout: 20_000 },
+  });
   globalForPrisma.prisma = client;
   return client;
 }
