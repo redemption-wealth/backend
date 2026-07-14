@@ -6,7 +6,8 @@ import { createTestAdminToken, createTestManagerToken } from "../../../helpers/a
 
 const fixtures = createFixtures(testPrisma);
 
-// Settings routes are guarded by requireManager (MANAGER only; ADMIN → 403).
+// Settings: GET is readable by any admin role (a merchant-scoped ADMIN needs the
+// live fee config to preview voucher pricing); PUT stays MANAGER-only.
 async function createAdminWithToken() {
   const admin = await fixtures.createAdmin({ role: "admin" });
   const token = await createTestAdminToken({ id: admin.id, email: admin.email });
@@ -36,10 +37,12 @@ describe("GET /api/admin/settings", () => {
     expect(body.settings.id).toBe("singleton");
   });
 
-  test("returns 403 for admin role", async () => {
+  test("is readable by admin role (needs fee config to price vouchers)", async () => {
     const { token } = await createAdminWithToken();
     const res = await authGet("/api/admin/settings", token);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.settings).toBeDefined();
   });
 });
 
