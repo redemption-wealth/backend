@@ -6,6 +6,10 @@ import {
   updateMerchantSchema,
   merchantQuerySchema,
 } from "../../schemas/merchant.js";
+import {
+  getMerchantAnalytics,
+  getMerchantListEnrichment,
+} from "../../services/analytics.js";
 
 const adminMerchants = new Hono<AuthEnv>();
 
@@ -40,7 +44,8 @@ adminMerchants.get("/:id", async (c) => {
     return c.json({ error: "Access denied" }, 403);
   }
 
-  return c.json({ merchant });
+  const analytics = await getMerchantAnalytics(merchant.id);
+  return c.json({ merchant: { ...merchant, ...analytics } });
 });
 
 // GET /api/admin/merchants — List all merchants
@@ -74,8 +79,13 @@ adminMerchants.get("/", async (c) => {
     prisma.merchant.count({ where }),
   ]);
 
+  const enrichment = await getMerchantListEnrichment(merchants.map((m) => m.id));
+
   return c.json({
-    merchants,
+    merchants: merchants.map((m) => ({
+      ...m,
+      ...(enrichment.get(m.id) ?? { voucherCount: 0, assignedAdmins: [] }),
+    })),
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 });

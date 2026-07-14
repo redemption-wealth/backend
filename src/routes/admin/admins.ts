@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { randomBytes } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../db.js";
 import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
 import { z } from "zod";
@@ -115,11 +116,24 @@ adminAdmins.get("/:id", async (c) => {
 
 // ─── Create ───────────────────────────────────────────────────────────────────
 
-const createAdminSchema = z.object({
-  email: z.string().email(),
-  role: z.enum(["OWNER", "MANAGER", "ADMIN"]),
-  merchantId: z.string().cuid().optional().nullable(),
-});
+// Role/merchant contract:
+//   ADMIN            → merchantId REQUIRED (scoped to one merchant)
+//   MANAGER, OWNER   → merchantId MUST be absent (global scope; any value ignored)
+// A missing rule surfaces as a 400 "Validation failed" instead of a 500.
+export const createAdminSchema = z
+  .object({
+    email: z.string().email(),
+    role: z.enum(["OWNER", "MANAGER", "ADMIN"]),
+    // Treat "" / null (common from an unselected form field) as "no merchant".
+    merchantId: z.preprocess(
+      (v) => (v === "" || v === null ? undefined : v),
+      z.string().cuid().optional(),
+    ),
+  })
+  .refine((d) => d.role !== "ADMIN" || Boolean(d.merchantId), {
+    path: ["merchantId"],
+    message: "merchantId is required for ADMIN role",
+  });
 
 adminAdmins.post("/", async (c) => {
   const body = await c.req.json().catch(() => ({}));
@@ -128,15 +142,19 @@ adminAdmins.post("/", async (c) => {
     return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
 
-  const { role, merchantId } = parsed.data;
+  const { role } = parsed.data;
   const email = parsed.data.email.toLowerCase();
+  // Only ADMIN is merchant-scoped; MANAGER/OWNER are global, so any merchantId
+  // they send is ignored (stored NULL).
+  const merchantId = role === "ADMIN" ? (parsed.data.merchantId ?? null) : null;
 
-  if (role === "ADMIN" && !merchantId) {
-    return c.json({ error: "Admin role requires a merchantId" }, 422);
-  }
-
-  // Unique email check
-  const existing = await prisma.user.findUnique({ where: { email } });
+  // Unique email check. Case-insensitive on purpose: we always store lowercase,
+  // but the users.email unique index is case-sensitive — a legacy mixed-case row
+  // would slip past an exact match and then blow up the insert (P2002) as a 500.
+  const existing = await prisma.user.findFirst({
+    where: { email: { equals: email, mode: "insensitive" } },
+    select: { id: true },
+  });
   if (existing) return c.json({ error: "Email already exists" }, 409);
 
   // Merchant validation
@@ -149,51 +167,63 @@ adminAdmins.post("/", async (c) => {
   }
 
   // Generate a setup token so the owner can immediately share a setup link.
+  // There is no email/invite provider — the token IS the invite: it is returned
+  // in the response body so the owner can forward the setup link manually.
   // 24-hour TTL on initial creation (longer than reset's 5min) since the owner
   // may need time to forward the link to the new admin.
   const setupToken = randomBytes(32).toString("hex");
 
-  // Create User + credential Account (password NULL = pending setup) + Admin + token atomically
-  const result = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
-      data: { email, name: email, emailVerified: true },
+  try {
+    // Create User + credential Account (password NULL = pending setup) + Admin + token atomically
+    const result = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: { email, name: email, emailVerified: true },
+      });
+
+      // Credential account with NULL password (pending setup)
+      await tx.account.create({
+        data: {
+          id: `credential-${user.id}`,
+          accountId: user.id,
+          providerId: "credential",
+          userId: user.id,
+          password: null,
+        },
+      });
+
+      const admin = await tx.admin.create({
+        data: { userId: user.id, role, merchantId },
+        select: adminSelect,
+      });
+
+      await tx.passwordSetupToken.create({
+        data: {
+          userId: user.id,
+          token: setupToken,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        },
+      });
+
+      return admin;
     });
 
-    // Credential account with NULL password (pending setup)
-    await tx.account.create({
-      data: {
-        id: `credential-${user.id}`,
-        accountId: user.id,
-        providerId: "credential",
-        userId: user.id,
-        password: null,
-      },
-    });
-
-    const admin = await tx.admin.create({
-      data: { userId: user.id, role, merchantId: merchantId ?? null },
-      select: adminSelect,
-    });
-
-    await tx.passwordSetupToken.create({
-      data: {
-        userId: user.id,
-        token: setupToken,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
-    });
-
-    return admin;
-  });
-
-  const [enriched] = await withPendingSetup([result]);
-  return c.json({ admin: enriched, setupToken }, 201);
+    const [enriched] = await withPendingSetup([result]);
+    return c.json({ admin: enriched, setupToken }, 201);
+  } catch (err) {
+    // A concurrent create can still race past the pre-check above and trip the
+    // unique constraint — surface that as a 409, never an unhandled 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return c.json({ error: "Email already exists" }, 409);
+    }
+    throw err;
+  }
 });
 
 // ─── Update ───────────────────────────────────────────────────────────────────
 
 const updateAdminSchema = z.object({
   isActive: z.boolean().optional(),
+  role: z.enum(["ADMIN", "MANAGER", "OWNER"]).optional(),
   merchantId: z.string().cuid().nullable().optional(),
 }).strict();
 
@@ -208,7 +238,13 @@ adminAdmins.put("/:id", async (c) => {
   const target = await prisma.admin.findUnique({ where: { id }, select: { role: true } });
   if (!target) return c.json({ error: "Admin not found" }, 404);
 
-  if (parsed.data.merchantId !== undefined && target.role !== "ADMIN") {
+  // The effective role after this edit (may be changing it in the same request).
+  const effectiveRole = parsed.data.role ?? target.role;
+
+  // Only ADMIN is merchant-scoped. A non-ADMIN can't carry a merchant, so reject
+  // an explicit merchant assignment and null out any existing scope when the role
+  // moves away from ADMIN.
+  if (parsed.data.merchantId != null && effectiveRole !== "ADMIN") {
     return c.json({ error: "merchantId can only be set for ADMIN role" }, 422);
   }
 
@@ -220,12 +256,20 @@ adminAdmins.put("/:id", async (c) => {
     if (!merchant) return c.json({ error: "Merchant not found" }, 404);
   }
 
+  const merchantIdUpdate =
+    effectiveRole !== "ADMIN"
+      ? null // non-ADMIN never keeps a merchant scope
+      : parsed.data.merchantId !== undefined
+        ? parsed.data.merchantId
+        : undefined;
+
   try {
     const admin = await prisma.admin.update({
       where: { id },
       data: {
         ...(parsed.data.isActive !== undefined && { isActive: parsed.data.isActive }),
-        ...(parsed.data.merchantId !== undefined && { merchantId: parsed.data.merchantId }),
+        ...(parsed.data.role !== undefined && { role: parsed.data.role }),
+        ...(merchantIdUpdate !== undefined && { merchantId: merchantIdUpdate }),
       },
       select: adminSelect,
     });

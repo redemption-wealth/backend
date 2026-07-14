@@ -1,0 +1,109 @@
+name: CI
+
+# Test-only CI. Never deploys and never touches production data or Supabase.
+# All secrets below are dummy/test values (see env: block) — safe to keep in-repo.
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & test
+    runs-on: ubuntu-latest
+
+    # Ephemeral Postgres used ONLY as the test database.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wealth_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # Job-wide env. These are TEST values only — no real secrets.
+    # The vitest config injects its own NODE_ENV/secrets for the test runs; the
+    # values here additionally cover the non-vitest steps (db push, seed, build,
+    # wp:smoke) and the DEV_AUTH_BYPASS / DEMO_INSTANT_CONFIRM code paths.
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wealth_test
+      NODE_ENV: test
+      DEV_AUTH_BYPASS: "true"
+      DEMO_INSTANT_CONFIRM: "true"
+      PRIVY_APP_ID: test-privy-app-id
+      PRIVY_APP_SECRET: test-privy-app-secret
+      ADMIN_JWT_SECRET: test-secret-min-32-chars-for-ci-testing-only
+      BETTER_AUTH_SECRET: test-better-auth-secret-min-32-chars-ci-only
+      ETHEREUM_CHAIN_ID: "11155111"
+      CORS_ORIGINS: http://localhost:3000,http://localhost:5173
+      INITIAL_OWNER_EMAIL: owner@wealthcrypto.fund
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Supabase ships pgcrypto by default; a bare postgres:16 image does not.
+      # gen_random_bytes (used by an older migration) lives in pgcrypto, so we
+      # enable it up front as a guard. psql is preinstalled on ubuntu runners.
+      - name: Enable Postgres extensions
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d wealth_test -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;'
+
+      # This project applies WP schema changes MANUALLY (prisma/manual/*.sql),
+      # so prisma/migrations is a stale baseline (e.g. merchants.category is an
+      # enum there but a plain String in the current schema). We therefore build
+      # the test DB from schema.prisma directly with `db push` (the source of
+      # truth: it already contains every WP / conversion / profile / fraud
+      # column), NOT from the migrations.
+      - name: Push Prisma schema to test DB
+        run: pnpm exec prisma db push
+
+      # The integration/e2e vitest globalSetup runs `prisma migrate deploy`.
+      # Mark every migration as already-applied so that deploy is a clean no-op
+      # and does NOT try to re-create the (already db-pushed) tables.
+      - name: Mark migrations as applied (so test globalSetup no-ops)
+        run: |
+          for m in $(ls prisma/migrations | grep -E '^[0-9]'); do
+            pnpm exec prisma migrate resolve --applied "$m"
+          done
+
+      - name: Seed WP data
+        run: pnpm db:seed:wp
+
+      - name: Typecheck / build
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: Integration tests
+        run: pnpm test:integration
+
+      - name: WP end-to-end smoke
+        run: pnpm wp:smoke

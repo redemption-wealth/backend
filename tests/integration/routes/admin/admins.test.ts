@@ -36,6 +36,7 @@ describe("GET /api/admin/admins", () => {
 });
 
 describe("POST /api/admin/admins", () => {
+  // Regression: MANAGER with NO merchantId must succeed (was reported as a 500).
   test("creates MANAGER admin (pending setup, no password yet)", async () => {
     const { token } = await createOwnerWithToken();
     const res = await jsonPost("/api/admin/admins", {
@@ -45,7 +46,33 @@ describe("POST /api/admin/admins", () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.admin.pendingSetup).toBe(true);
+    expect(body.admin.merchantId).toBeNull();
     expect(body.setupToken).toBeDefined();
+  });
+
+  // Regression: OWNER with NO merchantId must succeed (global scope).
+  test("creates OWNER admin with no merchantId", async () => {
+    const { token } = await createOwnerWithToken();
+    const res = await jsonPost("/api/admin/admins", {
+      email: `newowner-${Date.now()}@test.com`,
+      role: "OWNER",
+    }, token);
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.admin.merchantId).toBeNull();
+  });
+
+  // A merchantId sent for a global role is ignored (not required, not stored).
+  test("ignores merchantId for MANAGER role", async () => {
+    const { token } = await createOwnerWithToken();
+    const res = await jsonPost("/api/admin/admins", {
+      email: `mgr-ignore-${Date.now()}@test.com`,
+      role: "MANAGER",
+      merchantId: "",
+    }, token);
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.admin.merchantId).toBeNull();
   });
 
   test("creates ADMIN admin scoped to a merchant", async () => {
@@ -59,13 +86,14 @@ describe("POST /api/admin/admins", () => {
     expect(res.status).toBe(201);
   });
 
-  test("returns 422 when ADMIN role has no merchantId", async () => {
+  // Regression: ADMIN without a merchantId is invalid input → 400 (not 422/500).
+  test("returns 400 when ADMIN role has no merchantId", async () => {
     const { token } = await createOwnerWithToken();
     const res = await jsonPost("/api/admin/admins", {
       email: `noscope-${Date.now()}@test.com`,
       role: "ADMIN",
     }, token);
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
   });
 
   test("returns 409 for duplicate email", async () => {

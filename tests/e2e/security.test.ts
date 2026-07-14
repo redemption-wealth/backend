@@ -58,7 +58,7 @@ describe("Security Hardening", () => {
     // or fail validation. Either way, the app doesn't crash.
     const res = await jsonPost("/api/admin/merchants", {
       name: "<script>alert('xss')</script>",
-      category: "kuliner",
+      category: "F&B",
     }, token);
     // If it passes validation, the HTML is stored but Prisma escapes on output
     expect([201, 400]).toContain(res.status);

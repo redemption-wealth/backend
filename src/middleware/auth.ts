@@ -41,7 +41,59 @@ const privyClient = new PrivyClient(
 
 export { privyClient };
 
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║  DEV-ONLY AUTH BYPASS — READ BEFORE TOUCHING                               ║
+// ║                                                                           ║
+// ║  This exists so local automated HTTP integration/e2e tests can            ║
+// ║  authenticate offline, WITHOUT a real Privy token (no network to Privy).  ║
+// ║                                                                           ║
+// ║  It is active ONLY when BOTH are true:                                    ║
+// ║    • process.env.NODE_ENV !== 'production'                                ║
+// ║    • process.env.DEV_AUTH_BYPASS === 'true'                               ║
+// ║  If either check fails, this function returns null and the normal Privy   ║
+// ║  verification below runs completely unchanged. It can NEVER activate in   ║
+// ║  production: even if DEV_AUTH_BYPASS were somehow set there, NODE_ENV      ║
+// ║  === 'production' short-circuits it to inert.                             ║
+// ║                                                                           ║
+// ║  DEV_AUTH_BYPASS is intentionally NOT committed anywhere; the test runner ║
+// ║  supplies it at runtime. Do not hardcode it.                              ║
+// ║                                                                           ║
+// ║  Mechanism: when active and the request carries `x-dev-user-id`, we skip  ║
+// ║  privyClient.verifyAuthToken + privyClient.getUser and synthesize the     ║
+// ║  same UserAuth the real path would, keyed to that Privy user id. Email    ║
+// ║  falls back to `<id>@dev.local` so the email-keyed deposit gate works.    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+function resolveDevBypassAuth(c: {
+  req: { header: (name: string) => string | undefined };
+}): UserAuth | null {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.DEV_AUTH_BYPASS !== "true"
+  ) {
+    return null;
+  }
+  const devUserId = c.req.header("x-dev-user-id");
+  if (!devUserId) return null;
+
+  const devEmail = c.req.header("x-dev-user-email") || `${devUserId}@dev.local`;
+  return {
+    type: "user",
+    userEmail: devEmail,
+    privyUserId: devUserId,
+  };
+}
+
 export const requireUser = createMiddleware<AuthEnv>(async (c, next) => {
+  // Dev-only bypass (see the loud block above). Inert unless NODE_ENV is
+  // non-production AND DEV_AUTH_BYPASS === 'true' AND the header is present.
+  const devAuth = resolveDevBypassAuth(c);
+  if (devAuth) {
+    c.set("auth", devAuth);
+    c.set("userAuth", devAuth);
+    await next();
+    return;
+  }
+
   const authHeader = c.req.header("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
     throw new HTTPException(401, { message: "Unauthorized" });

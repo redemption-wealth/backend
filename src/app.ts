@@ -12,6 +12,11 @@ import redemptionRoutes from "./routes/redemptions.js";
 import priceRoutes from "./routes/price.js";
 import webhookRoutes from "./routes/webhook.js";
 import cronRoutes from "./routes/cron.js";
+import questRoutes from "./routes/quests.js";
+import referralRoutes from "./routes/referral.js";
+import rewardRoutes from "./routes/rewards.js";
+import wpRoutes from "./routes/wp.js";
+import userRoutes from "./routes/users.js";
 
 // Admin routes (require session auth)
 import adminOverviewRoutes from "./routes/admin/overview.js";
@@ -23,6 +28,16 @@ import adminAdminRoutes from "./routes/admin/admins.js";
 import adminAnalyticsRoutes from "./routes/admin/analytics.js";
 import adminSettingsRoutes from "./routes/admin/settings.js";
 import adminUploadRoutes from "./routes/admin/upload.js";
+import adminQuestRoutes from "./routes/admin/quests.js";
+import adminRewardRoutes from "./routes/admin/rewards.js";
+import adminAppUserRoutes from "./routes/admin/app-users.js";
+import adminWpRedemptionRoutes from "./routes/admin/wp-redemptions.js";
+import adminWpFraudRoutes from "./routes/admin/wp-fraud.js";
+import adminWpOverviewRoutes from "./routes/admin/wp-overview.js";
+import adminWpSettingsRoutes from "./routes/admin/wp-settings.js";
+import adminWpConversionRoutes from "./routes/admin/wp-conversions.js";
+import adminSearchRoutes from "./routes/admin/search.js";
+import adminNotificationRoutes from "./routes/admin/notifications.js";
 
 const app = new Hono();
 
@@ -58,6 +73,11 @@ app.route("/api/redemptions", redemptionRoutes);
 app.route("/api/price", priceRoutes);
 app.route("/api/webhook", webhookRoutes);
 app.route("/api/cron", cronRoutes);
+app.route("/api/quests", questRoutes);
+app.route("/api/referral", referralRoutes);
+app.route("/api/rewards", rewardRoutes);
+app.route("/api/wp", wpRoutes);
+app.route("/api/users", userRoutes);
 
 // ─── Admin routes (session-protected) ────────────────────────────────────────
 
@@ -72,6 +92,16 @@ admin.route("/admins", adminAdminRoutes);
 admin.route("/analytics", adminAnalyticsRoutes);
 admin.route("/settings", adminSettingsRoutes);
 admin.route("/upload", adminUploadRoutes);
+admin.route("/quests", adminQuestRoutes);
+admin.route("/rewards", adminRewardRoutes);
+admin.route("/app-users", adminAppUserRoutes);
+admin.route("/wp-redemptions", adminWpRedemptionRoutes);
+admin.route("/wp-fraud", adminWpFraudRoutes);
+admin.route("/wp-overview", adminWpOverviewRoutes);
+admin.route("/wp-settings", adminWpSettingsRoutes);
+admin.route("/wp-conversions", adminWpConversionRoutes);
+admin.route("/search", adminSearchRoutes);
+admin.route("/notifications", adminNotificationRoutes);
 app.route("/api/admin", admin);
 
 // ─── Error handler ────────────────────────────────────────────────────────────

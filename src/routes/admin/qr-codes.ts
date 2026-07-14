@@ -173,7 +173,16 @@ adminQrCodes.post("/scan", requireAdminRole, qrScanLimiter, async (c) => {
 adminQrCodes.get("/", async (c) => {
   const adminAuth = c.get("adminAuth");
   const voucherId = c.req.query("voucherId");
-  const status = c.req.query("status");
+  // Normalise + validate the status filter: the UI sends lower-case
+  // (?status=available) but the enum is upper-case; passing the raw value to
+  // Prisma throws an enum error → 500. Ignore anything that isn't a real status.
+  const QR_STATUSES = ["AVAILABLE", "REDEEMED", "USED"] as const;
+  const statusRaw = c.req.query("status")?.toUpperCase();
+  const status = QR_STATUSES.includes(
+    statusRaw as (typeof QR_STATUSES)[number],
+  )
+    ? (statusRaw as (typeof QR_STATUSES)[number])
+    : undefined;
   const search = c.req.query("search")?.trim();
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "50");
@@ -190,7 +199,7 @@ adminQrCodes.get("/", async (c) => {
 
   const where: Prisma.QrCodeWhereInput = {
     ...(voucherId && { voucherId }),
-    ...(status && { status: status as never }),
+    ...(status && { status }),
     ...(adminAuth.role === "ADMIN" && adminAuth.merchantId && {
       voucher: { merchantId: adminAuth.merchantId },
     }),
@@ -225,6 +234,10 @@ adminQrCodes.get("/", async (c) => {
       include: {
         voucher: { select: { title: true, merchant: { select: { name: true } } } },
         scannedBy: { select: { user: { select: { email: true } } } },
+        // Redeemer identity: a QR gets a redemptionId when handed to an app user,
+        // and Redemption.userEmail is that user's email. Selected here so the list
+        // resolves the redeemer in the same page query (no N+1).
+        redemption: { select: { userEmail: true } },
       },
       orderBy,
       skip: (page - 1) * limit,
@@ -233,8 +246,15 @@ adminQrCodes.get("/", async (c) => {
     prisma.qrCode.count({ where }),
   ]);
 
+  // Surface the redeemer email as a flat `assignedToEmail` field (null when the
+  // QR is still unassigned) while keeping every existing QrCode field intact.
+  const items = qrCodes.map(({ redemption, ...qr }) => ({
+    ...qr,
+    assignedToEmail: redemption?.userEmail ?? null,
+  }));
+
   return c.json({
-    qrCodes,
+    qrCodes: items,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
 });

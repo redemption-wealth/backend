@@ -18,7 +18,7 @@ describe("createMerchantSchema", () => {
       createMerchantSchema.safeParse({
         name: "Kopi Kita",
         description: "Kedai kopi",
-        category: "kuliner",
+        category: "F&B",
         logoUrl: "https://cdn.example.com/logo.png",
       }).success,
     ).toBe(true);

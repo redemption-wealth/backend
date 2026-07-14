@@ -47,7 +47,7 @@ function tokenActivity(
 
 async function seedPendingRedemption(txHash: string) {
   const merchant = await testPrisma.merchant.create({
-    data: { name: `Merchant ${Math.random().toString(36).slice(2)}`, category: "kuliner" },
+    data: { name: `Merchant ${Math.random().toString(36).slice(2)}`, category: "F&B" },
   });
   const voucher = await testPrisma.voucher.create({
     data: {

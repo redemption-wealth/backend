@@ -14,6 +14,7 @@ import {
   storeVoucherAssetImage,
 } from "../../services/asset-images.js";
 import { getLiveFeeConfig, injectFeeFields } from "../../services/pricing.js";
+import { getVoucherAnalytics } from "../../services/analytics.js";
 import { parseSort, buildOrderBy } from "../../lib/list-query.js";
 import { randomUUID, randomBytes } from "crypto";
 
@@ -137,7 +138,10 @@ adminVouchers.get("/:id", async (c) => {
   }
 
   const { appFeeRate, gasFeeAmount } = await getLiveFeeConfig();
-  return c.json({ voucher: injectFeeFields(voucher, appFeeRate, gasFeeAmount) });
+  const analytics = await getVoucherAnalytics(voucher.id);
+  return c.json({
+    voucher: { ...injectFeeFields(voucher, appFeeRate, gasFeeAmount), ...analytics },
+  });
 });
 
 // Shared persistence for both create paths (value/CSV via JSON, image via
@@ -149,6 +153,7 @@ async function persistVoucherWithAssets(params: {
   merchantId: string;
   title: string;
   description?: string | null;
+  coverImageUrl?: string | null;
   startDate: string | Date;
   expiryDate: string | Date;
   totalStock: number;
@@ -180,6 +185,7 @@ async function persistVoucherWithAssets(params: {
           merchantId: params.merchantId,
           title: params.title,
           description: params.description ?? undefined,
+          coverImageUrl: params.coverImageUrl ?? null,
           startDate: new Date(params.startDate),
           expiryDate: new Date(params.expiryDate),
           totalStock: params.totalStock,
@@ -249,7 +255,7 @@ async function createVoucherFromImages(c: Context<AuthEnv>) {
 
   const merchantId =
     adminAuth.role === "ADMIN" ? adminAuth.merchantId! : parsed.data.merchantId;
-  const { title, description, startDate, expiryDate, totalStock, basePrice, qrPerSlot, format, barcodeSymbology } =
+  const { title, description, coverImageUrl, startDate, expiryDate, totalStock, basePrice, qrPerSlot, format, barcodeSymbology } =
     parsed.data;
 
   if (totalStock * qrPerSlot > MAX_QR_PER_VOUCHER) {
@@ -329,6 +335,7 @@ async function createVoucherFromImages(c: Context<AuthEnv>) {
     merchantId,
     title,
     description,
+    coverImageUrl,
     startDate,
     expiryDate,
     totalStock,
@@ -372,6 +379,7 @@ adminVouchers.post("/", async (c) => {
   const {
     title,
     description,
+    coverImageUrl,
     startDate,
     expiryDate,
     totalStock,
@@ -463,6 +471,7 @@ adminVouchers.post("/", async (c) => {
     merchantId,
     title,
     description,
+    coverImageUrl,
     startDate,
     expiryDate,
     totalStock,

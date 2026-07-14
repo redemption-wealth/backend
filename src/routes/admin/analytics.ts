@@ -9,6 +9,9 @@ import {
   getWealthVolumeOverTime,
   getTopMerchants,
   getTopVouchers,
+  getKpiTrends,
+  getRedemptionSourceBreakdown,
+  getWpMetrics,
 } from "../../services/analytics.js";
 
 const adminAnalytics = new Hono<AuthEnv>();
@@ -25,6 +28,11 @@ const TREASURY_CACHE_TTL = 60_000;
 adminAnalytics.use("/*", requireAdmin);
 
 // GET /api/admin/analytics/summary
+// Intentionally period-INDEPENDENT: this returns current-state snapshots
+// (active merchant count, active voucher count, all-time redemption/user/volume
+// totals). These have no date dimension. The dashboards render period-sensitive
+// redemption-count / $WEALTH-volume figures from /kpi-trends (which IS
+// period-aware), not from these snapshot totals, so /summary takes no ?period=.
 adminAnalytics.get("/summary", async (c) => {
   const adminAuth = c.get("adminAuth");
   const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
@@ -68,21 +76,79 @@ adminAnalytics.get("/wealth-volume", async (c) => {
   return c.json({ data });
 });
 
-// GET /api/admin/analytics/top-merchants
+// GET /api/admin/analytics/top-merchants?period=daily|monthly|yearly
+// Merchants ranked by CONFIRMED redemptions within the selected window.
 adminAnalytics.get("/top-merchants", async (c) => {
   const adminAuth = c.get("adminAuth");
+  const period = (c.req.query("period") || "monthly") as "daily" | "yearly" | "monthly";
+
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
+  }
+
   const limit = Math.min(parseInt(c.req.query("limit") ?? "3"), 10);
   const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
-  const data = await getTopMerchants(limit, merchantId);
+  const data = await getTopMerchants(period, limit, merchantId);
   return c.json({ data });
 });
 
-// GET /api/admin/analytics/top-vouchers
+// GET /api/admin/analytics/top-vouchers?period=daily|monthly|yearly
+// Vouchers ranked by CONFIRMED redemptions within the selected window.
 adminAnalytics.get("/top-vouchers", async (c) => {
   const adminAuth = c.get("adminAuth");
+  const period = (c.req.query("period") || "monthly") as "daily" | "yearly" | "monthly";
+
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
+  }
+
   const limit = Math.min(parseInt(c.req.query("limit") ?? "3"), 10);
   const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
-  const data = await getTopVouchers(limit, merchantId);
+  const data = await getTopVouchers(period, limit, merchantId);
+  return c.json({ data });
+});
+
+// GET /api/admin/analytics/kpi-trends?period=daily|monthly|yearly
+// Current-vs-previous-period deltas for the dashboard KPI trend chips.
+adminAnalytics.get("/kpi-trends", async (c) => {
+  const adminAuth = c.get("adminAuth");
+  const period = (c.req.query("period") || "monthly") as "daily" | "yearly" | "monthly";
+
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
+  }
+
+  const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
+  const data = await getKpiTrends(period, merchantId);
+  return c.json({ data });
+});
+
+// GET /api/admin/analytics/redemption-sources — confirmed redemptions grouped by
+// merchant category (donut).
+adminAnalytics.get("/redemption-sources", async (c) => {
+  const adminAuth = c.get("adminAuth");
+  const period = (c.req.query("period") || "monthly") as "daily" | "yearly" | "monthly";
+
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
+  }
+
+  const merchantId = adminAuth.role === "ADMIN" ? adminAuth.merchantId : undefined;
+  const data = await getRedemptionSourceBreakdown(period, merchantId);
+  return c.json({ data });
+});
+
+// GET /api/admin/analytics/wp-metrics?period=daily|monthly|yearly — WP issuance
+// (distributed) totals + per-bucket series for the dashboard "WP klaim" chart.
+// Global (WP has no merchant dimension), so not merchant-scoped.
+adminAnalytics.get("/wp-metrics", async (c) => {
+  const period = (c.req.query("period") || "monthly") as "daily" | "yearly" | "monthly";
+
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
+  }
+
+  const data = await getWpMetrics(period);
   return c.json({ data });
 });
 

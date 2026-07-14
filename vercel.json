@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/expire-pending-redemptions",
       "schedule": "0 19 * * *"
+    },
+    {
+      "path": "/api/cron/wp-daily",
+      "schedule": "5 17 * * *"
     }
   ]
 }

@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../db.js";
 import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
 import { parseSort, buildOrderBy } from "../../lib/list-query.js";
+import { getDateRange } from "../../services/analytics.js";
 
 const adminRedemptions = new Hono<AuthEnv>();
 
@@ -18,13 +19,22 @@ adminRedemptions.get("/counts", requireOwner, async (c) => {
   return c.json({ all, confirmed, pending, failed });
 });
 
-// GET /api/admin/redemptions/recent?limit=10 — Recent confirmed redemptions (owner only)
+// GET /api/admin/redemptions/recent?limit=10&period=daily|monthly|yearly
+// Recent confirmed redemptions (owner only), constrained to the dashboard's
+// selected date-range window so "recent" tracks the topbar period filter.
 // Must be registered before /:id to avoid param swallowing "recent"
 adminRedemptions.get("/recent", requireOwner, async (c) => {
   const limit = Math.min(parseInt(c.req.query("limit") ?? "10"), 50);
+  const period = (c.req.query("period") || "monthly") as "daily" | "yearly" | "monthly";
+
+  if (!["daily", "yearly", "monthly"].includes(period)) {
+    return c.json({ error: "Invalid period. Use: daily, yearly, or monthly" }, 400);
+  }
+
+  const { startDate } = getDateRange(period);
 
   const redemptions = await prisma.redemption.findMany({
-    where: { status: "CONFIRMED" },
+    where: { status: "CONFIRMED", createdAt: { gte: startDate } },
     include: {
       voucher: {
         select: {
@@ -52,13 +62,22 @@ adminRedemptions.get("/recent", requireOwner, async (c) => {
 
 // GET /api/admin/redemptions — List redemptions (owner only)
 adminRedemptions.get("/", requireOwner, async (c) => {
-  const status = c.req.query("status");
+  // Normalise + validate the status filter. The UI sends lowercase
+  // (?status=confirmed) but the enum is upper-case; passing the raw value to
+  // Prisma threw an enum error → 500. Ignore anything that isn't a real status.
+  const REDEMPTION_STATUSES = ["PENDING", "CONFIRMED", "FAILED"] as const;
+  const statusRaw = c.req.query("status")?.toUpperCase();
+  const status = REDEMPTION_STATUSES.includes(
+    statusRaw as (typeof REDEMPTION_STATUSES)[number],
+  )
+    ? (statusRaw as (typeof REDEMPTION_STATUSES)[number])
+    : undefined;
   const search = c.req.query("search")?.trim();
   const page = parseInt(c.req.query("page") ?? "1");
   const limit = parseInt(c.req.query("limit") ?? "20");
 
   const where: Prisma.RedemptionWhereInput = {
-    ...(status && { status: status as never }),
+    ...(status && { status }),
     ...(search && {
       OR: [
         { userEmail: { contains: search, mode: "insensitive" } },

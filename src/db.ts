@@ -15,9 +15,15 @@ function createPrismaClient(): PrismaClient {
 
   const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
-    max: 1,
+    // A dashboard load fires ~10 analytics requests at once. With max:1 they
+    // serialised through a single connection and the tail queued past
+    // connectionTimeoutMillis → connection-timeout 500s under burst. A small
+    // pool lets the burst run in parallel. Kept modest so N serverless instances
+    // stay well under the Supabase pooler's connection ceiling; idleTimeoutMillis
+    // still releases each connection ~immediately after the burst.
+    max: 4,
     idleTimeoutMillis: 500,
-    connectionTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 20_000,
     allowExitOnIdle: true,
   });
 
@@ -28,7 +34,16 @@ function createPrismaClient(): PrismaClient {
   });
 
   globalForPrisma.pool = pool;
-  const client = new PrismaClient({ adapter: new PrismaPg(pool) });
+  const client = new PrismaClient({
+    adapter: new PrismaPg(pool),
+    // Interactive transactions ($transaction(async (tx) => …)) must hold the
+    // single pooled connection (max: 1) for their whole duration. Against the
+    // Supabase PgBouncer pooler a cold START can take several seconds, which
+    // blows past Prisma's default maxWait (2s) → P2028 "Unable to start a
+    // transaction in the given time" → 500 (e.g. admin create). Give the pooler
+    // room to hand over the connection and finish the tx.
+    transactionOptions: { maxWait: 15_000, timeout: 20_000 },
+  });
   globalForPrisma.prisma = client;
   return client;
 }

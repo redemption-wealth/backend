@@ -43,7 +43,7 @@ describe("POST /api/admin/merchants", () => {
 
     const res = await jsonPost("/api/admin/merchants", {
       name: "New Merchant",
-      category: "kuliner",
+      category: "F&B",
     }, token);
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -55,7 +55,7 @@ describe("POST /api/admin/merchants", () => {
 
     const res = await jsonPost("/api/admin/merchants", {
       name: "New Merchant",
-      category: "kuliner",
+      category: "F&B",
     }, token);
     expect(res.status).toBe(403);
   });
@@ -65,7 +65,7 @@ describe("POST /api/admin/merchants", () => {
 
     const res = await jsonPost("/api/admin/merchants", {
       name: "A", // too short
-      category: "kuliner",
+      category: "F&B",
     }, token);
     expect(res.status).toBe(400);
   });
