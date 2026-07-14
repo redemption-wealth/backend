@@ -1,12 +1,18 @@
 import { Hono } from "hono";
 import { prisma } from "../../db.js";
-import { requireManager, type AuthEnv } from "../../middleware/auth.js";
+import {
+  requireManager,
+  requireManagerOrAdmin,
+  type AuthEnv,
+} from "../../middleware/auth.js";
 import { updateSettingsSchema } from "../../schemas/settings.js";
 
 const adminSettings = new Hono<AuthEnv>();
 
-// GET /api/admin/settings — Get app settings (owner only)
-adminSettings.get("/", requireManager, async (c) => {
+// GET /api/admin/settings — Read app settings. Any admin role may READ (a
+// merchant-scoped ADMIN needs the live fee config to price/preview a voucher);
+// only manager+ may WRITE (PUT below).
+adminSettings.get("/", requireManagerOrAdmin, async (c) => {
   let settings = await prisma.appSettings.findUnique({ where: { id: "singleton" } });
 
   if (!settings) {
