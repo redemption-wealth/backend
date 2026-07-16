@@ -246,6 +246,127 @@ export async function refundUnmatchedTransfer(
   });
 }
 
+/**
+ * Manual fulfillment: the admin decided this inflow IS a purchase, but no
+ * matching PENDING exists (user paid outside the app flow, or the order
+ * expired long ago). Creates a fresh redemption for the chosen voucher —
+ * priced by what was ACTUALLY paid — adopts the transfer's txHash, and
+ * confirms through the normal path (QR assignment + stock). This is the
+ * productized version of the 0x0b5f SQL recovery.
+ */
+export async function manualFulfillUnmatchedTransfer(
+  unmatchedId: string,
+  voucherId: string,
+  userEmail: string,
+  resolvedBy: string,
+) {
+  const row = await prisma.unmatchedTransfer.findUnique({
+    where: { id: unmatchedId },
+  });
+  if (!row) throw new Error("Unmatched transfer not found");
+  if (row.status !== "OPEN") throw new Error("Transfer already resolved");
+  // Policy (2026-07-17): manual fulfillment ONLY for wallets linked to a known
+  // account — a random wallet gets Refund/Ignore, never a voucher. The email
+  // param must match the transfer's resolved account (defense in depth; the
+  // UI pre-fills and locks it).
+  if (!row.userEmail) {
+    throw new Error(
+      "Wallet is not linked to any user account — manual fulfillment is not allowed (use Refund/Ignore)",
+    );
+  }
+
+  const email = userEmail.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Valid userEmail is required");
+  }
+  if (email !== row.userEmail.toLowerCase()) {
+    throw new Error("userEmail does not match the transfer's linked account");
+  }
+
+  const voucher = await prisma.voucher.findUnique({
+    where: { id: voucherId },
+    select: {
+      id: true,
+      title: true,
+      merchantId: true,
+      basePrice: true,
+      qrPerSlot: true,
+      isActive: true,
+      deletedAt: true,
+      appFeeSnapshot: true,
+      gasFeeSnapshot: true,
+    },
+  });
+  if (!voucher || voucher.deletedAt) throw new Error("Voucher not found");
+
+  // Money fields derived from what the user actually paid on-chain — the
+  // implied price keeps the record internally consistent (same construction
+  // as the 0x0b5f recovery).
+  const basePrice = new Prisma.Decimal(voucher.basePrice);
+  const appFee = basePrice.mul(voucher.appFeeSnapshot).div(100);
+  const gasFee = new Prisma.Decimal(voucher.gasFeeSnapshot);
+  const totalIdr = basePrice.add(appFee).add(gasFee);
+  const wealthPriceIdr = totalIdr.div(row.amount);
+
+  const redemption = await prisma.$transaction(async (tx) => {
+    const slot = await tx.redemptionSlot.findFirst({
+      where: { voucherId: voucher.id, status: "AVAILABLE" },
+      include: { qrCodes: { select: { id: true } } },
+    });
+    if (!slot) throw new Error("No available slot for this voucher (out of stock)");
+    if (slot.qrCodes.length !== voucher.qrPerSlot) {
+      throw new Error("Slot is missing its asset records — pick another voucher");
+    }
+    const claimed = await tx.redemptionSlot.updateMany({
+      where: { id: slot.id, status: "AVAILABLE" },
+      data: { status: "REDEEMED" },
+    });
+    if (claimed.count === 0) throw new Error("Slot was claimed concurrently — retry");
+
+    return tx.redemption.create({
+      data: {
+        userEmail: email,
+        voucherId: voucher.id,
+        merchantId: voucher.merchantId,
+        slotId: slot.id,
+        wealthAmount: row.amount,
+        priceIdrAtRedeem: Math.round(Number(voucher.basePrice)),
+        wealthPriceIdrAtRedeem: wealthPriceIdr,
+        appFeeAmount: appFee.div(wealthPriceIdr),
+        gasFeeAmount: gasFee.div(wealthPriceIdr),
+        walletAddress: row.fromAddress,
+        txHash: row.txHash,
+        idempotencyKey: `manual-fulfill-${row.txHash}`,
+        status: "PENDING",
+      },
+    });
+  });
+
+  try {
+    await confirmRedemption(row.txHash);
+  } catch (err) {
+    // Hash attached — reconcile/lazy-heal paths finish the confirmation.
+    console.error("[refund] manual-fulfill confirm deferred:", err);
+  }
+
+  const updated = await prisma.unmatchedTransfer.update({
+    where: { id: unmatchedId },
+    data: {
+      status: "MATCHED",
+      matchedRedemptionId: redemption.id,
+      userEmail: email,
+      resolvedBy,
+      resolvedAt: new Date(),
+      note: `Manual fulfillment: voucher "${voucher.title}"`,
+    },
+  });
+
+  console.log(
+    `[refund] MANUAL-FULFILL ${unmatchedId} -> redemption ${redemption.id} (${email}) by ${resolvedBy}`,
+  );
+  return { transfer: updated, redemptionId: redemption.id };
+}
+
 /** Close an unmatched transfer without action (note required — audit trail). */
 export async function ignoreUnmatchedTransfer(
   unmatchedId: string,

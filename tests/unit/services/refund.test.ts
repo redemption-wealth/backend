@@ -37,6 +37,7 @@ import {
   verifyRefundOnChain,
   refundRedemption,
   ignoreUnmatchedTransfer,
+  manualFulfillUnmatchedTransfer,
 } from "@/services/refund.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -203,6 +204,118 @@ describe("refundRedemption", () => {
       refundRedemption("red1", REFUND_TX, "manager@wealth"),
     ).rejects.toThrow(/amount mismatch/i);
     expect(db.redemption.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("manualFulfillUnmatchedTransfer — the productized 0x0b5f recovery", () => {
+  const TRANSFER_ROW = {
+    id: "ut1",
+    status: "OPEN",
+    txHash: "0x" + "0b".repeat(32),
+    fromAddress: PAYER,
+    amount: AMOUNT,
+    userEmail: "raka.demo@gmail.com",
+  };
+  const VOUCHER = {
+    id: "v1",
+    title: "PGR VIP",
+    merchantId: "m1",
+    basePrice: new Prisma.Decimal(300000),
+    qrPerSlot: 2,
+    isActive: true,
+    deletedAt: null,
+    appFeeSnapshot: new Prisma.Decimal("0.7"),
+    gasFeeSnapshot: new Prisma.Decimal(500),
+  };
+
+  beforeEach(() => {
+    db.unmatchedTransfer.findUnique.mockResolvedValue(TRANSFER_ROW);
+    db.voucher.findUnique = vi.fn().mockResolvedValue(VOUCHER);
+    db.redemptionSlot.findFirst = vi.fn().mockResolvedValue({
+      id: "slot1",
+      qrCodes: [{ id: "q1" }, { id: "q2" }],
+    });
+    db.redemptionSlot.updateMany.mockResolvedValue({ count: 1 });
+    db.redemption.create = vi.fn().mockResolvedValue({ id: "newred" });
+    db.unmatchedTransfer.update.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ ...TRANSFER_ROW, ...data }),
+    );
+    // confirmRedemption internals (best-effort; failure is tolerated)
+    db.redemption.findFirst = vi.fn().mockResolvedValue(null);
+  });
+
+  test("creates a CONFIRMED-bound redemption with the transfer's hash + wallet, marks MATCHED", async () => {
+    const out = await manualFulfillUnmatchedTransfer(
+      "ut1",
+      "v1",
+      "Raka.Demo@Gmail.com ",
+      "manager@wealth",
+    );
+
+    expect(out.redemptionId).toBe("newred");
+    expect(db.redemption.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        userEmail: "raka.demo@gmail.com", // trimmed + lowercased
+        voucherId: "v1",
+        slotId: "slot1",
+        wealthAmount: AMOUNT, // priced by what was ACTUALLY paid
+        txHash: TRANSFER_ROW.txHash,
+        walletAddress: PAYER,
+        idempotencyKey: `manual-fulfill-${TRANSFER_ROW.txHash}`,
+      }),
+    });
+    expect(db.unmatchedTransfer.update).toHaveBeenCalledWith({
+      where: { id: "ut1" },
+      data: expect.objectContaining({
+        status: "MATCHED",
+        matchedRedemptionId: "newred",
+        resolvedBy: "manager@wealth",
+      }),
+    });
+  });
+
+  test("out of stock → clear error, nothing recorded", async () => {
+    db.redemptionSlot.findFirst.mockResolvedValue(null);
+    await expect(
+      manualFulfillUnmatchedTransfer("ut1", "v1", "raka.demo@gmail.com", "mgr"),
+    ).rejects.toThrow(/out of stock/i);
+    expect(db.unmatchedTransfer.update).not.toHaveBeenCalled();
+  });
+
+  test("already resolved → refuse", async () => {
+    db.unmatchedTransfer.findUnique.mockResolvedValue({
+      ...TRANSFER_ROW,
+      status: "REFUNDED",
+    });
+    await expect(
+      manualFulfillUnmatchedTransfer("ut1", "v1", "a@b.co", "mgr"),
+    ).rejects.toThrow(/already resolved/i);
+  });
+
+  test("invalid email → refuse before touching anything", async () => {
+    await expect(
+      manualFulfillUnmatchedTransfer("ut1", "v1", "bukan-email", "mgr"),
+    ).rejects.toThrow(/userEmail/i);
+    expect(db.redemption.create).not.toHaveBeenCalled();
+  });
+
+  test("POLICY: unknown wallet (no linked account) → manual fulfillment refused", async () => {
+    db.unmatchedTransfer.findUnique.mockResolvedValue({
+      ...TRANSFER_ROW,
+      userEmail: null,
+    });
+    await expect(
+      manualFulfillUnmatchedTransfer("ut1", "v1", "siapa@saja.com", "mgr"),
+    ).rejects.toThrow(/not linked/i);
+    expect(db.redemption.create).not.toHaveBeenCalled();
+  });
+
+  test("POLICY: email mismatch with the linked account → refused", async () => {
+    await expect(
+      manualFulfillUnmatchedTransfer("ut1", "v1", "orang.lain@gmail.com", "mgr"),
+    ).rejects.toThrow(/does not match/i);
+    expect(db.redemption.create).not.toHaveBeenCalled();
   });
 });
 

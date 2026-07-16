@@ -3,6 +3,7 @@ import { prisma } from "../../db.js";
 import { requireManager, type AuthEnv } from "../../middleware/auth.js";
 import {
   ignoreUnmatchedTransfer,
+  manualFulfillUnmatchedTransfer,
   matchUnmatchedTransfer,
   refundUnmatchedTransfer,
 } from "../../services/refund.js";
@@ -101,6 +102,45 @@ unmatchedTransfers.post("/:id/match", requireManager, async (c) => {
     return c.json({ transfer: { ...row, amount: row.amount.toString() } });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : "Match failed" }, 400);
+  }
+});
+
+// POST /api/admin/unmatched-transfers/:id/fulfill — manual fulfillment: create
+// a fresh CONFIRMED redemption for the chosen voucher, priced by what was
+// actually paid, bound to this transfer's txHash (the productized 0x0b5f
+// recovery). Body: { voucherId, userEmail }.
+unmatchedTransfers.post("/:id/fulfill", requireManager, async (c) => {
+  const id = c.req.param("id");
+  const admin = c.get("adminAuth");
+  let body: { voucherId?: unknown; userEmail?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  if (!body.voucherId || typeof body.voucherId !== "string") {
+    return c.json({ error: "voucherId is required" }, 400);
+  }
+  if (!body.userEmail || typeof body.userEmail !== "string") {
+    return c.json({ error: "userEmail is required" }, 400);
+  }
+
+  try {
+    const result = await manualFulfillUnmatchedTransfer(
+      id,
+      body.voucherId,
+      body.userEmail,
+      admin.email,
+    );
+    return c.json({
+      transfer: { ...result.transfer, amount: result.transfer.amount.toString() },
+      redemptionId: result.redemptionId,
+    });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Manual fulfillment failed" },
+      400,
+    );
   }
 });
 
