@@ -13,3 +13,14 @@ export const syncSchema = z.object({
 });
 
 export type SyncInput = z.infer<typeof syncSchema>;
+
+// Body for POST /api/referral/apply-code — attach a friend's code manually.
+export const applyReferralCodeSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .min(4, "Kode referral tidak valid")
+    .max(16, "Kode referral tidak valid"),
+});
+
+export type ApplyReferralCodeInput = z.infer<typeof applyReferralCodeSchema>;

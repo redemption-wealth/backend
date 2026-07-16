@@ -29,11 +29,23 @@ export const createRewardSchema = z.object({
   wpCost: z.coerce.number().int().min(1),
   stock: z.coerce.number().int().min(0).nullable().optional(),
   imageUrl: urlOrEmpty,
+  // AUTO = fulfilled instantly from the asset pool; MANUAL = admin ships/fulfils.
+  fulfillmentType: z.enum(["AUTO", "MANUAL"]).default("MANUAL"),
 });
 
 export const updateRewardSchema = createRewardSchema
   .partial()
   .extend({ isActive: z.boolean().optional() });
+
+// Bulk-add pool assets to an AUTO reward. `values` is the pasted list of codes /
+// links / image URLs / QR payloads (one per line on the client).
+export const rewardAssetsSchema = z.object({
+  kind: z.enum(["CODE", "LINK", "IMAGE", "QR"]).default("CODE"),
+  values: z
+    .array(z.string().trim().min(1).max(2000))
+    .min(1, "Minimal 1 aset")
+    .max(1000, "Maksimal 1000 aset per unggahan"),
+});
 
 // Manual fraud-review label. Operational only — never blocks earn/spend.
 export const fraudReviewSchema = z.object({
@@ -83,6 +95,17 @@ export const wpSettingsSchema = z
     wpConversionMonthlyBudgetWealth: z.coerce
       .number()
       .nonnegative("Anggaran tidak boleh negatif")
+      .optional(),
+    // Referral flat bonuses (0 disables that leg).
+    wpReferrerBonusWp: z.coerce
+      .number()
+      .int()
+      .nonnegative("Bonus referrer tidak boleh negatif")
+      .optional(),
+    wpRefereeWelcomeWp: z.coerce
+      .number()
+      .int()
+      .nonnegative("Welcome bonus tidak boleh negatif")
       .optional(),
   })
   .refine((v) => Object.keys(v).length > 0, {

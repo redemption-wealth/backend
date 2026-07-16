@@ -41,21 +41,47 @@ export class OutOfStockError extends Error {
   }
 }
 
-/** Active reward catalog, cheapest first. */
+/**
+ * Active reward catalog, cheapest first. For AUTO rewards, availability is the
+ * count of AVAILABLE pool assets — surfaced through `stock` so the app's existing
+ * sold-out logic (`stock <= 0` → "habis") works unchanged, no client changes.
+ */
 export async function listRewards() {
-  return prisma.wpReward.findMany({
+  const rewards = await prisma.wpReward.findMany({
     where: { isActive: true },
     orderBy: [{ wpCost: "asc" }, { createdAt: "asc" }],
   });
+  const autoIds = rewards
+    .filter((r) => r.fulfillmentType === "AUTO")
+    .map((r) => r.id);
+  if (autoIds.length === 0) return rewards;
+
+  const counts = await prisma.wpRewardAsset.groupBy({
+    by: ["rewardId"],
+    where: { rewardId: { in: autoIds }, status: "AVAILABLE" },
+    _count: { _all: true },
+  });
+  const availByReward = new Map(counts.map((c) => [c.rewardId, c._count._all]));
+  return rewards.map((r) =>
+    r.fulfillmentType === "AUTO"
+      ? { ...r, stock: availByReward.get(r.id) ?? 0 }
+      : r
+  );
 }
 
 /**
- * Redeem a reward with WP. Serialized per-reward (stock safety); the inner
+ * Redeem a reward with WP. Serialized per-reward (stock/pool safety); the inner
  * spend serializes per-user. Throws NotQualifiedError when the user hasn't
  * deposited, and InsufficientWpError (from spendWithTx) on a short balance.
+ *
+ * Two fulfillment paths:
+ *   AUTO   → pull one AVAILABLE asset from the pool, mark the redemption
+ *            FULFILLED instantly, and expose the asset value as the user-visible
+ *            fulfillmentNote (empty pool → OutOfStockError, no WP is spent).
+ *   MANUAL → decrement `stock` and create a PENDING redemption for an admin.
  */
 export async function redeemReward(appUserId: string, rewardId: string) {
-  return prisma.$transaction(async (tx) => {
+  const redemption = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`reward:${rewardId}`}))`;
 
     const user = await tx.appUser.findUnique({
@@ -70,7 +96,21 @@ export async function redeemReward(appUserId: string, rewardId: string) {
 
     const reward = await tx.wpReward.findUnique({ where: { id: rewardId } });
     if (!reward || !reward.isActive) throw new RewardNotAvailableError(rewardId);
-    if (reward.stock !== null && reward.stock <= 0) throw new OutOfStockError();
+
+    const isAuto = reward.fulfillmentType === "AUTO";
+
+    // Reserve an asset (AUTO) or check stock (MANUAL) BEFORE spending WP.
+    let asset: { id: string; value: string } | null = null;
+    if (isAuto) {
+      asset = await tx.wpRewardAsset.findFirst({
+        where: { rewardId: reward.id, status: "AVAILABLE" },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, value: true },
+      });
+      if (!asset) throw new OutOfStockError(); // empty pool
+    } else if (reward.stock !== null && reward.stock <= 0) {
+      throw new OutOfStockError();
+    }
 
     // Debit WP (throws InsufficientWpError if the balance is short).
     await spendWithTx(tx, {
@@ -82,13 +122,34 @@ export async function redeemReward(appUserId: string, rewardId: string) {
       note: reward.title,
     });
 
+    if (isAuto && asset) {
+      const created = await tx.wpRedemption.create({
+        data: {
+          appUserId,
+          rewardId: reward.id,
+          wpSpent: reward.wpCost,
+          status: "FULFILLED",
+          fulfilledBy: "auto",
+          fulfillmentNote: asset.value,
+        },
+      });
+      // Claim the asset. The per-reward advisory lock already serializes redeems,
+      // but the status guard makes the assignment race-proof regardless.
+      const claimed = await tx.wpRewardAsset.updateMany({
+        where: { id: asset.id, status: "AVAILABLE" },
+        data: { status: "ASSIGNED", redemptionId: created.id, assignedAt: new Date() },
+      });
+      if (claimed.count === 0) throw new OutOfStockError(); // lost the race → roll back
+      return created;
+    }
+
+    // MANUAL: decrement stock, create a PENDING request for an admin to fulfill.
     if (reward.stock !== null) {
       await tx.wpReward.update({
         where: { id: reward.id },
         data: { stock: { decrement: 1 } },
       });
     }
-
     return tx.wpRedemption.create({
       data: {
         appUserId,
@@ -98,6 +159,69 @@ export async function redeemReward(appUserId: string, rewardId: string) {
       },
     });
   });
+
+  // A FULFILLED redemption (AUTO) may complete this user's REDEEM milestone quest.
+  if (redemption.status === "FULFILLED") {
+    await evaluateMilestoneQuests(appUserId);
+  }
+  return redemption;
+}
+
+// ─── Admin: reward asset pool (AUTO fulfillment) ─────────────────────────────
+
+/** Add pool assets to a reward in bulk. Blank/duplicate values are dropped. */
+export async function addRewardAssets(
+  rewardId: string,
+  kind: string,
+  values: string[]
+) {
+  const reward = await prisma.wpReward.findUnique({
+    where: { id: rewardId },
+    select: { id: true },
+  });
+  if (!reward) throw new RewardNotAvailableError(rewardId);
+
+  const cleaned = Array.from(
+    new Set(values.map((v) => v.trim()).filter((v) => v.length > 0))
+  );
+  if (cleaned.length === 0) return { added: 0 };
+
+  const result = await prisma.wpRewardAsset.createMany({
+    data: cleaned.map((value) => ({ rewardId, kind, value })),
+  });
+  return { added: result.count };
+}
+
+/** Admin: a reward's pool assets (newest first) plus available/assigned counts. */
+export async function listRewardAssets(rewardId: string) {
+  const [assets, available, assigned] = await Promise.all([
+    prisma.wpRewardAsset.findMany({
+      where: { rewardId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        kind: true,
+        value: true,
+        status: true,
+        assignedAt: true,
+        createdAt: true,
+      },
+    }),
+    prisma.wpRewardAsset.count({ where: { rewardId, status: "AVAILABLE" } }),
+    prisma.wpRewardAsset.count({ where: { rewardId, status: "ASSIGNED" } }),
+  ]);
+  return { assets, counts: { available, assigned } };
+}
+
+/** Admin: delete a still-AVAILABLE pool asset. Assigned assets can't be removed. */
+export async function deleteRewardAsset(rewardId: string, assetId: string) {
+  const deleted = await prisma.wpRewardAsset.deleteMany({
+    where: { id: assetId, rewardId, status: "AVAILABLE" },
+  });
+  if (deleted.count === 0) {
+    throw new RewardNotAvailableError(assetId); // gone, wrong reward, or already assigned
+  }
+  return { deleted: deleted.count };
 }
 
 export class RedemptionNotPendingError extends Error {

@@ -199,6 +199,15 @@ model AppSettings {
   // When the running total for the month exceeds this, claim endpoints reject.
   wpMonthlyCapWp Int      @default(1000000)
 
+  // ─── Referral flat bonuses (paid once, when the referee first deposits) ──────
+  // Flat WP paid to the referrer when their referee qualifies (deposits). Replaces
+  // the old "10% of referee balance" formula — flat is predictable and can't be
+  // inflated by the referee farming WP before depositing.
+  wpReferrerBonusWp  Int @default(50)
+  // Flat welcome WP paid to the referee themselves when they first deposit, as a
+  // reason to enter a friend's code. Also gated on deposit (anti-bot).
+  wpRefereeWelcomeWp Int @default(50)
+
   // ─── WP → $WEALTH conversion (manual treasury) ──────────────────────────────
   // Master switch — conversion endpoints reject while false.
   wpConversionEnabled Boolean @default(false)
@@ -453,15 +462,43 @@ model WpReward {
   category    String // VOUCHER | MERCH | SEMBAKO
   partnerName String?
   wpCost      Int
-  stock       Int? // null = unlimited
+  stock       Int? // null = unlimited. Only meaningful for MANUAL fulfillment.
   isActive    Boolean  @default(true)
   imageUrl    String?
+  // How a redemption is fulfilled:
+  //   AUTO   → pull one asset from the pool (WpRewardAsset) at redeem time and mark
+  //            the redemption FULFILLED instantly. Availability = count of AVAILABLE
+  //            assets, so `stock` is ignored. Used for digital vouchers (code/QR/link).
+  //   MANUAL → create a PENDING redemption for an admin to fulfill/ship (physical
+  //            merch/sembako). Uses `stock` as before.
+  fulfillmentType String @default("MANUAL") // AUTO | MANUAL
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   redemptions WpRedemption[]
+  assets      WpRewardAsset[]
 
   @@map("wp_rewards")
+}
+
+// Pool of pre-uploaded fulfillment assets for an AUTO reward. Each asset is
+// handed to exactly one redemption. Content is flexible (a code, link, image
+// URL, or QR payload) — interpreted by `kind`. This is the off-chain analogue
+// of the on-chain QrCode pool, minus any blockchain/tx.
+model WpRewardAsset {
+  id           String        @id @default(cuid())
+  rewardId     String
+  reward       WpReward      @relation(fields: [rewardId], references: [id], onDelete: Cascade)
+  kind         String        @default("CODE") // CODE | LINK | IMAGE | QR
+  value        String // the code text / link / image URL / QR payload
+  status       String        @default("AVAILABLE") // AVAILABLE | ASSIGNED
+  redemptionId String?       @unique
+  redemption   WpRedemption? @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
+  assignedAt   DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@index([rewardId, status])
+  @@map("wp_reward_assets")
 }
 
 model WpRedemption {
@@ -479,6 +516,9 @@ model WpRedemption {
   fulfilledBy String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  // Set for AUTO rewards: the pool asset handed to this redemption.
+  assignedAsset WpRewardAsset?
 
   @@index([status, createdAt])
   @@index([appUserId])
