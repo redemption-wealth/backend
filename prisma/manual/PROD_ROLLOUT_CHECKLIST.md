@@ -20,6 +20,7 @@ Prisma columns are camelCase & unmapped → **quote them in raw SQL** (`"deleted
 | 5 | `wp_backoffice_gaps_wave4.sql` | `fraudReviewStatus` enum + column on app users | ✅ yes |
 | 6 | `fix_merchant_category_to_text.sql` | **`merchants.category` ENUM → text.** Legacy Postgres enum `MerchantCategory` rejected the app's free-form labels ("Sport & Fitness", …) → create/edit merchant returned 500. Idempotent. | ✅ applied 2026-07-12 |
 | 7 | `add_voucher_cover_image.sql` | **`vouchers.coverImageUrl` (text, nullable).** Merchant-uploaded cover photo shown full-bleed as the voucher hero (falls back to merchant logo → monogram). Idempotent, no backfill. Ships with voucher create/update code that reads/writes it. | ✅ applied to dev 2026-07-13 |
+| 8 | `wp_referral_usewp_wave5.sql` | **Referral flat bonuses + Use WP asset pool.** `app_settings.wpReferrerBonusWp`/`wpRefereeWelcomeWp` (int, default 50); `wp_rewards.fulfillmentType` (text, default `MANUAL`); new `wp_reward_assets` pool table (+FKs, indexes, **RLS enabled**). Idempotent, additive, no backfill. Ships with the flat two-sided referral bonus + AUTO reward auto-fulfillment code. | ✅ applied to dev 2026-07-16 |
 
 To apply a file:
 ```bash
