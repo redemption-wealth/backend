@@ -64,3 +64,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS "wp_reward_assets_redemptionId_key"
 -- Fast "pull one AVAILABLE asset for this reward".
 CREATE INDEX IF NOT EXISTS "wp_reward_assets_rewardId_status_idx"
   ON public.wp_reward_assets ("rewardId", "status");
+
+-- 4. Row Level Security ──────────────────────────────────────────────────────
+-- Same convention as every other table (see 20260505000001_enable_rls): the
+-- backend connects as the postgres superuser and BYPASSES RLS, so enabling RLS
+-- with NO policies simply blocks the auto-exposed PostgREST anon/authenticated
+-- roles by default. Idempotent — re-running is harmless.
+ALTER TABLE public.wp_reward_assets ENABLE ROW LEVEL SECURITY;
