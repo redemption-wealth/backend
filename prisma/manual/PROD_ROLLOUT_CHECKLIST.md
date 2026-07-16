@@ -20,6 +20,8 @@ Prisma columns are camelCase & unmapped → **quote them in raw SQL** (`"deleted
 | 5 | `wp_backoffice_gaps_wave4.sql` | `fraudReviewStatus` enum + column on app users | ✅ yes |
 | 6 | `fix_merchant_category_to_text.sql` | **`merchants.category` ENUM → text.** Legacy Postgres enum `MerchantCategory` rejected the app's free-form labels ("Sport & Fitness", …) → create/edit merchant returned 500. Idempotent. | ✅ applied 2026-07-12 |
 | 7 | `add_voucher_cover_image.sql` | **`vouchers.coverImageUrl` (text, nullable).** Merchant-uploaded cover photo shown full-bleed as the voucher hero (falls back to merchant logo → monogram). Idempotent, no backfill. Ships with voucher create/update code that reads/writes it. | ✅ applied to dev 2026-07-13 |
+| 8 | `redemption_reliability.sql` | **Redemption reliability (anti-loss layers).** `redemptions.walletAddress` + `refundTxHash`/`refundedAt` (unique) + `slotId` → NULLABLE (failed attempts are now KEPT & detached, never deleted); enum `RedemptionStatus` += `REFUNDED`; new enum `UnmatchedTransferStatus` + table `unmatched_transfers` (**RLS enabled**) for the hybrid admin-review queue; index `app_users.walletAddress`. Idempotent. **Apply BEFORE deploying the webhook-fallback/sweep/refund backend code** (plan: `docs/redemption-reliability-plan.md`). | ✅ applied to REAL prod (`miycmnzhmeemfdbggolz`) via psql 2026-07-16 ~23:55 WIB — enum/table/columns verified |
+| 9 | `recover_redemption_pgr_0x0b5f.sql` | **One-off DATA recovery (not a migration — do NOT re-apply).** Recreated redemption `recovery-0b5fc663-pgrvip` (user `rakasyaefudin9423@gmail.com`, PGR Tasikmalaya VIP): mainnet transfer 0.1509659771120788 $WEALTH succeeded (`0x0b5f...ad47`) but the app died before `submit-tx` and the stale sweep DELETED the PENDING row. Inserted as CONFIRMED; barcode assignment via `ensureQrAssigned` lazy-heal on first open. Root cause fixed by row 8 + the reliability code. | ✅ applied via SQL Editor 2026-07-16 (real prod project `miycmnzhmeemfdbggolz` — NOTE: local `.env`/`.env.bak.prod` point to a TEST project) |
 
 To apply a file:
 ```bash
@@ -68,6 +70,22 @@ Two bugs found & fixed this pass: **merchant-create 500** (row 6 above) and
   tight). Update selectors — app behavior is correct, the assertions are old.
 - Frontend requires `category` on merchant create; backend treats it as optional. Minor
   inconsistency (frontend stricter) — align if desired.
+
+### Pooler / connection audit (2026-07-16, after the password reset)
+- **Config verdict: correct.** `db.ts` already releases connections aggressively
+  (`idleTimeoutMillis: 500`, `allowExitOnIdle: true`, `max: 4`/instance, pool-error
+  reset). No leak in normal operation; live census right after the incident showed the
+  app holding 0 of 15 pooler slots.
+- **Zombie sessions are a CREDENTIAL-ROTATION artifact only**: sessions opened before a
+  password reset survive it and can exhaust the 15-slot session pool
+  (EMAXCONNSESSION → 500s). **Runbook after every rotation:** run
+  `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND usename='postgres' AND application_name != 'Supabase Studio';`
+  in the SQL Editor, then redeploy the backend (env changes never apply to live
+  deployments).
+- **Burst math:** 15 slots ÷ max 4 = safe up to ~3 simultaneously-bursting instances.
+  Cheap headroom when traffic grows: raise Supabase Pool Size 15 → 20-25 (Dashboard →
+  Database → Connection Pooling). Follow-up idea: a DB-connections card in the
+  back-office overview for visibility before saturation.
 
 ### Test accounts on the live DB (SECURITY)
 `e2e-manager@wealth.local` + `e2e-owner@wealth.local` (password `E2ePassw0rd!`) were seeded

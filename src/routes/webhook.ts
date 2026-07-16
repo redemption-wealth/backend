@@ -1,6 +1,10 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { Hono } from "hono";
 import { confirmRedemption } from "../services/redemption.js";
+import {
+  handleUnmatchedTreasuryTransfer,
+  parseActivityAmount,
+} from "../services/transferMatch.js";
 import { clearAnalyticsCache } from "../services/analytics.js";
 
 const webhook = new Hono();
@@ -65,10 +69,29 @@ webhook.post("/alchemy", async (c) => {
       await confirmRedemption(txHash);
       clearAnalyticsCache();
     } catch (err) {
-      // Unknown or already-confirmed txHash (e.g. a duplicate delivery) is
-      // expected. A token-transfer event always means the transfer succeeded,
-      // so there is no failure path to take here — log and continue.
-      console.error("[webhook] confirmRedemption failed:", err);
+      // txHash unknown to the DB (the app died before submit-tx) or already
+      // confirmed (duplicate delivery). Run the hybrid fallback: exact single
+      // candidate → auto-confirm; otherwise record the inflow in the
+      // unmatched-transfers review queue. NO treasury inflow may ever be
+      // silently dropped (decision 2026-07-16).
+      console.error("[webhook] direct confirm failed, running fallback:", err);
+      try {
+        const amount = parseActivityAmount(activity);
+        if (!amount) {
+          console.error(`[webhook] cannot parse amount for tx ${txHash} — skipping fallback`);
+          continue;
+        }
+        const outcome = await handleUnmatchedTreasuryTransfer({
+          txHash,
+          fromAddress: String(activity.fromAddress ?? ""),
+          toAddress: String(activity.toAddress ?? ""),
+          tokenAddress: String(activity.rawContract?.address ?? ""),
+          amount,
+        });
+        if (outcome.outcome === "auto-confirmed") clearAnalyticsCache();
+      } catch (fallbackErr) {
+        console.error("[webhook] fallback match failed:", fallbackErr);
+      }
     }
   }
 

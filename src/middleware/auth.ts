@@ -183,6 +183,16 @@ export const requireOwner = createMiddleware<AuthEnv>(async (c, next) => {
   await next();
 });
 
+// Owner OR Manager — read endpoints both oversight (owner) and operations
+// (manager) need, e.g. the redemptions list behind Activity Log & Transaksi.
+export const requireOwnerOrManager = createMiddleware<AuthEnv>(async (c, next) => {
+  const admin = c.get("adminAuth");
+  if (!admin || (admin.role !== "OWNER" && admin.role !== "MANAGER")) {
+    throw new HTTPException(403, { message: "Owner or Manager access required" });
+  }
+  await next();
+});
+
 // Manager-only. Owner does NOT have access to Manager routes.
 export const requireManager = createMiddleware<AuthEnv>(async (c, next) => {
   const admin = c.get("adminAuth");
