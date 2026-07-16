@@ -71,6 +71,22 @@ Two bugs found & fixed this pass: **merchant-create 500** (row 6 above) and
 - Frontend requires `category` on merchant create; backend treats it as optional. Minor
   inconsistency (frontend stricter) — align if desired.
 
+### Pooler / connection audit (2026-07-16, after the password reset)
+- **Config verdict: correct.** `db.ts` already releases connections aggressively
+  (`idleTimeoutMillis: 500`, `allowExitOnIdle: true`, `max: 4`/instance, pool-error
+  reset). No leak in normal operation; live census right after the incident showed the
+  app holding 0 of 15 pooler slots.
+- **Zombie sessions are a CREDENTIAL-ROTATION artifact only**: sessions opened before a
+  password reset survive it and can exhaust the 15-slot session pool
+  (EMAXCONNSESSION → 500s). **Runbook after every rotation:** run
+  `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND usename='postgres' AND application_name != 'Supabase Studio';`
+  in the SQL Editor, then redeploy the backend (env changes never apply to live
+  deployments).
+- **Burst math:** 15 slots ÷ max 4 = safe up to ~3 simultaneously-bursting instances.
+  Cheap headroom when traffic grows: raise Supabase Pool Size 15 → 20-25 (Dashboard →
+  Database → Connection Pooling). Follow-up idea: a DB-connections card in the
+  back-office overview for visibility before saturation.
+
 ### Test accounts on the live DB (SECURITY)
 `e2e-manager@wealth.local` + `e2e-owner@wealth.local` (password `E2ePassw0rd!`) were seeded
 for testing and have been **deactivated** (`isActive=false`) + their sessions deleted.
