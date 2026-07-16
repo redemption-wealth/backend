@@ -4,6 +4,7 @@ import { prisma } from "../../db.js";
 import {
   requireManager,
   requireOwner,
+  requireOwnerOrManager,
   type AuthEnv,
 } from "../../middleware/auth.js";
 import { parseSort, buildOrderBy } from "../../lib/list-query.js";
@@ -20,7 +21,7 @@ const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 
 // GET /api/admin/redemptions/counts — Count by status (owner only)
 // Must be registered before /:id to avoid param swallowing "counts"
-adminRedemptions.get("/counts", requireOwner, async (c) => {
+adminRedemptions.get("/counts", requireOwnerOrManager, async (c) => {
   const [all, confirmed, pending, failed, expired, refunded] = await Promise.all([
     prisma.redemption.count(),
     prisma.redemption.count({ where: { status: "CONFIRMED" } }),
@@ -74,7 +75,7 @@ adminRedemptions.get("/recent", requireOwner, async (c) => {
 });
 
 // GET /api/admin/redemptions — List redemptions (owner only)
-adminRedemptions.get("/", requireOwner, async (c) => {
+adminRedemptions.get("/", requireOwnerOrManager, async (c) => {
   // Normalise + validate the status filter. The UI sends lowercase
   // (?status=confirmed) but the enum is upper-case; passing the raw value to
   // Prisma threw an enum error → 500. Ignore anything that isn't a real status.
@@ -162,7 +163,7 @@ adminRedemptions.get("/", requireOwner, async (c) => {
 });
 
 // GET /api/admin/redemptions/:id — Get redemption detail (owner only)
-adminRedemptions.get("/:id", requireOwner, async (c) => {
+adminRedemptions.get("/:id", requireOwnerOrManager, async (c) => {
   const id = c.req.param("id");
 
   const redemption = await prisma.redemption.findUnique({
