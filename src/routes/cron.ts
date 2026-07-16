@@ -29,18 +29,29 @@ cron.get("/expire-pending-redemptions", async (c) => {
   const batchLimit = 100;
   const maxBatches = 10;
   let totalExpired = 0;
+  let totalRecovered = 0;
+  let totalSkipped = 0;
   const ids: string[] = [];
 
   for (let i = 0; i < maxBatches; i += 1) {
-    const { expired, ids: batchIds } = await expireStalePendingRedemptions({
-      limit: batchLimit,
-    });
+    const { expired, recovered, skipped, ids: batchIds } =
+      await expireStalePendingRedemptions({ limit: batchLimit });
     totalExpired += expired;
+    totalRecovered += recovered;
+    totalSkipped += skipped;
     ids.push(...batchIds);
-    if (expired < batchLimit) break;
+    // recovered/skipped rows stay out of `expired`, so also stop when the
+    // batch came back smaller than the query limit overall.
+    if (expired + recovered + skipped < batchLimit) break;
   }
 
-  return c.json({ ok: true, expired: totalExpired, ids });
+  return c.json({
+    ok: true,
+    expired: totalExpired,
+    recovered: totalRecovered,
+    skipped: totalSkipped,
+    ids,
+  });
 });
 
 // GET /api/cron/wp-daily — daily WP housekeeping: reset stale check-in streaks

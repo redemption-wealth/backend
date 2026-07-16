@@ -6,6 +6,7 @@ import {
   ensureQrAssigned,
   reconcileRedemptionById,
   releasePendingRedemption,
+  safeExpireStalePending,
   STALE_PENDING_EXPIRY_MS,
 } from "../services/redemption.js";
 import { generateSignedUrl } from "../services/r2.js";
@@ -17,7 +18,13 @@ const QR_SIGNED_URL_TTL_SEC = 3600;
 
 // Valid RedemptionStatus enum values. An unrecognised ?status= must be ignored,
 // not passed raw into Prisma (which throws PrismaClientValidationError → 500).
-const REDEMPTION_STATUSES = ["PENDING", "CONFIRMED", "FAILED", "EXPIRED"] as const;
+const REDEMPTION_STATUSES = [
+  "PENDING",
+  "CONFIRMED",
+  "FAILED",
+  "EXPIRED",
+  "REFUNDED",
+] as const;
 
 type QrCodeWithUrl = { imageUrl: string | null; [key: string]: unknown };
 
@@ -89,9 +96,10 @@ redemptions.get("/", requireUser, async (c) => {
     )
     .slice(0, 10);
 
-  // Release pending entries that never received a txHash (wallet tx failed before
-  // broadcast, e.g. insufficient gas) so the slot + stock recover and the
-  // abandoned attempt disappears instead of lingering as "menunggu" forever.
+  // Expire pending entries that never received a txHash — but ONLY through the
+  // chain-checked safe path: if the transfer actually happened (app died before
+  // submit-tx), the row is recovered + confirmed instead of expired. The
+  // attempt is kept as history (status EXPIRED), never deleted.
   const staleNoTx = redemptionsList
     .filter(
       (r) =>
@@ -104,7 +112,7 @@ redemptions.get("/", requireUser, async (c) => {
   if (stalePending.length > 0 || staleNoTx.length > 0) {
     await Promise.allSettled([
       ...stalePending.map((r) => reconcileRedemptionById(r.id)),
-      ...staleNoTx.map((r) => releasePendingRedemption(r.id)),
+      ...staleNoTx.map((r) => safeExpireStalePending(r.id)),
     ]);
     [redemptionsList, total] = await fetchPage();
   }
@@ -142,8 +150,9 @@ redemptions.get("/:id", requireUser, async (c) => {
       if (existing.txHash && ageMs > 30_000) {
         await reconcileRedemptionById(existing.id);
       } else if (!existing.txHash && ageMs > STALE_PENDING_EXPIRY_MS) {
-        // Wallet tx never broadcast (e.g. insufficient gas) — release + delete.
-        await releasePendingRedemption(existing.id);
+        // No txHash reported — chain-checked expiry: recovers + confirms if
+        // the transfer actually happened, expires (keeps history) otherwise.
+        await safeExpireStalePending(existing.id);
       }
     } catch (err) {
       console.error("[GET /redemptions/:id] auto-reconcile failed:", err);
@@ -223,7 +232,10 @@ redemptions.post("/:id/cancel", requireUser, async (c) => {
     return c.json({ ok: false });
   }
 
-  const released = await releasePendingRedemption(id);
+  // Explicit pre-broadcast user cancel: nothing was paid, so this is the ONE
+  // release path that still deletes the row (no clutter in the user's
+  // riwayat). Automated expiry keeps the record instead (see sweep).
+  const released = await releasePendingRedemption(id, { deleteRow: true });
   return c.json({ ok: released });
 });
 
