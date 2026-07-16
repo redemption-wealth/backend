@@ -15,6 +15,10 @@ const redemptions = new Hono<AuthEnv>();
 const QR_BUCKET = process.env.R2_QR_BUCKET_NAME || "wealth-qr-codes";
 const QR_SIGNED_URL_TTL_SEC = 3600;
 
+// Valid RedemptionStatus enum values. An unrecognised ?status= must be ignored,
+// not passed raw into Prisma (which throws PrismaClientValidationError → 500).
+const REDEMPTION_STATUSES = ["PENDING", "CONFIRMED", "FAILED", "EXPIRED"] as const;
+
 type QrCodeWithUrl = { imageUrl: string | null; [key: string]: unknown };
 
 async function withSignedQrUrls<T extends { qrCodes?: QrCodeWithUrl[] | null }>(
@@ -43,13 +47,18 @@ async function withSignedQrUrls<T extends { qrCodes?: QrCodeWithUrl[] | null }>(
 // GET /api/redemptions — User: list own redemptions
 redemptions.get("/", requireUser, async (c) => {
   const user = c.get("userAuth");
-  const page = parseInt(c.req.query("page") ?? "1");
-  const limit = parseInt(c.req.query("limit") ?? "20");
-  const status = c.req.query("status");
+  // Guard against NaN/≤0 (e.g. ?page=abc) which would flow into Prisma's
+  // skip/take as NaN and throw → 500.
+  const page = Math.max(1, parseInt(c.req.query("page") ?? "1") || 1);
+  const limit = Math.max(1, parseInt(c.req.query("limit") ?? "20") || 20);
+  const statusRaw = c.req.query("status");
+  const status = REDEMPTION_STATUSES.includes(statusRaw as never)
+    ? (statusRaw as (typeof REDEMPTION_STATUSES)[number])
+    : undefined;
 
   const where = {
     userEmail: user.userEmail,
-    ...(status && { status: status as never }),
+    ...(status && { status }),
   };
 
   const fetchPage = () =>
@@ -222,7 +231,14 @@ redemptions.post("/:id/cancel", requireUser, async (c) => {
 redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
   const id = c.req.param("id");
   const user = c.get("userAuth");
-  const { txHash } = await c.req.json();
+  // A malformed/empty body must be a 400, not an unhandled JSON.parse throw → 500.
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const txHash = (body as { txHash?: unknown } | null)?.txHash;
 
   if (!txHash || typeof txHash !== "string") {
     return c.json({ error: "txHash is required" }, 400);

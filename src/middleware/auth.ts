@@ -108,8 +108,17 @@ export const requireUser = createMiddleware<AuthEnv>(async (c, next) => {
     throw new HTTPException(401, { message: "Invalid token" });
   }
 
-  // Fetch user email from Privy for denormalization into Redemption.userEmail
-  const privyUser = await privyClient.getUser(claims.userId);
+  // Fetch user email from Privy for denormalization into Redemption.userEmail.
+  // getUser hits auth.privy.io over the network on every request, so a Privy
+  // outage/timeout must surface as a 503 (retryable) — NOT an unhandled throw
+  // that the global onError turns into a generic 500.
+  let privyUser;
+  try {
+    privyUser = await privyClient.getUser(claims.userId);
+  } catch (err) {
+    console.error("[auth] privy getUser failed:", err);
+    throw new HTTPException(503, { message: "Auth provider unavailable" });
+  }
   const userEmail = privyUser.email?.address;
   if (!userEmail) {
     throw new HTTPException(400, { message: "Email not found on Privy account" });
