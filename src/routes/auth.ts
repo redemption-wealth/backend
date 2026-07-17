@@ -2,11 +2,55 @@ import { Hono } from "hono";
 import bcryptjs from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import { prisma } from "../db.js";
-import { requireAdmin, type AuthEnv } from "../middleware/auth.js";
+import { requireAdmin, requireUser, type AuthEnv } from "../middleware/auth.js";
 import { loginLimiter, setPasswordLimiter } from "../middleware/rate-limit.js";
 import { signInSchema, setupPasswordSchema, changePasswordSchema } from "../schemas/auth.js";
+import { syncSchema } from "../schemas/quest.js";
+import { syncAppUser } from "../services/appUser.js";
 
 const authRoutes = new Hono<AuthEnv>();
+
+// ─── POST /api/auth/user-sync ────────────────────────────────────────────────
+// App-user identity sync. The app has called this on every login since launch,
+// but the route never existed (sync silently 404'd → app_users.walletAddress
+// stayed NULL → the treasury-inflow matcher was blind, 2026-07-17 case). Body:
+// { walletAddress?, referralCode? } — wallet may be absent when the Privy
+// embedded wallet isn't created yet; the app re-syncs once it appears.
+authRoutes.post("/user-sync", requireUser, async (c) => {
+  const user = c.get("userAuth");
+  let body: unknown = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  const parsed = syncSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Input tidak valid", details: parsed.error.flatten() },
+      400,
+    );
+  }
+
+  const appUser = await syncAppUser(
+    {
+      privyUserId: user.privyUserId,
+      userEmail: user.userEmail,
+      walletAddress: parsed.data.walletAddress ?? null,
+    },
+    parsed.data.referralCode ?? null,
+  );
+  return c.json({
+    user: {
+      id: appUser.id,
+      email: appUser.email,
+      privyUserId: appUser.privyId,
+      walletAddress: appUser.walletAddress,
+      createdAt: appUser.createdAt,
+      updatedAt: appUser.updatedAt,
+    },
+  });
+});
 
 // ─── POST /api/auth/sign-in/email ────────────────────────────────────────────
 // Custom login: checks Admin existence, detects NULL password, verifies bcrypt.

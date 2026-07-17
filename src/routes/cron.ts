@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { expireStalePendingRedemptions } from "../services/redemption.js";
+import { sweepTreasuryInflows } from "../services/transferMatch.js";
 import { expireStaleStreaks } from "../services/quest.js";
 
 const cron = new Hono();
@@ -45,12 +46,25 @@ cron.get("/expire-pending-redemptions", async (c) => {
     if (expired + recovered + skipped < batchLimit) break;
   }
 
+  // Pull-based inflow reconciliation rides the same daily invocation (Vercel
+  // Hobby caps cron jobs, so no separate schedule): every recent treasury
+  // inflow the DB doesn't know is auto-matched or queued for review. This is
+  // the backstop for missed/failed webhook deliveries — no inflow may ever go
+  // unrecorded, even when the push path fails silently.
+  let inflows: Awaited<ReturnType<typeof sweepTreasuryInflows>> | null = null;
+  try {
+    inflows = await sweepTreasuryInflows();
+  } catch (err) {
+    console.error("[cron] treasury inflow sweep failed:", err);
+  }
+
   return c.json({
     ok: true,
     expired: totalExpired,
     recovered: totalRecovered,
     skipped: totalSkipped,
     ids,
+    inflows,
   });
 });
 

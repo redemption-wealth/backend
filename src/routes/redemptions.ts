@@ -5,7 +5,7 @@ import {
   confirmRedemption,
   ensureQrAssigned,
   reconcileRedemptionById,
-  releasePendingRedemption,
+  safeCancelPendingRedemption,
   safeExpireStalePending,
   STALE_PENDING_EXPIRY_MS,
 } from "../services/redemption.js";
@@ -221,22 +221,18 @@ redemptions.post("/:id/cancel", requireUser, async (c) => {
 
   const owned = await prisma.redemption.findFirst({
     where: { id, userEmail: user.userEmail },
-    select: { id: true, status: true, txHash: true },
+    select: { id: true },
   });
   if (!owned) {
     return c.json({ error: "Redemption not found" }, 404);
   }
-  // Only cancel a PENDING redemption that never broadcast a transaction. Once a
-  // txHash exists the transfer is on-chain — leave it for confirm/reconcile.
-  if (owned.status !== "PENDING" || owned.txHash) {
-    return c.json({ ok: false });
-  }
 
-  // Explicit pre-broadcast user cancel: nothing was paid, so this is the ONE
-  // release path that still deletes the row (no clutter in the user's
-  // riwayat). Automated expiry keeps the record instead (see sweep).
-  const released = await releasePendingRedemption(id, { deleteRow: true });
-  return c.json({ ok: released });
+  // Chain-checked cancel: the client's "nothing was broadcast" claim is
+  // verified against the chain before the row is deleted. If the transfer
+  // actually happened (Privy threw AFTER submitting — the 2026-07-17 0x5c18
+  // lost-redemption case), the row is recovered + confirmed instead.
+  const outcome = await safeCancelPendingRedemption(id);
+  return c.json({ ok: outcome === "canceled", outcome });
 });
 
 // PATCH /api/redemptions/:id/submit-tx — User: submit txHash
@@ -268,8 +264,27 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
     return c.json({ error: "Redemption not found" }, 404);
   }
 
+  // Idempotent re-submit of the hash this row already carries (retry bridge,
+  // double flush) — fine regardless of status.
+  if (redemption.txHash === txHash) {
+    return c.json({ redemption });
+  }
+
   if (redemption.status !== "PENDING") {
     return c.json({ error: "Redemption is not pending" }, 400);
+  }
+
+  // NEVER overwrite an already-attached hash: the webhook auto-matcher may
+  // have adopted a different on-chain transfer onto this row between broadcast
+  // and this call. Overwriting would orphan that adopted tx — the recorded
+  // money would silently vanish (suspected path of the 2026-07-17 0x5c18
+  // loss). The tx submitted here is still recorded server-side: its own
+  // webhook delivery fails direct confirm and lands in the fallback/queue.
+  if (redemption.txHash) {
+    return c.json(
+      { error: "Redemption is already linked to a different transaction" },
+      409,
+    );
   }
 
   const existingTx = await prisma.redemption.findUnique({ where: { txHash } });

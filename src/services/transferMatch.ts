@@ -53,11 +53,22 @@ export async function handleUnmatchedTreasuryTransfer(
   ]);
   if (knownRedemption || knownUnmatched) return { outcome: "already-known" };
 
-  // Who does this wallet belong to?
-  const appUser = await prisma.appUser.findFirst({
+  // Who does this wallet belong to? Primary: the AppUser record. Fallback:
+  // the wallet captured on any previous redemption — app_users.walletAddress
+  // has proven unreliable (sync-before-wallet wiped it, 2026-07-17), while a
+  // paid redemption is ground truth for wallet↔user ownership.
+  let appUser = await prisma.appUser.findFirst({
     where: { walletAddress: { equals: fromAddress, mode: "insensitive" } },
     select: { email: true },
   });
+  if (!appUser) {
+    const priorRedemption = await prisma.redemption.findFirst({
+      where: { walletAddress: { equals: fromAddress, mode: "insensitive" } },
+      orderBy: { createdAt: "desc" },
+      select: { userEmail: true },
+    });
+    if (priorRedemption) appUser = { email: priorRedemption.userEmail };
+  }
 
   // Candidate redemptions: this user's recent PENDING rows that never got a
   // txHash, with the exact paid amount.
@@ -137,6 +148,97 @@ export async function handleUnmatchedTreasuryTransfer(
     }
     throw err;
   }
+}
+
+/**
+ * Pull-based safety net: scan ALL $WEALTH inflows into the treasury for the
+ * recent window straight from the chain (alchemy_getAssetTransfers) and run
+ * every hash the DB doesn't know through the hybrid matcher. Covers the case
+ * where the push webhook was never delivered (or its fallback crashed) — the
+ * 2026-07-17 0x5c18 inflow left NO trace in the DB despite the webhook net.
+ * Idempotent: known hashes short-circuit as "already-known".
+ */
+export async function sweepTreasuryInflows(opts?: {
+  sinceMs?: number;
+}): Promise<{ scanned: number; alreadyKnown: number; autoConfirmed: number; queued: number }> {
+  const sinceMs = opts?.sinceMs ?? 26 * 60 * 60 * 1000; // daily cron + 2h overlap
+  const rpcUrl = process.env.ALCHEMY_RPC_URL;
+  const treasury = process.env.DEV_WALLET_ADDRESS?.toLowerCase();
+  const wealthContract = process.env.WEALTH_CONTRACT_ADDRESS?.toLowerCase();
+  if (!rpcUrl || !treasury || !wealthContract) {
+    throw new Error("Inflow sweep not configured (RPC/treasury/contract env missing)");
+  }
+
+  const res = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(15_000),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "alchemy_getAssetTransfers",
+      params: [
+        {
+          toAddress: treasury,
+          contractAddresses: [wealthContract],
+          category: ["erc20"],
+          withMetadata: true,
+          order: "desc",
+          maxCount: "0x64", // 100 — far above a day's redemption volume
+        },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`getAssetTransfers HTTP ${res.status}`);
+  const json = (await res.json()) as {
+    error?: { message?: string };
+    result?: {
+      transfers?: Array<{
+        hash?: string;
+        from?: string;
+        to?: string;
+        rawContract?: { value?: string; address?: string };
+        metadata?: { blockTimestamp?: string };
+      }>;
+    };
+  };
+  if (json.error) throw new Error(`getAssetTransfers: ${json.error.message}`);
+
+  const cutoff = Date.now() - sinceMs;
+  const counts = { scanned: 0, alreadyKnown: 0, autoConfirmed: 0, queued: 0 };
+  for (const t of json.result?.transfers ?? []) {
+    if (!t.hash || !t.from) continue;
+    const ts = t.metadata?.blockTimestamp ? Date.parse(t.metadata.blockTimestamp) : NaN;
+    if (Number.isFinite(ts) && ts < cutoff) continue;
+    const rawHex = t.rawContract?.value;
+    if (!rawHex || !/^0x[0-9a-fA-F]+$/.test(rawHex)) continue;
+    counts.scanned += 1;
+
+    const amount = new Prisma.Decimal(BigInt(rawHex).toString()).div(
+      new Prisma.Decimal(10).pow(18),
+    );
+    try {
+      const outcome = await handleUnmatchedTreasuryTransfer({
+        txHash: t.hash,
+        fromAddress: t.from,
+        toAddress: t.to ?? treasury,
+        tokenAddress: t.rawContract?.address ?? wealthContract,
+        amount,
+      });
+      if (outcome.outcome === "already-known") counts.alreadyKnown += 1;
+      else if (outcome.outcome === "auto-confirmed") counts.autoConfirmed += 1;
+      else counts.queued += 1;
+    } catch (err) {
+      // One bad transfer must not abort the sweep — the next run retries it.
+      console.error(`[sweepTreasuryInflows] failed for tx ${t.hash}:`, err);
+    }
+  }
+  if (counts.autoConfirmed > 0 || counts.queued > 0) {
+    console.warn(
+      `[sweepTreasuryInflows] webhook missed inflows: auto-confirmed=${counts.autoConfirmed} queued=${counts.queued}`,
+    );
+  }
+  return counts;
 }
 
 /** Parse an exact token amount from an Alchemy activity entry. */
