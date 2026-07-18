@@ -22,11 +22,21 @@ vi.mock("@/services/redemption.js", () => ({
   confirmRedemption: vi.fn(),
 }));
 
+const getTransactionReceipt = vi.fn();
+vi.mock("viem", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("viem")>();
+  return {
+    ...actual,
+    createPublicClient: vi.fn(() => ({ getTransactionReceipt })),
+  };
+});
+
 import { prisma } from "@/db.js";
 import { confirmRedemption } from "@/services/redemption.js";
 import {
   handleUnmatchedTreasuryTransfer,
   parseActivityAmount,
+  recordRejectedTreasuryTx,
   sweepTreasuryInflows,
 } from "@/services/transferMatch.js";
 
@@ -289,6 +299,177 @@ describe("sweepTreasuryInflows — pull-based backstop for missed webhooks", () 
   test("missing env config → throws (never silently no-ops)", async () => {
     delete process.env.ALCHEMY_RPC_URL;
     await expect(sweepTreasuryInflows()).rejects.toThrow(/not configured/);
+  });
+
+  test("PAGINATION: follows pageKey so an inflow beyond page 1 is NOT missed", async () => {
+    // Page 1 returns a fresh transfer + a pageKey; page 2 returns another fresh
+    // transfer + no pageKey. Both must be scanned (the old no-pagination code
+    // capped at page 1 and silently aged out anything past it).
+    const page1 = {
+      ok: true,
+      json: async () => ({
+        result: {
+          pageKey: "pk-2",
+          transfers: [
+            {
+              hash: "0x" + "a1".repeat(32),
+              from: TRANSFER.fromAddress,
+              to: "0x1fb56441c55e3730f9f5c43d94a5ff21ecfafe01",
+              rawContract: {
+                value: `0x${(10n ** 17n).toString(16)}`,
+                address: "0xafa702c0a2a3a0cf1bd09435db61c913ccde8546",
+              },
+              metadata: { blockTimestamp: new Date().toISOString() },
+            },
+          ],
+        },
+      }),
+    };
+    const page2 = {
+      ok: true,
+      json: async () => ({
+        result: {
+          transfers: [
+            {
+              hash: "0x" + "a2".repeat(32),
+              from: TRANSFER.fromAddress,
+              to: "0x1fb56441c55e3730f9f5c43d94a5ff21ecfafe01",
+              rawContract: {
+                value: `0x${(10n ** 17n).toString(16)}`,
+                address: "0xafa702c0a2a3a0cf1bd09435db61c913ccde8546",
+              },
+              metadata: { blockTimestamp: new Date().toISOString() },
+            },
+          ],
+        },
+      }),
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(page1)
+      .mockResolvedValueOnce(page2);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    db.appUser.findFirst.mockResolvedValue(null);
+    db.redemption.findFirst.mockResolvedValue(null);
+
+    const out = await sweepTreasuryInflows();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2); // paginated
+    expect(out.scanned).toBe(2); // BOTH pages' transfers seen
+  });
+
+  test("PAGINATION: stops early once transfers cross the time cutoff", async () => {
+    // desc order: a fresh one, then an old one → must stop, not fetch page 2.
+    const page1 = {
+      ok: true,
+      json: async () => ({
+        result: {
+          pageKey: "pk-2",
+          transfers: [
+            {
+              hash: "0x" + "b1".repeat(32),
+              from: TRANSFER.fromAddress,
+              to: "0x1fb56441c55e3730f9f5c43d94a5ff21ecfafe01",
+              rawContract: {
+                value: `0x${(10n ** 17n).toString(16)}`,
+                address: "0xafa702c0a2a3a0cf1bd09435db61c913ccde8546",
+              },
+              metadata: { blockTimestamp: new Date().toISOString() },
+            },
+            {
+              hash: "0x" + "b2".repeat(32),
+              from: TRANSFER.fromAddress,
+              to: "0x1fb56441c55e3730f9f5c43d94a5ff21ecfafe01",
+              rawContract: {
+                value: `0x${(10n ** 17n).toString(16)}`,
+                address: "0xafa702c0a2a3a0cf1bd09435db61c913ccde8546",
+              },
+              metadata: { blockTimestamp: "2020-01-01T00:00:00Z" }, // old
+            },
+          ],
+        },
+      }),
+    };
+    const fetchMock = vi.fn().mockResolvedValue(page1);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    db.appUser.findFirst.mockResolvedValue(null);
+    db.redemption.findFirst.mockResolvedValue(null);
+
+    const out = await sweepTreasuryInflows();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // stopped at the old transfer
+    expect(out.scanned).toBe(1); // only the fresh one
+  });
+});
+
+describe("recordRejectedTreasuryTx — a 409'd hash is still recorded", () => {
+  const TRANSFER_TOPIC =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+  const TREASURY = "0x1fb56441c55e3730f9f5c43d94a5ff21ecfafe01";
+  const WEALTH = "0xafa702c0a2a3a0cf1bd09435db61c913ccde8546";
+  const PAYER = "0x404392cfcc5f2ced743066b64c28cc436c58bf34";
+  const REJECTED = "0x" + "9c".repeat(32);
+
+  function pad(addr: string) {
+    return "0x" + addr.slice(2).padStart(64, "0");
+  }
+
+  beforeEach(() => {
+    process.env.ALCHEMY_RPC_URL = "https://rpc.test";
+    process.env.ETHEREUM_CHAIN_ID = "1";
+    process.env.DEV_WALLET_ADDRESS = TREASURY;
+    process.env.WEALTH_CONTRACT_ADDRESS = WEALTH;
+  });
+
+  test("reads the receipt and routes the $WEALTH→treasury transfer to the matcher", async () => {
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [
+        {
+          address: WEALTH,
+          topics: [TRANSFER_TOPIC, pad(PAYER), pad(TREASURY)],
+          data: `0x${(150965977112078800n).toString(16)}`,
+        },
+      ],
+    });
+    // Make the matcher queue it (unknown wallet → 0 candidates).
+    db.redemption.findUnique.mockResolvedValue(null);
+    db.unmatchedTransfer.findUnique.mockResolvedValue(null);
+    db.appUser.findFirst.mockResolvedValue(null);
+    db.redemption.findFirst.mockResolvedValue(null);
+    db.unmatchedTransfer.create.mockResolvedValue({ id: "ut1" });
+
+    await recordRejectedTreasuryTx(REJECTED);
+
+    expect(db.unmatchedTransfer.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        txHash: REJECTED.toLowerCase(),
+        fromAddress: PAYER,
+        amount: expect.anything(),
+        status: "OPEN",
+      }),
+    });
+  });
+
+  test("reverted tx → does nothing (no phantom record)", async () => {
+    getTransactionReceipt.mockResolvedValue({ status: "reverted", logs: [] });
+    await recordRejectedTreasuryTx(REJECTED);
+    expect(db.unmatchedTransfer.create).not.toHaveBeenCalled();
+  });
+
+  test("a transfer NOT to the treasury is ignored", async () => {
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [
+        {
+          address: WEALTH,
+          topics: [TRANSFER_TOPIC, pad(PAYER), pad("0x" + "99".repeat(20))],
+          data: `0x${(10n ** 17n).toString(16)}`,
+        },
+      ],
+    });
+    await recordRejectedTreasuryTx(REJECTED);
+    expect(db.unmatchedTransfer.create).not.toHaveBeenCalled();
   });
 });
 
