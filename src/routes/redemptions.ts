@@ -10,6 +10,7 @@ import {
   STALE_PENDING_EXPIRY_MS,
 } from "../services/redemption.js";
 import { generateSignedUrl } from "../services/r2.js";
+import { recordRejectedTreasuryTx } from "../services/transferMatch.js";
 
 const redemptions = new Hono<AuthEnv>();
 
@@ -213,8 +214,12 @@ redemptions.post("/:id/reconcile", requireUser, async (c) => {
   });
 });
 
-// POST /api/redemptions/:id/cancel — User: cancel a pre-broadcast pending
-// (e.g. wallet signature failed on insufficient gas) so it leaves no history.
+// POST /api/redemptions/:id/cancel — User: cancel a pre-broadcast pending.
+// NEVER deletes: the client's "nothing was broadcast" claim is evidence, not
+// proof (Privy can throw AFTER submitting — the 2026-07-17 0x5c18 loss). The
+// row is chain-checked and recovered if paid, otherwise marked EXPIRED and
+// KEPT, so a payment that lands after cancel is still recorded by the
+// webhook/sweep and the money is never lost.
 redemptions.post("/:id/cancel", requireUser, async (c) => {
   const id = c.req.param("id");
   const user = c.get("userAuth");
@@ -227,12 +232,10 @@ redemptions.post("/:id/cancel", requireUser, async (c) => {
     return c.json({ error: "Redemption not found" }, 404);
   }
 
-  // Chain-checked cancel: the client's "nothing was broadcast" claim is
-  // verified against the chain before the row is deleted. If the transfer
-  // actually happened (Privy threw AFTER submitting — the 2026-07-17 0x5c18
-  // lost-redemption case), the row is recovered + confirmed instead.
   const outcome = await safeCancelPendingRedemption(id);
-  return c.json({ ok: outcome === "canceled", outcome });
+  // "expired" (kept as history) and "recovered" (was actually paid) are both a
+  // successful, non-lossy resolution; "kept" means retry-later (RPC down).
+  return c.json({ ok: outcome === "expired" || outcome === "recovered", outcome });
 });
 
 // PATCH /api/redemptions/:id/submit-tx — User: submit txHash
@@ -281,6 +284,13 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
   // loss). The tx submitted here is still recorded server-side: its own
   // webhook delivery fails direct confirm and lands in the fallback/queue.
   if (redemption.txHash) {
+    // The row already carries a different hash (webhook auto-adopted one, or
+    // this is a second payment). Do NOT overwrite — but the rejected hash is a
+    // real on-chain transfer, so record it directly through the matcher instead
+    // of trusting only the webhook (fix: a rejected hash used to be dropped).
+    void recordRejectedTreasuryTx(txHash).catch((err) =>
+      console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
+    );
     return c.json(
       { error: "Redemption is already linked to a different transaction" },
       409,

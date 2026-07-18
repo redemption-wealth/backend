@@ -13,11 +13,16 @@ interface InitiateRedemptionParams {
 }
 
 // Double-click / double-submit guard: while the user has an in-flight PENDING
-// row (no txHash yet) for this voucher, a new redeem request REUSES that row
-// instead of creating a second one. The client idempotencyKey can't catch this
-// — each tap generates a fresh key. Window-bounded so an old abandoned attempt
-// (handled by the stale sweep) doesn't shadow a genuinely new purchase.
-const PENDING_REUSE_WINDOW_MS = 10 * 60 * 1000;
+// row (no txHash yet) for this voucher, a near-simultaneous redeem request
+// REUSES that row instead of creating a second one. The client idempotencyKey
+// can't catch this — each tap generates a fresh key.
+//
+// The window is SHORT (30s) on purpose: buying the same voucher again is a
+// LEGITIMATE action (e.g. 2 event tickets), so it must NOT be shadowed. This
+// only absorbs a true double-click / retry burst; the synchronous client guard
+// blocks the common case, and a deliberate second purchase seconds later gets
+// its own row. (A wider window here previously ate real repeat purchases.)
+const PENDING_REUSE_WINDOW_MS = 30 * 1000;
 
 function findRecentPendingRow(
   db: Pick<typeof prisma, "redemption">,
@@ -605,6 +610,113 @@ export async function findTreasuryTransfersOnChain(
  * stale pending MUST go through this — never call releasePendingRedemption
  * directly for the stale-expiry case.
  */
+type RecoverRow = {
+  id: string;
+  userEmail: string;
+  walletAddress: string | null;
+  wealthAmount: Prisma.Decimal;
+  createdAt: Date;
+};
+
+/**
+ * Chain-check the payer wallet for an unclaimed treasury payment matching
+ * `row`, and recover it (adopt hash + confirm) — but ONLY when the match is
+ * UNAMBIGUOUS. Single matcher shared by safeExpire and safeCancel so the
+ * matching rules can't drift apart.
+ *
+ * Returns:
+ *  - "recovered" — the row is now paid (or a concurrent worker claimed it);
+ *    the caller must NOT expire/delete it.
+ *  - "skipped"   — the chain could not be consulted (RPC down). Transient:
+ *    the caller must KEEP the row PENDING and retry on the next sweep.
+ *  - "none"      — no clean recovery: either the wallet is unknown (can't
+ *    check — the webhook/sweep net still covers any real inflow), the chain
+ *    has no matching transfer, or the match is AMBIGUOUS (>1 same-amount
+ *    pending row → refuse to guess, leave it for the review queue). The caller
+ *    may safely expire (never delete) the row.
+ *
+ * Ambiguity guard mirrors the webhook matcher's "exactly one candidate" rule —
+ * the source of the cross-binding bug was that the safe paths lacked it.
+ */
+async function recoverPaymentFromChain(
+  row: RecoverRow,
+): Promise<"recovered" | "skipped" | "none"> {
+  let wallet = row.walletAddress;
+  if (!wallet) {
+    const appUser = await prisma.appUser.findFirst({
+      where: { email: row.userEmail },
+      select: { walletAddress: true },
+    });
+    wallet = appUser?.walletAddress ?? null;
+  }
+  // Wallet unknown → cannot chain-check. Not "skipped" (that means transient):
+  // this is persistent, so the caller should expire; a real inflow is still
+  // caught by the webhook/sweep unmatched-transfers net.
+  if (!wallet) return "none";
+
+  let transfers: TreasuryTransfer[];
+  try {
+    transfers = await findTreasuryTransfersOnChain(
+      wallet.toLowerCase(),
+      row.createdAt,
+    );
+  } catch (err) {
+    console.error(
+      `[recoverPaymentFromChain] chain check failed for ${row.id} — keeping row:`,
+      err,
+    );
+    return "skipped";
+  }
+
+  for (const t of transfers) {
+    if (!t.amount.sub(row.wealthAmount).abs().lt(1e-9)) continue;
+    const hashTaken = await prisma.redemption.findUnique({
+      where: { txHash: t.txHash },
+      select: { id: true },
+    });
+    if (hashTaken) continue;
+
+    // Ambiguity guard: only adopt when exactly ONE of the user's PENDING rows
+    // matches this amount. If several do, a single transfer can't be uniquely
+    // attributed — refuse to guess and leave it for the webhook/sweep →
+    // unmatched_transfers review queue (an admin resolves it).
+    const pendings = await prisma.redemption.findMany({
+      where: { userEmail: row.userEmail, status: "PENDING", txHash: null },
+      select: { wealthAmount: true },
+    });
+    const sameAmount = pendings.filter((r) =>
+      r.wealthAmount.sub(t.amount).abs().lt(1e-9),
+    );
+    if (sameAmount.length !== 1) {
+      console.warn(
+        `[recoverPaymentFromChain] AMBIGUOUS match for tx ${t.txHash} (${sameAmount.length} same-amount pendings) — leaving for review queue`,
+      );
+      return "none";
+    }
+
+    const claimed = await prisma.redemption.updateMany({
+      where: { id: row.id, status: "PENDING", txHash: null },
+      data: { txHash: t.txHash, walletAddress: wallet.toLowerCase() },
+    });
+    // count 0 = a concurrent worker already claimed this row; still "recovered"
+    // from the caller's perspective (do not expire it).
+    if (claimed.count === 0) return "recovered";
+    try {
+      await confirmRedemption(t.txHash);
+    } catch (err) {
+      console.error(
+        `[recoverPaymentFromChain] recover-confirm deferred for ${row.id}:`,
+        err,
+      );
+    }
+    console.log(
+      `[recoverPaymentFromChain] RECOVERED ${row.id} from on-chain tx ${t.txHash}`,
+    );
+    return "recovered";
+  }
+  return "none";
+}
+
 export async function safeExpireStalePending(
   redemptionId: string,
 ): Promise<"recovered" | "expired" | "skipped" | "noop"> {
@@ -624,67 +736,11 @@ export async function safeExpireStalePending(
     return "noop";
   }
 
-  // Resolve the payer wallet: stored on the row (new flow) or via AppUser.
-  let wallet = redemption.walletAddress;
-  if (!wallet) {
-    const appUser = await prisma.appUser.findFirst({
-      where: { email: redemption.userEmail },
-      select: { walletAddress: true },
-    });
-    wallet = appUser?.walletAddress ?? null;
-  }
+  const outcome = await recoverPaymentFromChain(redemption);
+  if (outcome === "recovered") return "recovered";
+  if (outcome === "skipped") return "skipped"; // RPC down — keep, retry later
 
-  if (wallet) {
-    // Ask the chain. A throw here means "unknown" → skip (fail-safe: when in
-    // doubt, never destroy).
-    let transfers: TreasuryTransfer[];
-    try {
-      transfers = await findTreasuryTransfersOnChain(
-        wallet.toLowerCase(),
-        redemption.createdAt,
-      );
-    } catch (err) {
-      console.error(
-        `[safeExpireStalePending] chain check failed for ${redemption.id} — keeping row:`,
-        err,
-      );
-      return "skipped";
-    }
-
-    // A transfer matching this redemption's amount whose hash isn't already
-    // claimed by another redemption → the user paid. Recover it.
-    for (const t of transfers) {
-      if (!t.amount.sub(redemption.wealthAmount).abs().lt(1e-9)) continue;
-      const hashTaken = await prisma.redemption.findUnique({
-        where: { txHash: t.txHash },
-        select: { id: true },
-      });
-      if (hashTaken) continue;
-
-      const claimed = await prisma.redemption.updateMany({
-        where: { id: redemption.id, status: "PENDING", txHash: null },
-        data: { txHash: t.txHash, walletAddress: wallet.toLowerCase() },
-      });
-      if (claimed.count === 0) return "noop"; // concurrent worker won
-      try {
-        await confirmRedemption(t.txHash);
-      } catch (err) {
-        // Hash is attached — the normal reconcile path finishes the job.
-        console.error(
-          `[safeExpireStalePending] recover-confirm deferred for ${redemption.id}:`,
-          err,
-        );
-      }
-      console.log(
-        `[safeExpireStalePending] RECOVERED ${redemption.id} from on-chain tx ${t.txHash}`,
-      );
-      return "recovered";
-    }
-  }
-  // Wallet unknown → we cannot check the chain for this row, but any treasury
-  // inflow is still caught by the webhook's unmatched-transfers net, so
-  // releasing cannot lose money silently.
-
+  // "none" → safe to expire (KEEP the row as history, never delete).
   const released = await releasePendingRedemption(redemption.id, {
     outcome: "EXPIRED",
   });
@@ -708,7 +764,7 @@ export async function safeExpireStalePending(
  */
 export async function safeCancelPendingRedemption(
   redemptionId: string,
-): Promise<"canceled" | "recovered" | "kept" | "noop"> {
+): Promise<"expired" | "recovered" | "kept" | "noop"> {
   const redemption = await prisma.redemption.findUnique({
     where: { id: redemptionId },
     select: {
@@ -727,63 +783,23 @@ export async function safeCancelPendingRedemption(
     return "noop";
   }
 
-  let wallet = redemption.walletAddress;
-  if (!wallet) {
-    const appUser = await prisma.appUser.findFirst({
-      where: { email: redemption.userEmail },
-      select: { walletAddress: true },
-    });
-    wallet = appUser?.walletAddress ?? null;
-  }
+  const outcome = await recoverPaymentFromChain(redemption);
+  if (outcome === "recovered") return "recovered";
+  // RPC down — cannot prove non-payment right now. KEEP the row PENDING; the
+  // chain-checked sweep settles it later. When in doubt, never destroy.
+  if (outcome === "skipped") return "kept";
 
-  if (wallet) {
-    let transfers: TreasuryTransfer[];
-    try {
-      transfers = await findTreasuryTransfersOnChain(
-        wallet.toLowerCase(),
-        redemption.createdAt,
-      );
-    } catch (err) {
-      console.error(
-        `[safeCancelPendingRedemption] chain check failed for ${redemption.id} — keeping row:`,
-        err,
-      );
-      return "kept";
-    }
-
-    for (const t of transfers) {
-      if (!t.amount.sub(redemption.wealthAmount).abs().lt(1e-9)) continue;
-      const hashTaken = await prisma.redemption.findUnique({
-        where: { txHash: t.txHash },
-        select: { id: true },
-      });
-      if (hashTaken) continue;
-
-      const claimed = await prisma.redemption.updateMany({
-        where: { id: redemption.id, status: "PENDING", txHash: null },
-        data: { txHash: t.txHash, walletAddress: wallet.toLowerCase() },
-      });
-      if (claimed.count === 0) return "noop"; // concurrent worker won
-      try {
-        await confirmRedemption(t.txHash);
-      } catch (err) {
-        // Hash is attached — the normal reconcile path finishes the job.
-        console.error(
-          `[safeCancelPendingRedemption] recover-confirm deferred for ${redemption.id}:`,
-          err,
-        );
-      }
-      console.log(
-        `[safeCancelPendingRedemption] RECOVERED ${redemption.id} from on-chain tx ${t.txHash} (cancel refused)`,
-      );
-      return "recovered";
-    }
-  }
-
+  // "none" → NEVER DELETE. A client "nothing was broadcast" claim is evidence,
+  // not proof (Privy can throw after actually submitting — the 0x5c18 loss).
+  // Mark EXPIRED and keep the row: if a payment was in flight and lands after
+  // this, the webhook/sweep records it (auto-match or the review queue), so the
+  // money is never lost and the row survives as correlation data. This is the
+  // fix for the wallet-null population (app_users empty → the old `if(wallet)`
+  // guard skipped the chain check entirely and deleted paid rows).
   const released = await releasePendingRedemption(redemption.id, {
-    deleteRow: true,
+    outcome: "EXPIRED",
   });
-  return released ? "canceled" : "noop";
+  return released ? "expired" : "noop";
 }
 
 export async function expireStalePendingRedemptions(opts?: {

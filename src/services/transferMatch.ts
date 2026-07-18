@@ -1,6 +1,22 @@
 import { Prisma } from "@prisma/client";
+import { createPublicClient, http } from "viem";
 import { prisma } from "../db.js";
+import { resolveChain } from "../lib/chain.js";
 import { confirmRedemption } from "./redemption.js";
+
+const TRANSFER_TOPIC =
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+let cachedRpc: ReturnType<typeof createPublicClient> | null = null;
+function rpc() {
+  if (cachedRpc) return cachedRpc;
+  const rpcUrl = process.env.ALCHEMY_RPC_URL;
+  if (!rpcUrl) throw new Error("ALCHEMY_RPC_URL not configured");
+  cachedRpc = createPublicClient({
+    chain: resolveChain().chain,
+    transport: http(rpcUrl),
+  });
+  return cachedRpc;
+}
 
 /**
  * Hybrid fallback matching for treasury inflows whose txHash is unknown to the
@@ -169,70 +185,100 @@ export async function sweepTreasuryInflows(opts?: {
     throw new Error("Inflow sweep not configured (RPC/treasury/contract env missing)");
   }
 
-  const res = await fetch(rpcUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(15_000),
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "alchemy_getAssetTransfers",
-      params: [
-        {
-          toAddress: treasury,
-          contractAddresses: [wealthContract],
-          category: ["erc20"],
-          withMetadata: true,
-          order: "desc",
-          maxCount: "0x64", // 100 — far above a day's redemption volume
-        },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`getAssetTransfers HTTP ${res.status}`);
-  const json = (await res.json()) as {
-    error?: { message?: string };
-    result?: {
-      transfers?: Array<{
-        hash?: string;
-        from?: string;
-        to?: string;
-        rawContract?: { value?: string; address?: string };
-        metadata?: { blockTimestamp?: string };
-      }>;
-    };
-  };
-  if (json.error) throw new Error(`getAssetTransfers: ${json.error.message}`);
-
   const cutoff = Date.now() - sinceMs;
   const counts = { scanned: 0, alreadyKnown: 0, autoConfirmed: 0, queued: 0 };
-  for (const t of json.result?.transfers ?? []) {
-    if (!t.hash || !t.from) continue;
-    const ts = t.metadata?.blockTimestamp ? Date.parse(t.metadata.blockTimestamp) : NaN;
-    if (Number.isFinite(ts) && ts < cutoff) continue;
-    const rawHex = t.rawContract?.value;
-    if (!rawHex || !/^0x[0-9a-fA-F]+$/.test(rawHex)) continue;
-    counts.scanned += 1;
+  // Paginate: 100/page is NOT "far above a day's volume" on a busy event day —
+  // an unmatched inflow buried past page 1 would silently age out. Follow
+  // Alchemy's pageKey until we cross the time cutoff or run out of pages.
+  const MAX_PAGES = 20; // hard cap so a bug can't loop forever (2000 transfers)
+  let pageKey: string | undefined;
+  let reachedCutoff = false;
 
-    const amount = new Prisma.Decimal(BigInt(rawHex).toString()).div(
-      new Prisma.Decimal(10).pow(18),
-    );
-    try {
-      const outcome = await handleUnmatchedTreasuryTransfer({
-        txHash: t.hash,
-        fromAddress: t.from,
-        toAddress: t.to ?? treasury,
-        tokenAddress: t.rawContract?.address ?? wealthContract,
-        amount,
-      });
-      if (outcome.outcome === "already-known") counts.alreadyKnown += 1;
-      else if (outcome.outcome === "auto-confirmed") counts.autoConfirmed += 1;
-      else counts.queued += 1;
-    } catch (err) {
-      // One bad transfer must not abort the sweep — the next run retries it.
-      console.error(`[sweepTreasuryInflows] failed for tx ${t.hash}:`, err);
+  for (let page = 0; page < MAX_PAGES && !reachedCutoff; page += 1) {
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "alchemy_getAssetTransfers",
+        params: [
+          {
+            toAddress: treasury,
+            contractAddresses: [wealthContract],
+            category: ["erc20"],
+            withMetadata: true,
+            order: "desc",
+            maxCount: "0x64", // 100 per page
+            ...(pageKey ? { pageKey } : {}),
+          },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`getAssetTransfers HTTP ${res.status}`);
+    const json = (await res.json()) as {
+      error?: { message?: string };
+      result?: {
+        pageKey?: string;
+        transfers?: Array<{
+          hash?: string;
+          from?: string;
+          to?: string;
+          rawContract?: { value?: string; address?: string };
+          metadata?: { blockTimestamp?: string };
+        }>;
+      };
+    };
+    if (json.error) throw new Error(`getAssetTransfers: ${json.error.message}`);
+
+    const transfers = json.result?.transfers ?? [];
+    for (const t of transfers) {
+      if (!t.hash || !t.from) continue;
+      const ts = t.metadata?.blockTimestamp
+        ? Date.parse(t.metadata.blockTimestamp)
+        : NaN;
+      // order:"desc" → once we see a transfer older than the window, every
+      // subsequent one is older too. Stop paginating.
+      if (Number.isFinite(ts) && ts < cutoff) {
+        reachedCutoff = true;
+        break;
+      }
+      const rawHex = t.rawContract?.value;
+      if (!rawHex || !/^0x[0-9a-fA-F]+$/.test(rawHex)) continue;
+      counts.scanned += 1;
+
+      const amount = new Prisma.Decimal(BigInt(rawHex).toString()).div(
+        new Prisma.Decimal(10).pow(18),
+      );
+      try {
+        const outcome = await handleUnmatchedTreasuryTransfer({
+          txHash: t.hash,
+          fromAddress: t.from,
+          toAddress: t.to ?? treasury,
+          tokenAddress: t.rawContract?.address ?? wealthContract,
+          amount,
+        });
+        if (outcome.outcome === "already-known") counts.alreadyKnown += 1;
+        else if (outcome.outcome === "auto-confirmed") counts.autoConfirmed += 1;
+        else counts.queued += 1;
+      } catch (err) {
+        // One bad transfer must not abort the sweep — the next run retries it.
+        console.error(`[sweepTreasuryInflows] failed for tx ${t.hash}:`, err);
+      }
+    }
+
+    pageKey = json.result?.pageKey;
+    if (!pageKey) break; // no more pages
+    if (page === MAX_PAGES - 1) {
+      // Saturation: more pages exist than we scanned within the window. Alert —
+      // an inflow could be beyond our reach. (Widen window / raise cap.)
+      console.error(
+        `[sweepTreasuryInflows] SATURATION: hit ${MAX_PAGES}-page cap with more pages remaining — an inflow may be unscanned`,
+      );
     }
   }
+
   if (counts.autoConfirmed > 0 || counts.queued > 0) {
     console.warn(
       `[sweepTreasuryInflows] webhook missed inflows: auto-confirmed=${counts.autoConfirmed} queued=${counts.queued}`,
@@ -262,4 +308,43 @@ export function parseActivityAmount(activity: {
     return new Prisma.Decimal(activity.value.toString());
   }
   return null;
+}
+
+/**
+ * A submit-tx 409 means the app reported a DIFFERENT hash than the one already
+ * on the row — a genuine on-chain transfer (double-payment or a
+ * rejected-but-broadcast retry) that would otherwise depend solely on the
+ * webhook. Read its receipt, extract the $WEALTH→treasury transfer, and route
+ * it through the hybrid matcher NOW (auto-confirm a lone candidate, else queue
+ * to unmatched_transfers). Best-effort: the caller swallows throws — the
+ * webhook + daily sweep remain the backstop.
+ */
+export async function recordRejectedTreasuryTx(txHash: string): Promise<void> {
+  const treasury = process.env.DEV_WALLET_ADDRESS?.toLowerCase();
+  const wealth = process.env.WEALTH_CONTRACT_ADDRESS?.toLowerCase();
+  if (!treasury || !wealth) return;
+
+  const receipt = await rpc().getTransactionReceipt({
+    hash: txHash as `0x${string}`,
+  });
+  if (!receipt || receipt.status !== "success") return;
+
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== wealth) continue;
+    if (log.topics[0] !== TRANSFER_TOPIC || log.topics.length < 3) continue;
+    const from = `0x${log.topics[1]!.slice(-40)}`.toLowerCase();
+    const to = `0x${log.topics[2]!.slice(-40)}`.toLowerCase();
+    if (to !== treasury) continue;
+    const amount = new Prisma.Decimal(BigInt(log.data).toString()).div(
+      new Prisma.Decimal(10).pow(18),
+    );
+    await handleUnmatchedTreasuryTransfer({
+      txHash: txHash.toLowerCase(),
+      fromAddress: from,
+      toAddress: to,
+      tokenAddress: wealth,
+      amount,
+    });
+    return;
+  }
 }

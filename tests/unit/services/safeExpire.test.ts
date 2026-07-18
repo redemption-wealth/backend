@@ -86,6 +86,8 @@ describe("safeExpireStalePending — never destroy on doubt", () => {
       .mockResolvedValueOnce({ ...ROW, slotId: "slot1", voucherId: "v1" }) // load row
       .mockResolvedValueOnce(null); // hash not yet taken
     mockTransfersResponse([{ hash: paidTx, wei: 150965977112078800n }]);
+    // Ambiguity guard: exactly one same-amount pending (this row) → unambiguous.
+    db.redemption.findMany.mockResolvedValue([{ wealthAmount: ROW.wealthAmount }]);
     db.redemption.updateMany.mockResolvedValue({ count: 1 }); // adopt hash
     // confirmRedemption internals:
     db.redemption.findFirst.mockResolvedValue({ id: "red1", voucherId: "v1" });
