@@ -118,6 +118,10 @@ vouchers.post("/:id/redeem", requireUser, async (c) => {
       userEmail: user.userEmail,
       voucherId,
       idempotencyKey,
+      // Trusted wallet from the Privy account (server-side) — captured on the
+      // row so the webhook/sweep can attribute the payment without relying on
+      // the (spoofable, often-empty) app_users table.
+      walletAddress: user.walletAddress,
     });
 
     // txDetails ships on EVERY success response — an alreadyExists row that

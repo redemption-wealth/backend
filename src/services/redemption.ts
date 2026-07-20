@@ -10,6 +10,9 @@ interface InitiateRedemptionParams {
   userEmail: string;
   voucherId: string;
   idempotencyKey: string;
+  /** Trusted payer wallet from the Privy account (server-side). Preferred over
+   * the app_users lookup, which is spoofable and often empty. */
+  walletAddress?: string | null;
 }
 
 // Double-click / double-submit guard: while the user has an in-flight PENDING
@@ -45,6 +48,7 @@ export async function initiateRedemption({
   userEmail,
   voucherId,
   idempotencyKey,
+  walletAddress: trustedWallet,
 }: InitiateRedemptionParams) {
   // Check idempotency (scoped to user)
   const existing = await prisma.redemption.findFirst({
@@ -79,17 +83,21 @@ export async function initiateRedemption({
 
   // Capture the payer wallet up-front so the webhook/sweep can match the
   // on-chain transfer back to this redemption even if the app never submits
-  // the txHash (the 2026-07-16 lost-redemption case). Best-effort: a missing
-  // AppUser row must not block the redemption.
-  let walletAddress: string | null = null;
-  try {
-    const appUser = await prisma.appUser.findFirst({
-      where: { email: userEmail },
-      select: { walletAddress: true },
-    });
-    walletAddress = appUser?.walletAddress?.toLowerCase() ?? null;
-  } catch (err) {
-    console.error("[initiateRedemption] wallet lookup failed:", err);
+  // the txHash (the 2026-07-16 lost-redemption case). PREFER the trusted
+  // server-derived wallet (from the Privy account); only fall back to the
+  // app_users lookup when it's absent. Best-effort — a missing wallet must not
+  // block the redemption.
+  let walletAddress: string | null = trustedWallet?.toLowerCase() ?? null;
+  if (!walletAddress) {
+    try {
+      const appUser = await prisma.appUser.findFirst({
+        where: { email: userEmail },
+        select: { walletAddress: true },
+      });
+      walletAddress = appUser?.walletAddress?.toLowerCase() ?? null;
+    } catch (err) {
+      console.error("[initiateRedemption] wallet lookup failed:", err);
+    }
   }
 
   // Reserve a slot in a transaction. QR codes are NOT touched here — they are
@@ -435,17 +443,43 @@ export async function releasePendingRedemption(
     .filter(Boolean) as string[];
 
   const released = await prisma.$transaction(async (tx) => {
-    // Re-check inside the tx so we don't clobber a concurrent confirmation.
+    // Read the slot/voucher we may need to clean up. This is NOT the guard —
+    // the guard is the conditional write below.
     const current = await tx.redemption.findUnique({
       where: { id: redemptionId },
       select: { status: true, voucherId: true, slotId: true },
     });
     if (!current || current.status !== "PENDING") return false;
 
-    // Detach any assigned QR codes back to AVAILABLE (no-op in the normal flow,
-    // where a PENDING redemption never has QR codes assigned). NOTE: `value` is
-    // deliberately NOT reset — a merchant-uploaded value is bound to its slot at
-    // creation and must survive release so the slot can be reused as-is.
+    // CLAIM-FIRST (fixes the TOCTOU): atomically flip the row out of PENDING
+    // BEFORE touching QR/slot. A plain `update where:{id}` had no status
+    // predicate, so a concurrent confirmRedemption committing between the
+    // read above and the write could be clobbered CONFIRMED → EXPIRED (and its
+    // QR reset). The guarded write below row-locks and only proceeds if WE are
+    // the one taking the row out of PENDING; if a confirm already won, count is
+    // 0 and we abort without resetting anything.
+    let claimedCount: number;
+    if (opts?.deleteRow) {
+      // Explicit pre-broadcast user cancel — nothing was paid, leave no trace.
+      const del = await tx.redemption.deleteMany({
+        where: { id: redemptionId, status: "PENDING" },
+      });
+      claimedCount = del.count;
+    } else {
+      // Keep the record: mark terminal status + detach the slot so the unique
+      // slotId is freed for the next redemption.
+      const upd = await tx.redemption.updateMany({
+        where: { id: redemptionId, status: "PENDING" },
+        data: { status: outcome, failedAt: new Date(), slotId: null },
+      });
+      claimedCount = upd.count;
+    }
+    if (claimedCount !== 1) return false; // a concurrent confirm won — abort
+
+    // We own the transition. Now clean up: detach any assigned QR codes back to
+    // AVAILABLE (no-op in the normal flow, where a PENDING redemption has none).
+    // NOTE: `value` is deliberately NOT reset — a merchant-uploaded value is
+    // bound to its slot at creation and must survive release for reuse.
     await tx.qrCode.updateMany({
       where: { redemptionId },
       data: {
@@ -463,18 +497,6 @@ export async function releasePendingRedemption(
       await tx.redemptionSlot.updateMany({
         where: { id: current.slotId, status: "REDEEMED" },
         data: { status: "AVAILABLE" },
-      });
-    }
-
-    if (opts?.deleteRow) {
-      // Explicit pre-broadcast user cancel — nothing was paid, leave no trace.
-      await tx.redemption.delete({ where: { id: redemptionId } });
-    } else {
-      // Keep the record: mark terminal status + detach the slot so the unique
-      // slotId is freed for the next redemption.
-      await tx.redemption.update({
-        where: { id: redemptionId },
-        data: { status: outcome, failedAt: new Date(), slotId: null },
       });
     }
 
@@ -753,14 +775,15 @@ export async function safeExpireStalePending(
  * The client's "nothing was broadcast" claim is EVIDENCE, not proof: Privy's
  * sendTransaction can throw after the tx was actually submitted (timeout /
  * network blip), which is exactly how the 0x5c18 redemption was lost on
- * 2026-07-17 — the cancel deleted the row while the money was in flight.
- * So before honoring the delete, ask the chain:
- *  - matching transfer found → adopt the hash + confirm (user gets the voucher)
- *  - chain says no transfer  → delete the row (the original no-clutter cancel)
- *  - chain unknown (RPC down) → KEEP the row; the chain-checked sweep will
- *    recover-or-expire it later. When in doubt, never destroy.
- * A wallet-less row can't be chain-checked; deleting is still safe because any
- * treasury inflow is recorded by the webhook fallback + inflow sweep.
+ * 2026-07-17 — the old cancel DELETED the row while the money was in flight.
+ * So this NEVER deletes. It asks the chain, then:
+ *  - matching transfer found → adopt the hash + confirm ("recovered")
+ *  - chain says no transfer  → mark EXPIRED and KEEP the row ("expired")
+ *  - chain unknown (RPC down) → KEEP the row PENDING; the chain-checked sweep
+ *    recover-or-expires it later ("kept"). When in doubt, never destroy.
+ * A wallet-less row can't be chain-checked → it is EXPIRED (still kept); any
+ * treasury inflow that lands afterwards is recorded by the webhook fallback +
+ * inflow sweep, so the money is never lost.
  */
 export async function safeCancelPendingRedemption(
   redemptionId: string,

@@ -132,6 +132,21 @@ export async function handleUnmatchedTreasuryTransfer(
     if (nowKnown) return { outcome: "already-known" };
   }
 
+  // Dust filter: a spammer can flood the review queue with sub-cent transfers.
+  // Skip queuing ONLY when there is NO candidate AND the amount is far below
+  // any real voucher price (a matched candidate is always honored, whatever the
+  // size, so a real payment is never dropped). Threshold is conservative and
+  // env-overridable; the smallest voucher costs orders of magnitude more.
+  const DUST_THRESHOLD = new Prisma.Decimal(
+    process.env.DUST_THRESHOLD_WEALTH ?? "0.0001",
+  );
+  if (candidates.length === 0 && transfer.amount.lt(DUST_THRESHOLD)) {
+    console.warn(
+      `[transferMatch] DUST ignored: tx ${txHash} amount ${transfer.amount.toString()} < ${DUST_THRESHOLD.toString()} (no candidate)`,
+    );
+    return { outcome: "already-known" };
+  }
+
   // 0 or >1 candidates → review queue. Never drop an inflow on the floor.
   try {
     const row = await prisma.unmatchedTransfer.create({

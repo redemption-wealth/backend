@@ -67,12 +67,14 @@ beforeEach(() => {
   process.env.DEV_WALLET_ADDRESS = "0x1fb56441c55e3730f9f5c43d94a5ff21ecfafe01";
   process.env.WEALTH_CONTRACT_ADDRESS =
     "0xafa702c0a2a3a0cf1bd09435db61c913ccde8546";
-  // Defaults for the release path.
+  // Defaults for the release path. release now CLAIMS via updateMany (guarded
+  // where status=PENDING) → default it to a winning claim (count 1).
   db.qrCode.updateMany.mockResolvedValue({ count: 0 });
   db.redemptionSlot.updateMany.mockResolvedValue({ count: 1 });
   db.redemptionSlot.count.mockResolvedValue(14);
   db.voucher.update.mockResolvedValue({});
   db.redemption.update.mockResolvedValue({});
+  db.redemption.updateMany.mockResolvedValue({ count: 1 });
 });
 
 afterEach(() => {
@@ -140,9 +142,10 @@ describe("safeExpireStalePending — never destroy on doubt", () => {
     const out = await safeExpireStalePending("red1");
 
     expect(out).toBe("expired");
-    // KEEP semantics: update to EXPIRED + slotId null — never delete.
-    expect(db.redemption.update).toHaveBeenCalledWith({
-      where: { id: "red1" },
+    // KEEP semantics via a GUARDED claim: updateMany where status=PENDING →
+    // EXPIRED + slotId null. Never delete, never an unguarded update.
+    expect(db.redemption.updateMany).toHaveBeenCalledWith({
+      where: { id: "red1", status: "PENDING" },
       data: expect.objectContaining({ status: "EXPIRED", slotId: null }),
     });
     expect(db.redemption.delete).not.toHaveBeenCalled();
@@ -151,6 +154,30 @@ describe("safeExpireStalePending — never destroy on doubt", () => {
       where: { id: "slot1", status: "REDEEMED" },
       data: { status: "AVAILABLE" },
     });
+  });
+
+  test("TOCTOU: a concurrent confirm wins the row → guarded claim (count 0) aborts, QR/slot untouched", async () => {
+    // chain empty → we head to release; but between the read and the claim a
+    // webhook confirm flipped the row to CONFIRMED. The guarded updateMany
+    // (where status=PENDING) then matches 0 rows → we must NOT reset QR or free
+    // the slot (that would clobber the just-confirmed voucher).
+    db.redemption.findUnique
+      .mockResolvedValueOnce({ ...ROW }) // load row (still PENDING)
+      .mockResolvedValueOnce({ status: "PENDING", qrCodes: [] }) // release pre-check
+      .mockResolvedValueOnce({
+        status: "PENDING",
+        voucherId: "v1",
+        slotId: "slot1",
+      });
+    mockTransfersResponse([]);
+    db.redemption.updateMany.mockResolvedValue({ count: 0 }); // confirm won the claim
+
+    const out = await safeExpireStalePending("red1");
+
+    expect(out).toBe("noop"); // released=false → not expired
+    expect(db.qrCode.updateMany).not.toHaveBeenCalled(); // no QR reset
+    expect(db.redemptionSlot.updateMany).not.toHaveBeenCalled(); // no slot free
+    expect(db.redemption.delete).not.toHaveBeenCalled();
   });
 
   test("transfer exists but amount differs → not ours, expire (money still caught by webhook net)", async () => {
@@ -175,7 +202,12 @@ describe("safeExpireStalePending — never destroy on doubt", () => {
 
     const out = await safeExpireStalePending("red1");
     expect(out).toBe("expired");
-    expect(db.redemption.updateMany).not.toHaveBeenCalled();
+    // must NOT have ADOPTED a hash (release-claim updateMany is allowed).
+    expect(db.redemption.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ txHash: expect.anything() }),
+      }),
+    );
   });
 
   test("wallet unknown everywhere → expire is allowed (webhook net is the backstop)", async () => {

@@ -288,9 +288,19 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
     // this is a second payment). Do NOT overwrite — but the rejected hash is a
     // real on-chain transfer, so record it directly through the matcher instead
     // of trusting only the webhook (fix: a rejected hash used to be dropped).
-    void recordRejectedTreasuryTx(txHash).catch((err) =>
+    // waitUntil keeps the serverless instance alive until this finishes — a
+    // bare fire-and-forget promise is often frozen after the 409 returns.
+    const record = recordRejectedTreasuryTx(txHash).catch((err) =>
       console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
     );
+    // Hono's c.executionCtx getter THROWS when there's no execution context
+    // (Node runtime), so guard it. On Vercel it exists → waitUntil keeps the
+    // instance alive; on Node the promise simply runs to completion.
+    try {
+      c.executionCtx.waitUntil(record);
+    } catch {
+      void record;
+    }
     return c.json(
       { error: "Redemption is already linked to a different transaction" },
       409,

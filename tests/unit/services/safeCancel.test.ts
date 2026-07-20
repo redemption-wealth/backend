@@ -80,6 +80,7 @@ beforeEach(() => {
   db.redemptionSlot.count.mockResolvedValue(14);
   db.voucher.update.mockResolvedValue({});
   db.redemption.update.mockResolvedValue({});
+  db.redemption.updateMany.mockResolvedValue({ count: 1 });
   db.redemption.delete.mockResolvedValue({});
 });
 
@@ -135,8 +136,8 @@ describe("safeCancelPendingRedemption — never delete, the client's word is not
 
     expect(out).toBe("expired");
     // KEEP semantics: update to EXPIRED + detach slot — never delete.
-    expect(db.redemption.update).toHaveBeenCalledWith({
-      where: { id: "red1" },
+    expect(db.redemption.updateMany).toHaveBeenCalledWith({
+      where: { id: "red1", status: "PENDING" },
       data: expect.objectContaining({ status: "EXPIRED", slotId: null }),
     });
     expect(db.redemption.delete).not.toHaveBeenCalled();
@@ -164,7 +165,12 @@ describe("safeCancelPendingRedemption — never delete, the client's word is not
 
     expect(out).toBe("expired");
     // Must NOT have adopted the hash onto this row.
-    expect(db.redemption.updateMany).not.toHaveBeenCalled();
+    // must NOT have ADOPTED a hash (release-claim updateMany is allowed).
+    expect(db.redemption.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ txHash: expect.anything() }),
+      }),
+    );
     expect(db.redemption.delete).not.toHaveBeenCalled();
   });
 
@@ -179,7 +185,12 @@ describe("safeCancelPendingRedemption — never delete, the client's word is not
 
     const out = await safeCancelPendingRedemption("red1");
     expect(out).toBe("expired");
-    expect(db.redemption.updateMany).not.toHaveBeenCalled();
+    // must NOT have ADOPTED a hash (release-claim updateMany is allowed).
+    expect(db.redemption.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ txHash: expect.anything() }),
+      }),
+    );
     expect(db.redemption.delete).not.toHaveBeenCalled();
   });
 
@@ -196,8 +207,8 @@ describe("safeCancelPendingRedemption — never delete, the client's word is not
     expect(out).toBe("expired");
     expect(fetchSpy).not.toHaveBeenCalled(); // nothing to ask the chain about
     expect(db.redemption.delete).not.toHaveBeenCalled();
-    expect(db.redemption.update).toHaveBeenCalledWith({
-      where: { id: "red1" },
+    expect(db.redemption.updateMany).toHaveBeenCalledWith({
+      where: { id: "red1", status: "PENDING" },
       data: expect.objectContaining({ status: "EXPIRED", slotId: null }),
     });
   });

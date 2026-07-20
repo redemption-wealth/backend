@@ -11,11 +11,12 @@ import { syncAppUser } from "../services/appUser.js";
 const authRoutes = new Hono<AuthEnv>();
 
 // ─── POST /api/auth/user-sync ────────────────────────────────────────────────
-// App-user identity sync. The app has called this on every login since launch,
-// but the route never existed (sync silently 404'd → app_users.walletAddress
-// stayed NULL → the treasury-inflow matcher was blind, 2026-07-17 case). Body:
-// { walletAddress?, referralCode? } — wallet may be absent when the Privy
-// embedded wallet isn't created yet; the app re-syncs once it appears.
+// App-user identity sync. The WALLET is taken SERVER-SIDE from the Privy
+// account (c.get("userAuth").walletAddress), NEVER from the request body — a
+// client-supplied wallet could claim someone else's address and misdirect a
+// treasury inflow's attribution (round-2 audit #1). The body's referralCode is
+// still honored. Wallet may be null when the embedded wallet isn't provisioned
+// yet; the app re-syncs once Privy provides it.
 authRoutes.post("/user-sync", requireUser, async (c) => {
   const user = c.get("userAuth");
   let body: unknown = {};
@@ -36,7 +37,8 @@ authRoutes.post("/user-sync", requireUser, async (c) => {
     {
       privyUserId: user.privyUserId,
       userEmail: user.userEmail,
-      walletAddress: parsed.data.walletAddress ?? null,
+      // Server-derived wallet only — the body's walletAddress is ignored.
+      walletAddress: user.walletAddress,
     },
     parsed.data.referralCode ?? null,
   );
