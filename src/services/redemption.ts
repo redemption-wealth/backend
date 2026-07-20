@@ -305,14 +305,54 @@ function getRpcClient() {
 
 export type ReconcileOutcome =
   | { reconciled: true; status: "CONFIRMED" | "FAILED" }
-  | { reconciled: false; reason: "no-tx-hash" | "no-receipt" | "no-rpc" | "not-pending" };
+  | {
+      reconciled: false;
+      reason:
+        | "no-tx-hash"
+        | "no-receipt"
+        | "no-rpc"
+        | "not-pending"
+        | "not-a-payment";
+    };
+
+// ERC-20 Transfer(address,address,uint256) topic.
+const RECONCILE_TRANSFER_TOPIC =
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+/**
+ * A successful tx receipt is NOT proof of payment. Verify the receipt actually
+ * contains a $WEALTH transfer INTO the treasury for `expectedAmount` — exactly
+ * what the webhook validates. Without this, a user could submit ANY successful
+ * txHash (someone else's transfer, any unrelated success) and reconcile would
+ * confirm it → a free voucher (C1).
+ */
+function receiptPaysTreasury(
+  receipt: { logs: ReadonlyArray<{ address: string; topics: string[]; data: string }> },
+  expectedAmount: Prisma.Decimal,
+): boolean {
+  const treasury = process.env.DEV_WALLET_ADDRESS?.toLowerCase();
+  const wealth = process.env.WEALTH_CONTRACT_ADDRESS?.toLowerCase();
+  if (!treasury || !wealth) return false;
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== wealth) continue;
+    if (log.topics[0] !== RECONCILE_TRANSFER_TOPIC || log.topics.length < 3)
+      continue;
+    const to = `0x${log.topics[2]!.slice(-40)}`.toLowerCase();
+    if (to !== treasury) continue;
+    const amount = new Prisma.Decimal(BigInt(log.data).toString()).div(
+      new Prisma.Decimal(10).pow(18),
+    );
+    if (amount.sub(expectedAmount).abs().lt(1e-9)) return true;
+  }
+  return false;
+}
 
 export async function reconcileRedemptionById(
   redemptionId: string,
 ): Promise<ReconcileOutcome> {
   const redemption = await prisma.redemption.findUnique({
     where: { id: redemptionId },
-    select: { id: true, status: true, txHash: true },
+    select: { id: true, status: true, txHash: true, wealthAmount: true },
   });
 
   if (!redemption) throw new Error("Redemption not found");
@@ -333,6 +373,14 @@ export async function reconcileRedemptionById(
     if (!receipt) return { reconciled: false, reason: "no-receipt" };
 
     if (receipt.status === "success") {
+      // Only confirm if the receipt ACTUALLY pays the treasury the right amount
+      // of $WEALTH — a bare "success" is not proof (C1 free-voucher fix).
+      if (!receiptPaysTreasury(receipt, redemption.wealthAmount)) {
+        console.warn(
+          `[reconcile] tx ${redemption.txHash} succeeded but is NOT a $WEALTH→treasury payment of ${redemption.wealthAmount.toString()} — refusing to confirm ${redemption.id}`,
+        );
+        return { reconciled: false, reason: "not-a-payment" };
+      }
       await confirmRedemption(redemption.txHash);
       return { reconciled: true, status: "CONFIRMED" };
     }
