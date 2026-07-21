@@ -3,6 +3,15 @@ import { createHmac } from "node:crypto";
 import { testPrisma } from "../../setup.integration.js";
 import app from "@/app.js";
 
+function randomTxHash() {
+  return (
+    "0x" +
+    Array.from({ length: 64 }, () =>
+      Math.floor(Math.random() * 16).toString(16),
+    ).join("")
+  );
+}
+
 const SIGNING_KEY = "test-webhook-signing-key";
 const WEALTH_CONTRACT = "0x1234567890123456789012345678901234567890";
 const TREASURY = "0x0987654321098765432109876543210987654321";
@@ -217,6 +226,47 @@ describe("POST /api/webhook/alchemy", () => {
 
     const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
     expect(updated?.status).toBe("PENDING");
+  });
+
+  // F1 (round-6): a real inflow that fails the R1 amount/sender check on a
+  // stamped PENDING row must NOT strand silently — it lands in the review queue
+  // so an admin gets a signal (Pasangkan / Refund / Abaikan).
+  test("F1: mismatched-sender inflow on a stamped row is QUEUED for review (not silent)", async () => {
+    // Unique per run: unmatched_transfers has a UNIQUE txHash and is not
+    // truncated between local runs, so a hardcoded hash would hit a stale queue
+    // row and read the wrong userEmail.
+    const txHash = randomTxHash();
+    const { redemption } = await seedPendingRedemption(txHash);
+    await testPrisma.redemption.update({
+      where: { id: redemption.id },
+      data: { walletAddress: "0x" + "77".repeat(20) },
+    });
+
+    // Correct amount (100), but from a wallet the row doesn't recognise.
+    const stranger = { ...tokenActivity(txHash), value: 100, fromAddress: "0x" + "88".repeat(20) };
+    const res = await webhookPost({ event: { activity: [stranger] } });
+    expect(res.status).toBe(200);
+
+    const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(updated?.status).toBe("PENDING"); // still not confirmed
+
+    const queued = await testPrisma.unmatchedTransfer.findUnique({ where: { txHash } });
+    expect(queued).not.toBeNull();
+    expect(queued?.status).toBe("OPEN");
+    expect(queued?.userEmail).toBe(redemption.userEmail); // admin sees the owner
+  });
+
+  test("F1: a DUST mismatch is NOT queued (self-attack cannot flood the review queue)", async () => {
+    const txHash = randomTxHash();
+    const { redemption } = await seedPendingRedemption(txHash); // expects 100
+    const dust = { ...tokenActivity(txHash), value: 0.00001 };
+    const res = await webhookPost({ event: { activity: [dust] } });
+    expect(res.status).toBe(200);
+
+    const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(updated?.status).toBe("PENDING");
+    const queued = await testPrisma.unmatchedTransfer.findUnique({ where: { txHash } });
+    expect(queued).toBeNull(); // dust dropped, not queued
   });
 
   test("R1: correct amount + matching sender IS confirmed", async () => {

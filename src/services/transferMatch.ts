@@ -186,6 +186,67 @@ export async function handleUnmatchedTreasuryTransfer(
 }
 
 /**
+ * Force a treasury inflow into the review queue (OPEN), bypassing the auto-match
+ * flow. Used by the webhook when a PENDING row already carries this txHash but
+ * the on-chain amount/sender does NOT match it (round-5 R1 rejects the confirm):
+ * `handleUnmatchedTreasuryTransfer` would short-circuit on `already-known` (the
+ * hash is on a redemption) and swallow the inflow, stranding a real payment with
+ * NO admin signal (round-6 F1). Queuing it surfaces the mismatch for manual
+ * review (Pasangkan / Refund / Abaikan).
+ *
+ * Idempotent on txHash. Dust is dropped so a self-attack (stamping a dust hash
+ * onto your own high-value row) cannot flood the queue — mirrors the dust filter
+ * in `handleUnmatchedTreasuryTransfer`.
+ */
+export async function queueUnmatchedTransfer(
+  transfer: IncomingTransfer & { userEmail?: string | null },
+): Promise<TransferMatchOutcome> {
+  const txHash = transfer.txHash.toLowerCase();
+
+  const existing = await prisma.unmatchedTransfer.findUnique({
+    where: { txHash },
+    select: { id: true },
+  });
+  if (existing) return { outcome: "already-known" };
+
+  const DUST_THRESHOLD = new Prisma.Decimal(
+    process.env.DUST_THRESHOLD_WEALTH ?? "0.0001",
+  );
+  if (transfer.amount.lt(DUST_THRESHOLD)) {
+    console.warn(
+      `[transferMatch] mismatch DUST ignored: tx ${txHash} amount ${transfer.amount.toString()} < ${DUST_THRESHOLD.toString()}`,
+    );
+    return { outcome: "already-known" };
+  }
+
+  try {
+    const row = await prisma.unmatchedTransfer.create({
+      data: {
+        txHash,
+        fromAddress: transfer.fromAddress.toLowerCase(),
+        toAddress: transfer.toAddress.toLowerCase(),
+        tokenAddress: transfer.tokenAddress.toLowerCase(),
+        amount: transfer.amount,
+        userEmail: transfer.userEmail ?? null,
+        status: "OPEN",
+      },
+    });
+    console.warn(
+      `[transferMatch] QUEUED mismatched stamped transfer ${txHash} (user=${transfer.userEmail ?? "unknown"}) for manual review`,
+    );
+    return { outcome: "queued", unmatchedTransferId: row.id, candidates: 0 };
+  } catch (err) {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      return { outcome: "already-known" };
+    }
+    throw err;
+  }
+}
+
+/**
  * Pull-based safety net: scan ALL $WEALTH inflows into the treasury for the
  * recent window straight from the chain (alchemy_getAssetTransfers) and run
  * every hash the DB doesn't know through the hybrid matcher. Covers the case
