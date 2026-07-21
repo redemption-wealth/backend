@@ -211,4 +211,46 @@ describe("PATCH /api/redemptions/:id/submit-tx", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  test("concurrent submits with different hashes: claim-first, no overwrite", async () => {
+    // TOCTOU guard: two racing broadcasts land two different hashes on the same
+    // PENDING row. The claim-first `updateMany where {status:PENDING, txHash:null}`
+    // must let exactly ONE win and reject the other — never overwrite (an
+    // overwrite would orphan the first payment: confirmRedemption only matches
+    // {txHash, status:PENDING}).
+    const hashA = "0x" + "e".repeat(64);
+    const hashB = "0x" + "f".repeat(64);
+    const [rA, rB] = await Promise.all([
+      jsonPatch(`/api/redemptions/${redemption.id}/submit-tx`, { txHash: hashA }, userToken),
+      jsonPatch(`/api/redemptions/${redemption.id}/submit-tx`, { txHash: hashB }, userToken),
+    ]);
+    const statuses = [rA.status, rB.status].sort();
+    // one success, one rejection (200 winner; loser 400 "already used" if it
+    // read the winner's hash, or 409 "no longer pending" if it lost the claim)
+    expect(statuses[0]).toBe(200);
+    expect([400, 409]).toContain(statuses[1]);
+
+    const row = await testPrisma.redemption.findUniqueOrThrow({ where: { id: redemption.id } });
+    // txHash was set exactly once and never overwritten
+    expect([hashA, hashB]).toContain(row.txHash);
+  });
+
+  test("row expired between read and claim → 409, txHash not stamped on dead row", async () => {
+    // Simulate the race deterministically: expire the row, then submit. The
+    // pre-check catches CONFIRMED, but the claim-first guard is the net for a
+    // row that flips AFTER the read — assert a non-PENDING row never receives a
+    // txHash (which would strand the payment).
+    await testPrisma.redemption.update({
+      where: { id: redemption.id },
+      data: { status: "EXPIRED" },
+    });
+    const res = await jsonPatch(
+      `/api/redemptions/${redemption.id}/submit-tx`,
+      { txHash: "0x" + "1".repeat(64) },
+      userToken,
+    );
+    expect([400, 409]).toContain(res.status);
+    const row = await testPrisma.redemption.findUniqueOrThrow({ where: { id: redemption.id } });
+    expect(row.txHash).toBeNull();
+  });
 });

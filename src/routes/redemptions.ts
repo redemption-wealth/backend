@@ -313,9 +313,31 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
     return c.json({ error: "txHash already used" }, 400);
   }
 
-  const updated = await prisma.redemption.update({
-    where: { id: redemption.id },
+  // Claim-first write: guard the update on the SAME predicate we read above.
+  // The findFirst..status check is a TOCTOU — between it and here a parallel
+  // GET can lazy-expire this row (safeExpireStalePending), or a racing submit
+  // can stamp it. A bare `update where {id}` would then write txHash onto a
+  // non-PENDING row, and confirmRedemption only matches {txHash, status:PENDING}
+  // — the money would be recorded on-chain but never confirm the voucher (the
+  // silent-loss class this PR exists to kill). Scope the write to PENDING+null
+  // and act on the row count.
+  const claim = await prisma.redemption.updateMany({
+    where: { id: redemption.id, status: "PENDING", txHash: null },
     data: { txHash },
+  });
+  if (claim.count === 0) {
+    // Row was expired/claimed between the read and here. The tx is a real
+    // on-chain transfer, so record it through the matcher (never drop it) and
+    // let the webhook/queue resolve it — same recovery path as the 409 above.
+    waitUntil(
+      recordRejectedTreasuryTx(txHash).catch((err) =>
+        console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
+      ),
+    );
+    return c.json({ error: "Redemption is no longer pending" }, 409);
+  }
+  const updated = await prisma.redemption.findUniqueOrThrow({
+    where: { id: redemption.id },
   });
 
   // LOCAL DEMO ONLY (gated by env, never on in prod): confirm immediately so the
