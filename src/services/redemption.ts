@@ -15,19 +15,20 @@ interface InitiateRedemptionParams {
   walletAddress?: string | null;
 }
 
-// Double-click / double-submit guard: while the user has an in-flight PENDING
-// row (no txHash yet) for this voucher, a near-simultaneous redeem request
-// REUSES that row instead of creating a second one. The client idempotencyKey
-// can't catch this — each tap generates a fresh key.
+// Resume-not-duplicate policy (industry standard, paired with app PR #19):
+// ONE in-flight PENDING row per (user, voucher). While the user has an
+// unsettled PENDING row (no txHash yet) for this voucher, ANY redeem request —
+// regardless of the row's age — RESUMES that row instead of creating a second
+// one. This closes the cross-device double-charge: device B tapping 35s after
+// device A resumes A's pending charge instead of opening a second one (the old
+// 30s window let B create a duplicate). The client idempotencyKey can't catch
+// this — each tap/device generates a fresh key.
 //
-// The window is SHORT (30s) on purpose: buying the same voucher again is a
-// LEGITIMATE action (e.g. 2 event tickets), so it must NOT be shadowed. This
-// only absorbs a true double-click / retry burst; the synchronous client guard
-// blocks the common case, and a deliberate second purchase seconds later gets
-// its own row. (A wider window here previously ate real repeat purchases.)
-const PENDING_REUSE_WINDOW_MS = 30 * 1000;
-
-function findRecentPendingRow(
+// A genuinely-new purchase (e.g. a second event ticket) is possible only AFTER
+// the first pending settles: it gets a txHash (broadcast), confirms, or expires
+// — at which point txHash is no longer null / status is no longer PENDING, so
+// this lookup returns nothing and a fresh row is created.
+function findExistingPendingRow(
   db: Pick<typeof prisma, "redemption">,
   userEmail: string,
   voucherId: string,
@@ -38,7 +39,6 @@ function findRecentPendingRow(
       voucherId,
       status: "PENDING",
       txHash: null,
-      createdAt: { gte: new Date(Date.now() - PENDING_REUSE_WINDOW_MS) },
     },
     orderBy: { createdAt: "desc" },
   });
@@ -58,9 +58,10 @@ export async function initiateRedemption({
     return { redemption: existing, alreadyExists: true };
   }
 
-  // Fast-path double-submit check (raced taps are settled again under the
-  // advisory lock inside the transaction below).
-  const inFlight = await findRecentPendingRow(prisma, userEmail, voucherId);
+  // Fast-path resume check: reuse ANY unsettled PENDING row for this
+  // (user, voucher) — regardless of age (raced/cross-device requests are
+  // settled again under the advisory lock inside the transaction below).
+  const inFlight = await findExistingPendingRow(prisma, userEmail, voucherId);
   if (inFlight) {
     return { redemption: inFlight, alreadyExists: true };
   }
@@ -103,14 +104,15 @@ export async function initiateRedemption({
   // Reserve a slot in a transaction. QR codes are NOT touched here — they are
   // generated and handed to the user only once the on-chain transfer is
   // confirmed (see confirmRedemption). A failed/abandoned attempt therefore
-  // leaves no QR and no history: the PENDING row is deleted on release.
+  // leaves no QR: on release the PENDING row is marked terminal (EXPIRED/FAILED)
+  // and its slot freed — the row itself is KEPT as honest history, never deleted.
   const result = await prisma.$transaction(async (tx) => {
-    // Serialize per user+voucher: two raced double-click requests both pass the
-    // fast-path check above; the lock makes the second one see (and reuse) the
-    // row the first one created. Same advisory-lock pattern as the referral
-    // bonus payout.
+    // Serialize per user+voucher: two raced requests both pass the fast-path
+    // check above; the lock makes the second one see (and reuse) the row the
+    // first one created. Same advisory-lock pattern as the referral bonus
+    // payout.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`redeem:${userEmail}:${voucherId}`}))`;
-    const racedPending = await findRecentPendingRow(tx, userEmail, voucherId);
+    const racedPending = await findExistingPendingRow(tx, userEmail, voucherId);
     if (racedPending) {
       return { row: racedPending, existed: true };
     }
@@ -419,15 +421,17 @@ export const STALE_PENDING_EXPIRY_MS = 30 * 60 * 1000;
  * constraint, so the slot can be reserved again — this preserves the fix for
  * the "Unique constraint failed on slotId" lockout.
  *
- * `deleteRow: true` keeps the old delete semantics for ONE case only: the user
- * explicitly cancelled before ever signing (nothing was paid, nothing to show).
+ * This function NEVER deletes a redemption — it always marks the terminal
+ * status. (The old `deleteRow` option was removed: its delete-then-reset-QR
+ * branch was both unused and latently broken — `onDelete: SetNull` nulls the
+ * QrCode.redemptionId on delete, so the by-redemptionId QR reset missed.)
  *
  * Guarded so a concurrent confirmation is never clobbered (only acts while
  * still PENDING). Returns true if it released the redemption.
  */
 export async function releasePendingRedemption(
   redemptionId: string,
-  opts?: { outcome?: "EXPIRED" | "FAILED"; deleteRow?: boolean },
+  opts?: { outcome?: "EXPIRED" | "FAILED" },
 ): Promise<boolean> {
   const outcome = opts?.outcome ?? "EXPIRED";
 
@@ -458,23 +462,14 @@ export async function releasePendingRedemption(
     // QR reset). The guarded write below row-locks and only proceeds if WE are
     // the one taking the row out of PENDING; if a confirm already won, count is
     // 0 and we abort without resetting anything.
-    let claimedCount: number;
-    if (opts?.deleteRow) {
-      // Explicit pre-broadcast user cancel — nothing was paid, leave no trace.
-      const del = await tx.redemption.deleteMany({
-        where: { id: redemptionId, status: "PENDING" },
-      });
-      claimedCount = del.count;
-    } else {
-      // Keep the record: mark terminal status + detach the slot so the unique
-      // slotId is freed for the next redemption.
-      const upd = await tx.redemption.updateMany({
-        where: { id: redemptionId, status: "PENDING" },
-        data: { status: outcome, failedAt: new Date(), slotId: null },
-      });
-      claimedCount = upd.count;
-    }
-    if (claimedCount !== 1) return false; // a concurrent confirm won — abort
+    //
+    // Keep the record: mark terminal status + detach the slot so the unique
+    // slotId is freed for the next redemption. The row is NEVER deleted.
+    const upd = await tx.redemption.updateMany({
+      where: { id: redemptionId, status: "PENDING" },
+      data: { status: outcome, failedAt: new Date(), slotId: null },
+    });
+    if (upd.count !== 1) return false; // a concurrent confirm won — abort
 
     // We own the transition. Now clean up: detach any assigned QR codes back to
     // AVAILABLE (no-op in the normal flow, where a PENDING redemption has none).

@@ -11,6 +11,7 @@ import {
 } from "../services/redemption.js";
 import { generateSignedUrl } from "../services/r2.js";
 import { recordRejectedTreasuryTx } from "../services/transferMatch.js";
+import { waitUntil } from "@vercel/functions";
 
 const redemptions = new Hono<AuthEnv>();
 
@@ -289,18 +290,18 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
     // real on-chain transfer, so record it directly through the matcher instead
     // of trusting only the webhook (fix: a rejected hash used to be dropped).
     // waitUntil keeps the serverless instance alive until this finishes — a
-    // bare fire-and-forget promise is often frozen after the 409 returns.
-    const record = recordRejectedTreasuryTx(txHash).catch((err) =>
-      console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
+    // bare fire-and-forget promise is frozen after the 409 returns. We use
+    // @vercel/functions' `waitUntil` rather than Hono's `c.executionCtx`: the
+    // entry (api/index.ts) exports the raw Hono app (no hono/vercel adapter),
+    // so `c.executionCtx` THROWS on Vercel's Node runtime and would fall back
+    // to a bare (frozen) promise. `@vercel/functions` is the documented
+    // Vercel-Node way to keep a promise alive after the response — outside
+    // Vercel it degrades to a no-op / runs the promise inline.
+    waitUntil(
+      recordRejectedTreasuryTx(txHash).catch((err) =>
+        console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
+      ),
     );
-    // Hono's c.executionCtx getter THROWS when there's no execution context
-    // (Node runtime), so guard it. On Vercel it exists → waitUntil keeps the
-    // instance alive; on Node the promise simply runs to completion.
-    try {
-      c.executionCtx.waitUntil(record);
-    } catch {
-      void record;
-    }
     return c.json(
       { error: "Redemption is already linked to a different transaction" },
       409,

@@ -75,6 +75,10 @@ export async function handleUnmatchedTreasuryTransfer(
   // paid redemption is ground truth for wallet↔user ownership.
   let appUser = await prisma.appUser.findFirst({
     where: { walletAddress: { equals: fromAddress, mode: "insensitive" } },
+    // Deterministic tie-break: if the (rare) same wallet is on multiple app
+    // users, always resolve to the same one (mirrors the priorRedemption
+    // fallback below, which already orders).
+    orderBy: { createdAt: "asc" },
     select: { email: true },
   });
   if (!appUser) {

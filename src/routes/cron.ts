@@ -40,9 +40,14 @@ cron.get("/expire-pending-redemptions", async (c) => {
     inflows = await sweepTreasuryInflows();
     // Heartbeat: record a successful sweep so /health can detect if it ever
     // silently stops (e.g. CRON_SECRET rotated → 401 → this never runs).
-    await prisma.appSettings.update({
+    // upsert (not update): if the singleton row is absent, `update` throws
+    // P2025, which gets swallowed as "sweep failed" and makes /health
+    // false-positive 503. Create the row with the timestamp when missing.
+    const now = new Date();
+    await prisma.appSettings.upsert({
       where: { id: "singleton" },
-      data: { lastInflowSweepAt: new Date() },
+      update: { lastInflowSweepAt: now },
+      create: { id: "singleton", lastInflowSweepAt: now },
     });
   } catch (err) {
     console.error("[cron] treasury inflow sweep failed:", err);
