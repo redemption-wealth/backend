@@ -15,6 +15,7 @@ vi.mock("@/db.js", () => {
     redemption: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       updateMany: vi.fn(),
       update: vi.fn(),
       findUniqueOrThrow: vi.fn(),
@@ -36,7 +37,10 @@ vi.mock("@/services/qr-generator.js", () => ({
 }));
 
 import { prisma } from "@/db.js";
-import { reconcileRedemptionById } from "@/services/redemption.js";
+import {
+  reconcileRedemptionById,
+  reconcileStampedPendingRedemptions,
+} from "@/services/redemption.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -245,5 +249,54 @@ describe("reconcileRedemptionById — reverted receipt", () => {
     });
     const out = await reconcileRedemptionById("red1");
     expect(out).toEqual({ reconciled: true, status: "FAILED" });
+  });
+});
+
+describe("reconcileStampedPendingRedemptions — R3 cron backstop (paid-no-voucher)", () => {
+  test("selects only PENDING rows with a txHash older than the min age", async () => {
+    db.redemption.findMany.mockResolvedValue([]);
+    await reconcileStampedPendingRedemptions();
+    const where = db.redemption.findMany.mock.calls[0][0].where;
+    expect(where.status).toBe("PENDING");
+    expect(where.txHash).toEqual({ not: null });
+    expect(where.createdAt.lt).toBeInstanceOf(Date);
+  });
+
+  test("confirms a stamped row whose receipt actually pays the treasury", async () => {
+    db.redemption.findMany.mockResolvedValue([{ id: "red1" }]);
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [transferLog({})], // pays TREASURY the exact AMOUNT from PAYER
+    });
+    const out = await reconcileStampedPendingRedemptions();
+    expect(out.confirmed).toBe(1);
+    expect(out.failed).toBe(0);
+    expect(out.ids).toContain("red1");
+  });
+
+  test("leaves a not-yet-mined row PENDING (retries next run)", async () => {
+    db.redemption.findMany.mockResolvedValue([{ id: "red1" }]);
+    getTransactionReceipt.mockResolvedValue(null); // tx not mined yet
+    const out = await reconcileStampedPendingRedemptions();
+    expect(out.confirmed).toBe(0);
+    expect(out.pending).toBe(1);
+    expect(out.ids).toEqual([]);
+  });
+
+  test("does NOT confirm a stamped row whose receipt underpays (R1 belt at reconcile)", async () => {
+    db.redemption.findMany.mockResolvedValue([{ id: "red1" }]);
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [transferLog({ wei: 1n })], // dust, not the expected AMOUNT
+    });
+    const out = await reconcileStampedPendingRedemptions();
+    expect(out.confirmed).toBe(0);
+    expect(out.pending).toBe(1); // not-a-payment → stays PENDING
+  });
+
+  test("empty backlog → no-op", async () => {
+    db.redemption.findMany.mockResolvedValue([]);
+    const out = await reconcileStampedPendingRedemptions();
+    expect(out).toEqual({ confirmed: 0, failed: 0, pending: 0, ids: [] });
   });
 });

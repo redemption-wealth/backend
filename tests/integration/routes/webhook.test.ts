@@ -181,4 +181,58 @@ describe("POST /api/webhook/alchemy", () => {
     expect(second?.status).toBe("CONFIRMED");
     expect(second?.confirmedAt?.getTime()).toBe(first?.confirmedAt?.getTime());
   });
+
+  // R1 (round-5): confirmRedemption matches by {txHash,status:PENDING} only, so
+  // the webhook MUST verify the transfer's amount (and sender, when known)
+  // before confirming — else a dust tx stamped onto a high-value row buys a full
+  // voucher.
+  test("R1: underpay (dust) on a high-value PENDING row is NOT confirmed", async () => {
+    const txHash = "0x" + "a1".repeat(32);
+    const { redemption } = await seedPendingRedemption(txHash); // expects 100
+
+    // Attacker's transfer pays only dust into the treasury with this hash.
+    const dust = { ...tokenActivity(txHash), value: 0.001 };
+    const res = await webhookPost({ event: { activity: [dust] } });
+    expect(res.status).toBe(200);
+
+    const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(updated?.status).toBe("PENDING"); // NOT confirmed — no free voucher
+  });
+
+  test("R1: correct amount but WRONG sender (known wallet) is NOT confirmed", async () => {
+    const txHash = "0x" + "a2".repeat(32);
+    const { redemption } = await seedPendingRedemption(txHash);
+    await testPrisma.redemption.update({
+      where: { id: redemption.id },
+      data: { walletAddress: "0x" + "77".repeat(20) },
+    });
+
+    const wrongSender = {
+      ...tokenActivity(txHash),
+      value: 100,
+      fromAddress: "0x" + "88".repeat(20),
+    };
+    const res = await webhookPost({ event: { activity: [wrongSender] } });
+    expect(res.status).toBe(200);
+
+    const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(updated?.status).toBe("PENDING");
+  });
+
+  test("R1: correct amount + matching sender IS confirmed", async () => {
+    const txHash = "0x" + "a3".repeat(32);
+    const wallet = "0x" + "77".repeat(20);
+    const { redemption } = await seedPendingRedemption(txHash);
+    await testPrisma.redemption.update({
+      where: { id: redemption.id },
+      data: { walletAddress: wallet },
+    });
+
+    const good = { ...tokenActivity(txHash), value: 100, fromAddress: wallet };
+    const res = await webhookPost({ event: { activity: [good] } });
+    expect(res.status).toBe(200);
+
+    const updated = await testPrisma.redemption.findUnique({ where: { id: redemption.id } });
+    expect(updated?.status).toBe("CONFIRMED");
+  });
 });

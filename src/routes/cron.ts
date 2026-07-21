@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import { prisma } from "../db.js";
-import { expireStalePendingRedemptions } from "../services/redemption.js";
+import {
+  expireStalePendingRedemptions,
+  reconcileStampedPendingRedemptions,
+} from "../services/redemption.js";
 import { sweepTreasuryInflows } from "../services/transferMatch.js";
 import { expireStaleStreaks } from "../services/quest.js";
 
@@ -53,6 +56,19 @@ cron.get("/expire-pending-redemptions", async (c) => {
     console.error("[cron] treasury inflow sweep failed:", err);
   }
 
+  // R3 backstop: reconcile rows that broadcast a tx (txHash set) but are still
+  // PENDING because their confirmation webhook was dropped and the user never
+  // reopened the QR page. Without this they are paid-but-no-voucher forever
+  // (expiry skips txHash rows; the sweep treats a known hash as handled).
+  let stampedReconcile:
+    | Awaited<ReturnType<typeof reconcileStampedPendingRedemptions>>
+    | null = null;
+  try {
+    stampedReconcile = await reconcileStampedPendingRedemptions({ limit: 50 });
+  } catch (err) {
+    console.error("[cron] stamped-pending reconcile failed:", err);
+  }
+
   // Drain in bounded batches so one run can clear a backlog without an
   // unbounded query, while still capping total work per invocation.
   const batchLimit = 100;
@@ -81,6 +97,7 @@ cron.get("/expire-pending-redemptions", async (c) => {
     skipped: totalSkipped,
     ids,
     inflows,
+    stampedReconcile,
   });
 });
 

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { Hono } from "hono";
+import { prisma } from "../db.js";
 import { confirmRedemption } from "../services/redemption.js";
 import {
   handleUnmatchedTreasuryTransfer,
@@ -65,18 +66,54 @@ webhook.post("/alchemy", async (c) => {
     const toAddress = activity.toAddress?.toLowerCase();
     if (tokenAddress !== wealthContract || toAddress !== treasury) continue;
 
-    try {
-      await confirmRedemption(txHash);
-      clearAnalyticsCache();
-    } catch (err) {
-      // txHash unknown to the DB (the app died before submit-tx) or already
-      // confirmed (duplicate delivery). Run the hybrid fallback: exact single
-      // candidate → auto-confirm; otherwise record the inflow in the
+    const amount = parseActivityAmount(activity);
+
+    // R1 (round-5) — VERIFY the transfer actually pays the claimed redemption
+    // before confirming. `confirmRedemption` matches only {txHash,status:PENDING}
+    // with NO amount/sender check, so without this an underpay (dust) tx stamped
+    // onto a high-value row via submit-tx would confirm a full voucher. Only
+    // direct-confirm when the amount (and sender, when the row knows it) matches
+    // the row this hash is attached to; anything else falls through to the
+    // hybrid fallback (exact-candidate match or the unmatched-transfers review
+    // queue) so a real inflow is still never dropped.
+    let directConfirmed = false;
+    const claimed = await prisma.redemption.findFirst({
+      where: { txHash, status: "PENDING" },
+      select: { wealthAmount: true, walletAddress: true },
+    });
+    if (claimed && amount) {
+      const from = String(activity.fromAddress ?? "").toLowerCase();
+      const amountMatches = amount.sub(claimed.wealthAmount).abs().lt(1e-9);
+      const senderMatches =
+        !claimed.walletAddress || from === claimed.walletAddress.toLowerCase();
+      if (amountMatches && senderMatches) {
+        try {
+          await confirmRedemption(txHash);
+          clearAnalyticsCache();
+          directConfirmed = true;
+        } catch (err) {
+          console.error(
+            "[webhook] verified direct confirm failed, running fallback:",
+            err,
+          );
+        }
+      } else {
+        console.warn(
+          `[webhook] tx ${txHash} is attached to a PENDING row but amount/sender do NOT match ` +
+            `(paid ${amount.toString()} from ${from}, expected ${claimed.wealthAmount.toString()}` +
+            `${claimed.walletAddress ? ` from ${claimed.walletAddress}` : ""}) — ` +
+            `refusing direct confirm, routing to fallback (R1 underpay guard)`,
+        );
+      }
+    }
+
+    if (!directConfirmed) {
+      // Unknown txHash (app died before submit-tx), already confirmed (duplicate
+      // delivery), or amount/sender mismatch. Run the hybrid fallback: exact
+      // single candidate → auto-confirm; otherwise record the inflow in the
       // unmatched-transfers review queue. NO treasury inflow may ever be
       // silently dropped (decision 2026-07-16).
-      console.error("[webhook] direct confirm failed, running fallback:", err);
       try {
-        const amount = parseActivityAmount(activity);
         if (!amount) {
           console.error(`[webhook] cannot parse amount for tx ${txHash} — skipping fallback`);
           continue;

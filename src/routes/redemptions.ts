@@ -275,6 +275,17 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
   }
 
   if (redemption.status !== "PENDING") {
+    // R5 (round-5) — the row is already terminal (confirmed/expired/failed) but
+    // the submitted hash may still be a real, un-recorded treasury payment the
+    // user just made. Record it through the matcher so it lands in the
+    // review/queue instead of being dropped (consistent with the 409 and
+    // count-0 paths below). The webhook/sweep would usually catch it too, but
+    // don't rely on that alone.
+    waitUntil(
+      recordRejectedTreasuryTx(txHash).catch((err) =>
+        console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
+      ),
+    );
     return c.json({ error: "Redemption is not pending" }, 400);
   }
 
@@ -344,7 +355,12 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
   // local backend (new multi-format code) assigns the asset before the production
   // webhook (old code) can render a QR. Lets a full create→redeem demo show the
   // real barcode/code. Safe to leave off — defaults to disabled.
-  if (process.env.DEMO_INSTANT_CONFIRM === "true") {
+  // R6 (round-5) — hard-gate to non-production so a stray env var can NEVER turn
+  // this unconditional-confirm bypass on against real money.
+  if (
+    process.env.DEMO_INSTANT_CONFIRM === "true" &&
+    process.env.NODE_ENV !== "production"
+  ) {
     try {
       await confirmRedemption(txHash);
     } catch (err) {

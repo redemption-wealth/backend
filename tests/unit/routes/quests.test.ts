@@ -1,6 +1,9 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
+// Server-derived wallet the auth middleware attaches (Privy, not client body).
+const SERVER_WALLET = "0x000000000000000000000000000000000000aaaa";
+
 // requireUser → pass-through that injects a fixed user.
 vi.mock("@/middleware/auth.js", () => ({
   requireUser: async (c: any, next: any) => {
@@ -8,6 +11,7 @@ vi.mock("@/middleware/auth.js", () => ({
       type: "user",
       userEmail: "a@x.com",
       privyUserId: "privy_1",
+      walletAddress: "0x000000000000000000000000000000000000aaaa",
     });
     return next();
   },
@@ -135,5 +139,18 @@ describe("POST /api/quests/sync", () => {
     const res = await post("/api/quests/sync", { referralCode: "x" });
     expect(res.status).toBe(400);
     expect(vi.mocked(syncAppUser)).not.toHaveBeenCalled();
+  });
+
+  test("R2: IGNORES the body walletAddress, uses the server-derived wallet", async () => {
+    // Poisoning app_users.walletAddress via the client body would let an
+    // attacker set a victim's address and defeat the reconcile sender check.
+    // The handler must pass the server-derived wallet only.
+    vi.mocked(syncAppUser).mockResolvedValue(APP_USER as any);
+    const victim = "0x000000000000000000000000000000000000bbbb";
+    const res = await post("/api/quests/sync", { walletAddress: victim });
+    expect(res.status).toBe(200);
+    const arg = vi.mocked(syncAppUser).mock.calls[0][0];
+    expect(arg.walletAddress).toBe(SERVER_WALLET);
+    expect(arg.walletAddress).not.toBe(victim);
   });
 });

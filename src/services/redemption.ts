@@ -478,6 +478,52 @@ export async function reconcileRedemptionById(
   }
 }
 
+// R3 (round-5) — a row that has a txHash but is still PENDING has already
+// broadcast a payment; only the webhook normally flips it to CONFIRMED. If that
+// webhook delivery is dropped AND the user never reopens the QR page, nothing
+// ever reconciles it: `expireStalePendingRedemptions` skips rows with a txHash,
+// and the sweep treats a known hash as already-handled. Result: paid, no
+// voucher — the exact incident class this whole effort exists to kill. This cron
+// backstop reconciles such rows against the chain (idempotent + fail-safe:
+// reconcileRedemptionById only confirms when the receipt actually pays the
+// treasury the right amount from the right sender).
+const STAMPED_RECONCILE_MIN_AGE_MS = 5 * 60 * 1000; // give the webhook time first
+
+export async function reconcileStampedPendingRedemptions(opts?: {
+  limit?: number;
+}): Promise<{ confirmed: number; failed: number; pending: number; ids: string[] }> {
+  const limit = opts?.limit ?? 50;
+  const cutoff = new Date(Date.now() - STAMPED_RECONCILE_MIN_AGE_MS);
+  const rows = await prisma.redemption.findMany({
+    where: { status: "PENDING", txHash: { not: null }, createdAt: { lt: cutoff } },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+  });
+
+  let confirmed = 0;
+  let failed = 0;
+  let pending = 0;
+  const ids: string[] = [];
+  for (const r of rows) {
+    try {
+      const out = await reconcileRedemptionById(r.id);
+      if (out.reconciled) {
+        ids.push(r.id);
+        if (out.status === "CONFIRMED") confirmed += 1;
+        else failed += 1;
+      } else {
+        // not-yet-mined / no-rpc / no-receipt → leave PENDING, retry next run
+        pending += 1;
+      }
+    } catch (err) {
+      console.error(`[reconcile-stamped] ${r.id} failed:`, err);
+      pending += 1;
+    }
+  }
+  return { confirmed, failed, pending, ids };
+}
+
 // A PENDING redemption is considered stale (the user never broadcast a tx)
 // after this window. The user-facing banner escalates to "contact support" at
 // 15 min; 30 min gives ample buffer before we release the slot back to stock.
