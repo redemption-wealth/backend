@@ -27,6 +27,8 @@ describe("requireUser dev-auth bypass", () => {
       privyUserId: "privy_dev_1",
       // email defaults to <id>@dev.local so the email-keyed deposit gate works
       userEmail: "privy_dev_1@dev.local",
+      // wallet is null unless an x-dev-wallet header is supplied
+      walletAddress: null,
     });
   });
 

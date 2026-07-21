@@ -222,6 +222,11 @@ model AppSettings {
   // month must stay at or under this). Same $WEALTH type as Redemption.wealthAmount.
   wpConversionMonthlyBudgetWealth Decimal @default(10000) @db.Decimal(36, 18)
 
+  // Heartbeat: set every time the treasury-inflow sweep completes. GET
+  // /api/cron/health reports its staleness so an external uptime monitor can
+  // alert if the sweep silently stops running (e.g. CRON_SECRET rotated → 401).
+  lastInflowSweepAt DateTime?
+
   updatedAt      DateTime @updatedAt
 
   @@map("app_settings")

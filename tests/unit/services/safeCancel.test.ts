@@ -24,21 +24,21 @@ vi.mock("@/db.js", () => {
 });
 
 import { prisma } from "@/db.js";
-import { safeExpireStalePending } from "@/services/redemption.js";
+import { safeCancelPendingRedemption } from "@/services/redemption.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
 
-const AMOUNT = new Prisma.Decimal("0.1509659771120788");
-const WALLET = "0x404392cfcc5f2ced743066b64c28cc436c58bf34";
+const AMOUNT = new Prisma.Decimal("0.164100960789953904");
+const WALLET = "0x1eb40c679c4922f1a90d341c3788fc362be29cf6";
 const ROW = {
   id: "red1",
   status: "PENDING",
   txHash: null,
-  userEmail: "raka@test.com",
+  userEmail: "rita@test.com",
   walletAddress: WALLET,
   wealthAmount: AMOUNT,
-  createdAt: new Date("2026-07-16T02:40:00Z"),
+  createdAt: new Date("2026-07-17T09:52:00Z"),
 };
 
 const realFetch = globalThis.fetch;
@@ -53,11 +53,19 @@ function mockTransfersResponse(
         transfers: transfers.map((t) => ({
           hash: t.hash,
           rawContract: { value: `0x${t.wei.toString(16)}` },
-          metadata: { blockTimestamp: t.ts ?? "2026-07-16T02:41:00Z" },
+          metadata: { blockTimestamp: t.ts ?? "2026-07-17T09:53:00Z" },
         })),
       },
     }),
   }) as unknown as typeof fetch;
+}
+
+/** releasePendingRedemption(EXPIRED) reads the row twice (pre-check + in-tx). */
+function mockReleaseReads() {
+  return [
+    { status: "PENDING", qrCodes: [] },
+    { status: "PENDING", voucherId: "v1", slotId: "slot1" },
+  ];
 }
 
 beforeEach(() => {
@@ -67,140 +75,115 @@ beforeEach(() => {
   process.env.DEV_WALLET_ADDRESS = "0x1fb56441c55e3730f9f5c43d94a5ff21ecfafe01";
   process.env.WEALTH_CONTRACT_ADDRESS =
     "0xafa702c0a2a3a0cf1bd09435db61c913ccde8546";
-  // Defaults for the release path. release now CLAIMS via updateMany (guarded
-  // where status=PENDING) → default it to a winning claim (count 1).
   db.qrCode.updateMany.mockResolvedValue({ count: 0 });
   db.redemptionSlot.updateMany.mockResolvedValue({ count: 1 });
   db.redemptionSlot.count.mockResolvedValue(14);
   db.voucher.update.mockResolvedValue({});
   db.redemption.update.mockResolvedValue({});
   db.redemption.updateMany.mockResolvedValue({ count: 1 });
+  db.redemption.delete.mockResolvedValue({});
 });
 
 afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-describe("safeExpireStalePending — never destroy on doubt", () => {
-  test("chain says user paid (the 0x0b5f case) → RECOVER, never expire", async () => {
-    const paidTx = "0x" + "0b".repeat(32);
+describe("safeCancelPendingRedemption — never delete, the client's word is not proof", () => {
+  test("the 0x5c18 case: chain shows the payment → RECOVER (adopt + confirm)", async () => {
+    const paidTx = "0x" + "5c".repeat(32);
     db.redemption.findUnique
-      .mockResolvedValueOnce({ ...ROW, slotId: "slot1", voucherId: "v1" }) // load row
+      .mockResolvedValueOnce({ ...ROW }) // load row
       .mockResolvedValueOnce(null); // hash not yet taken
-    mockTransfersResponse([{ hash: paidTx, wei: 150965977112078800n }]);
     // Ambiguity guard: exactly one same-amount pending (this row) → unambiguous.
-    db.redemption.findMany.mockResolvedValue([{ wealthAmount: ROW.wealthAmount }]);
+    db.redemption.findMany.mockResolvedValue([{ wealthAmount: AMOUNT }]);
+    mockTransfersResponse([{ hash: paidTx, wei: 164100960789953904n }]);
     db.redemption.updateMany.mockResolvedValue({ count: 1 }); // adopt hash
-    // confirmRedemption internals:
     db.redemption.findFirst.mockResolvedValue({ id: "red1", voucherId: "v1" });
     db.redemption.findUniqueOrThrow.mockResolvedValue({ id: "red1" });
 
-    const out = await safeExpireStalePending("red1");
+    const out = await safeCancelPendingRedemption("red1");
 
     expect(out).toBe("recovered");
     expect(db.redemption.updateMany).toHaveBeenCalledWith({
       where: { id: "red1", status: "PENDING", txHash: null },
       data: { txHash: paidTx, walletAddress: WALLET },
     });
-    // The release path must NOT have run.
-    expect(db.redemption.update).not.toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: "EXPIRED" }) }),
-    );
     expect(db.redemption.delete).not.toHaveBeenCalled();
   });
 
-  test("RPC down → SKIP, row untouched (fail-safe)", async () => {
+  test("RPC down → KEEP the row PENDING (never destroy on doubt)", async () => {
     db.redemption.findUnique.mockResolvedValueOnce({ ...ROW });
     globalThis.fetch = vi
       .fn()
       .mockRejectedValue(new Error("ECONNREFUSED")) as unknown as typeof fetch;
 
-    const out = await safeExpireStalePending("red1");
+    const out = await safeCancelPendingRedemption("red1");
 
-    expect(out).toBe("skipped");
-    expect(db.redemption.update).not.toHaveBeenCalled();
+    expect(out).toBe("kept");
     expect(db.redemption.delete).not.toHaveBeenCalled();
+    expect(db.redemption.update).not.toHaveBeenCalled();
     expect(db.redemptionSlot.updateMany).not.toHaveBeenCalled();
   });
 
-  test("chain clearly empty → EXPIRE but KEEP the row (slot detached, history preserved)", async () => {
+  test("chain clearly empty → EXPIRE, NEVER delete (row kept as history, slot freed)", async () => {
     db.redemption.findUnique
       .mockResolvedValueOnce({ ...ROW }) // load row
-      .mockResolvedValueOnce({
-        // inside releasePendingRedemption: pre-check
-        status: "PENDING",
-        qrCodes: [],
-      })
-      .mockResolvedValueOnce({
-        // inside tx: re-check
-        status: "PENDING",
-        voucherId: "v1",
-        slotId: "slot1",
-      });
-    mockTransfersResponse([]); // no transfers at all
+      .mockResolvedValueOnce(mockReleaseReads()[0]) // release pre-check
+      .mockResolvedValueOnce(mockReleaseReads()[1]); // release in-tx re-check
+    mockTransfersResponse([]);
 
-    const out = await safeExpireStalePending("red1");
+    const out = await safeCancelPendingRedemption("red1");
 
     expect(out).toBe("expired");
-    // KEEP semantics via a GUARDED claim: updateMany where status=PENDING →
-    // EXPIRED + slotId null. Never delete, never an unguarded update.
+    // KEEP semantics: update to EXPIRED + detach slot — never delete.
     expect(db.redemption.updateMany).toHaveBeenCalledWith({
       where: { id: "red1", status: "PENDING" },
       data: expect.objectContaining({ status: "EXPIRED", slotId: null }),
     });
     expect(db.redemption.delete).not.toHaveBeenCalled();
-    // Slot freed for reuse.
     expect(db.redemptionSlot.updateMany).toHaveBeenCalledWith({
       where: { id: "slot1", status: "REDEEMED" },
       data: { status: "AVAILABLE" },
     });
   });
 
-  test("TOCTOU: a concurrent confirm wins the row → guarded claim (count 0) aborts, QR/slot untouched", async () => {
-    // chain empty → we head to release; but between the read and the claim a
-    // webhook confirm flipped the row to CONFIRMED. The guarded updateMany
-    // (where status=PENDING) then matches 0 rows → we must NOT reset QR or free
-    // the slot (that would clobber the just-confirmed voucher).
+  test("AMBIGUOUS: two same-amount pendings → do NOT adopt, EXPIRE this row (tx goes to queue)", async () => {
+    const paidTx = "0x" + "5c".repeat(32);
     db.redemption.findUnique
-      .mockResolvedValueOnce({ ...ROW }) // load row (still PENDING)
-      .mockResolvedValueOnce({ status: "PENDING", qrCodes: [] }) // release pre-check
-      .mockResolvedValueOnce({
-        status: "PENDING",
-        voucherId: "v1",
-        slotId: "slot1",
-      });
-    mockTransfersResponse([]);
-    db.redemption.updateMany.mockResolvedValue({ count: 0 }); // confirm won the claim
+      .mockResolvedValueOnce({ ...ROW }) // load row
+      .mockResolvedValueOnce(null) // hash not taken
+      .mockResolvedValueOnce(mockReleaseReads()[0])
+      .mockResolvedValueOnce(mockReleaseReads()[1]);
+    // TWO same-amount pending rows → the transfer can't be uniquely attributed.
+    db.redemption.findMany.mockResolvedValue([
+      { wealthAmount: AMOUNT },
+      { wealthAmount: AMOUNT },
+    ]);
+    mockTransfersResponse([{ hash: paidTx, wei: 164100960789953904n }]);
 
-    const out = await safeExpireStalePending("red1");
+    const out = await safeCancelPendingRedemption("red1");
 
-    expect(out).toBe("noop"); // released=false → not expired
-    expect(db.qrCode.updateMany).not.toHaveBeenCalled(); // no QR reset
-    expect(db.redemptionSlot.updateMany).not.toHaveBeenCalled(); // no slot free
+    expect(out).toBe("expired");
+    // Must NOT have adopted the hash onto this row.
+    // must NOT have ADOPTED a hash (release-claim updateMany is allowed).
+    expect(db.redemption.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ txHash: expect.anything() }),
+      }),
+    );
     expect(db.redemption.delete).not.toHaveBeenCalled();
   });
 
-  test("transfer exists but amount differs → not ours, expire (money still caught by webhook net)", async () => {
-    db.redemption.findUnique
-      .mockResolvedValueOnce({ ...ROW })
-      .mockResolvedValueOnce({ status: "PENDING", qrCodes: [] })
-      .mockResolvedValueOnce({ status: "PENDING", voucherId: "v1", slotId: "slot1" });
-    mockTransfersResponse([{ hash: "0x" + "cc".repeat(32), wei: 999n }]);
-
-    const out = await safeExpireStalePending("red1");
-    expect(out).toBe("expired");
-  });
-
-  test("transfer hash already claimed by another redemption → expire this one", async () => {
+  test("matching transfer already claimed by another redemption → EXPIRE this row", async () => {
     const takenTx = "0x" + "dd".repeat(32);
     db.redemption.findUnique
       .mockResolvedValueOnce({ ...ROW }) // load row
       .mockResolvedValueOnce({ id: "other" }) // hash taken
-      .mockResolvedValueOnce({ status: "PENDING", qrCodes: [] })
-      .mockResolvedValueOnce({ status: "PENDING", voucherId: "v1", slotId: "slot1" });
-    mockTransfersResponse([{ hash: takenTx, wei: 150965977112078800n }]);
+      .mockResolvedValueOnce(mockReleaseReads()[0])
+      .mockResolvedValueOnce(mockReleaseReads()[1]);
+    mockTransfersResponse([{ hash: takenTx, wei: 164100960789953904n }]);
 
-    const out = await safeExpireStalePending("red1");
+    const out = await safeCancelPendingRedemption("red1");
     expect(out).toBe("expired");
     // must NOT have ADOPTED a hash (release-claim updateMany is allowed).
     expect(db.redemption.updateMany).not.toHaveBeenCalledWith(
@@ -208,33 +191,43 @@ describe("safeExpireStalePending — never destroy on doubt", () => {
         data: expect.objectContaining({ txHash: expect.anything() }),
       }),
     );
+    expect(db.redemption.delete).not.toHaveBeenCalled();
   });
 
-  test("wallet unknown everywhere → expire is allowed (webhook net is the backstop)", async () => {
+  test("wallet unknown everywhere → EXPIRE (kept as history; webhook/sweep is the backstop)", async () => {
     db.redemption.findUnique
       .mockResolvedValueOnce({ ...ROW, walletAddress: null })
-      .mockResolvedValueOnce({ status: "PENDING", qrCodes: [] })
-      .mockResolvedValueOnce({ status: "PENDING", voucherId: "v1", slotId: "slot1" });
+      .mockResolvedValueOnce(mockReleaseReads()[0])
+      .mockResolvedValueOnce(mockReleaseReads()[1]);
     db.appUser.findFirst.mockResolvedValue(null);
     const fetchSpy = vi.fn();
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
-    const out = await safeExpireStalePending("red1");
+    const out = await safeCancelPendingRedemption("red1");
     expect(out).toBe("expired");
     expect(fetchSpy).not.toHaveBeenCalled(); // nothing to ask the chain about
+    expect(db.redemption.delete).not.toHaveBeenCalled();
+    expect(db.redemption.updateMany).toHaveBeenCalledWith({
+      where: { id: "red1", status: "PENDING" },
+      data: expect.objectContaining({ status: "EXPIRED", slotId: null }),
+    });
   });
 
-  test("row already confirmed/has hash → noop", async () => {
-    db.redemption.findUnique.mockResolvedValueOnce({
-      ...ROW,
-      status: "CONFIRMED",
-    });
-    expect(await safeExpireStalePending("red1")).toBe("noop");
-
+  test("row already has a txHash → noop (on-chain money is never cancel-able)", async () => {
     db.redemption.findUnique.mockResolvedValueOnce({
       ...ROW,
       txHash: "0x" + "ee".repeat(32),
     });
-    expect(await safeExpireStalePending("red1")).toBe("noop");
+    expect(await safeCancelPendingRedemption("red1")).toBe("noop");
+    expect(db.redemption.delete).not.toHaveBeenCalled();
+    expect(db.redemption.update).not.toHaveBeenCalled();
+  });
+
+  test("row not PENDING → noop", async () => {
+    db.redemption.findUnique.mockResolvedValueOnce({
+      ...ROW,
+      status: "CONFIRMED",
+    });
+    expect(await safeCancelPendingRedemption("red1")).toBe("noop");
   });
 });

@@ -12,7 +12,31 @@ export type UserAuth = {
   type: "user";
   userEmail: string;
   privyUserId: string;
+  // Payer wallet resolved SERVER-SIDE from the Privy account — never from a
+  // client-supplied field. Null if the embedded wallet isn't provisioned yet.
+  walletAddress: string | null;
 };
+
+const WALLET_RE = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Extract the user's embedded wallet address from the Privy user object,
+ * server-side. This is the trusted source of wallet↔user ownership — the
+ * client body must never be believed (it could claim someone else's wallet).
+ */
+export function extractPrivyWallet(privyUser: {
+  wallet?: { address?: string };
+  linkedAccounts?: Array<{ type?: string; address?: string }>;
+}): string | null {
+  const candidate =
+    privyUser.wallet?.address ??
+    privyUser.linkedAccounts?.find(
+      (a) => a.type === "wallet" && typeof a.address === "string",
+    )?.address ??
+    null;
+  if (!candidate || !WALLET_RE.test(candidate)) return null;
+  return candidate.toLowerCase();
+}
 
 export type AdminAuth = {
   type: "admin";
@@ -76,10 +100,13 @@ function resolveDevBypassAuth(c: {
   if (!devUserId) return null;
 
   const devEmail = c.req.header("x-dev-user-email") || `${devUserId}@dev.local`;
+  const devWallet = c.req.header("x-dev-wallet");
   return {
     type: "user",
     userEmail: devEmail,
     privyUserId: devUserId,
+    walletAddress:
+      devWallet && WALLET_RE.test(devWallet) ? devWallet.toLowerCase() : null,
   };
 }
 
@@ -128,6 +155,7 @@ export const requireUser = createMiddleware<AuthEnv>(async (c, next) => {
     type: "user",
     userEmail,
     privyUserId: claims.userId,
+    walletAddress: extractPrivyWallet(privyUser),
   };
   c.set("auth", userAuth);
   c.set("userAuth", userAuth);

@@ -5,11 +5,13 @@ import {
   confirmRedemption,
   ensureQrAssigned,
   reconcileRedemptionById,
-  releasePendingRedemption,
+  safeCancelPendingRedemption,
   safeExpireStalePending,
   STALE_PENDING_EXPIRY_MS,
 } from "../services/redemption.js";
 import { generateSignedUrl } from "../services/r2.js";
+import { recordRejectedTreasuryTx } from "../services/transferMatch.js";
+import { waitUntil } from "@vercel/functions";
 
 const redemptions = new Hono<AuthEnv>();
 
@@ -213,30 +215,28 @@ redemptions.post("/:id/reconcile", requireUser, async (c) => {
   });
 });
 
-// POST /api/redemptions/:id/cancel — User: cancel a pre-broadcast pending
-// (e.g. wallet signature failed on insufficient gas) so it leaves no history.
+// POST /api/redemptions/:id/cancel — User: cancel a pre-broadcast pending.
+// NEVER deletes: the client's "nothing was broadcast" claim is evidence, not
+// proof (Privy can throw AFTER submitting — the 2026-07-17 0x5c18 loss). The
+// row is chain-checked and recovered if paid, otherwise marked EXPIRED and
+// KEPT, so a payment that lands after cancel is still recorded by the
+// webhook/sweep and the money is never lost.
 redemptions.post("/:id/cancel", requireUser, async (c) => {
   const id = c.req.param("id");
   const user = c.get("userAuth");
 
   const owned = await prisma.redemption.findFirst({
     where: { id, userEmail: user.userEmail },
-    select: { id: true, status: true, txHash: true },
+    select: { id: true },
   });
   if (!owned) {
     return c.json({ error: "Redemption not found" }, 404);
   }
-  // Only cancel a PENDING redemption that never broadcast a transaction. Once a
-  // txHash exists the transfer is on-chain — leave it for confirm/reconcile.
-  if (owned.status !== "PENDING" || owned.txHash) {
-    return c.json({ ok: false });
-  }
 
-  // Explicit pre-broadcast user cancel: nothing was paid, so this is the ONE
-  // release path that still deletes the row (no clutter in the user's
-  // riwayat). Automated expiry keeps the record instead (see sweep).
-  const released = await releasePendingRedemption(id, { deleteRow: true });
-  return c.json({ ok: released });
+  const outcome = await safeCancelPendingRedemption(id);
+  // "expired" (kept as history) and "recovered" (was actually paid) are both a
+  // successful, non-lossy resolution; "kept" means retry-later (RPC down).
+  return c.json({ ok: outcome === "expired" || outcome === "recovered", outcome });
 });
 
 // PATCH /api/redemptions/:id/submit-tx — User: submit txHash
@@ -268,8 +268,55 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
     return c.json({ error: "Redemption not found" }, 404);
   }
 
+  // Idempotent re-submit of the hash this row already carries (retry bridge,
+  // double flush) — fine regardless of status.
+  if (redemption.txHash === txHash) {
+    return c.json({ redemption });
+  }
+
   if (redemption.status !== "PENDING") {
+    // R5 (round-5) — the row is already terminal (confirmed/expired/failed) but
+    // the submitted hash may still be a real, un-recorded treasury payment the
+    // user just made. Record it through the matcher so it lands in the
+    // review/queue instead of being dropped (consistent with the 409 and
+    // count-0 paths below). The webhook/sweep would usually catch it too, but
+    // don't rely on that alone.
+    waitUntil(
+      recordRejectedTreasuryTx(txHash).catch((err) =>
+        console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
+      ),
+    );
     return c.json({ error: "Redemption is not pending" }, 400);
+  }
+
+  // NEVER overwrite an already-attached hash: the webhook auto-matcher may
+  // have adopted a different on-chain transfer onto this row between broadcast
+  // and this call. Overwriting would orphan that adopted tx — the recorded
+  // money would silently vanish (suspected path of the 2026-07-17 0x5c18
+  // loss). The tx submitted here is still recorded server-side: its own
+  // webhook delivery fails direct confirm and lands in the fallback/queue.
+  if (redemption.txHash) {
+    // The row already carries a different hash (webhook auto-adopted one, or
+    // this is a second payment). Do NOT overwrite — but the rejected hash is a
+    // real on-chain transfer, so record it directly through the matcher instead
+    // of trusting only the webhook (fix: a rejected hash used to be dropped).
+    // waitUntil keeps the serverless instance alive until this finishes — a
+    // bare fire-and-forget promise is frozen after the 409 returns. We use
+    // @vercel/functions' `waitUntil` rather than Hono's `c.executionCtx`: the
+    // entry (api/index.ts) exports the raw Hono app (no hono/vercel adapter),
+    // so `c.executionCtx` THROWS on Vercel's Node runtime and would fall back
+    // to a bare (frozen) promise. `@vercel/functions` is the documented
+    // Vercel-Node way to keep a promise alive after the response — outside
+    // Vercel it degrades to a no-op / runs the promise inline.
+    waitUntil(
+      recordRejectedTreasuryTx(txHash).catch((err) =>
+        console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
+      ),
+    );
+    return c.json(
+      { error: "Redemption is already linked to a different transaction" },
+      409,
+    );
   }
 
   const existingTx = await prisma.redemption.findUnique({ where: { txHash } });
@@ -277,16 +324,43 @@ redemptions.patch("/:id/submit-tx", requireUser, async (c) => {
     return c.json({ error: "txHash already used" }, 400);
   }
 
-  const updated = await prisma.redemption.update({
-    where: { id: redemption.id },
+  // Claim-first write: guard the update on the SAME predicate we read above.
+  // The findFirst..status check is a TOCTOU — between it and here a parallel
+  // GET can lazy-expire this row (safeExpireStalePending), or a racing submit
+  // can stamp it. A bare `update where {id}` would then write txHash onto a
+  // non-PENDING row, and confirmRedemption only matches {txHash, status:PENDING}
+  // — the money would be recorded on-chain but never confirm the voucher (the
+  // silent-loss class this PR exists to kill). Scope the write to PENDING+null
+  // and act on the row count.
+  const claim = await prisma.redemption.updateMany({
+    where: { id: redemption.id, status: "PENDING", txHash: null },
     data: { txHash },
+  });
+  if (claim.count === 0) {
+    // Row was expired/claimed between the read and here. The tx is a real
+    // on-chain transfer, so record it through the matcher (never drop it) and
+    // let the webhook/queue resolve it — same recovery path as the 409 above.
+    waitUntil(
+      recordRejectedTreasuryTx(txHash).catch((err) =>
+        console.error("[submit-tx] recordRejectedTreasuryTx failed:", err),
+      ),
+    );
+    return c.json({ error: "Redemption is no longer pending" }, 409);
+  }
+  const updated = await prisma.redemption.findUniqueOrThrow({
+    where: { id: redemption.id },
   });
 
   // LOCAL DEMO ONLY (gated by env, never on in prod): confirm immediately so the
   // local backend (new multi-format code) assigns the asset before the production
   // webhook (old code) can render a QR. Lets a full create→redeem demo show the
   // real barcode/code. Safe to leave off — defaults to disabled.
-  if (process.env.DEMO_INSTANT_CONFIRM === "true") {
+  // R6 (round-5) — hard-gate to non-production so a stray env var can NEVER turn
+  // this unconditional-confirm bypass on against real money.
+  if (
+    process.env.DEMO_INSTANT_CONFIRM === "true" &&
+    process.env.NODE_ENV !== "production"
+  ) {
     try {
       await confirmRedemption(txHash);
     } catch (err) {

@@ -48,7 +48,12 @@ quests.post("/sync", requireUser, async (c) => {
     {
       privyUserId: user.privyUserId,
       userEmail: user.userEmail,
-      walletAddress: parsed.data.walletAddress ?? null,
+      // Server-derived wallet ONLY — the body's walletAddress is ignored. This
+      // value becomes the redemption's `expectedFrom` for the reconcile sender
+      // check; trusting the client body here would let an attacker poison
+      // app_users.walletAddress with a victim's address and defeat it (round-5
+      // R2). Mirrors the sibling `user-sync` hardening in auth.ts.
+      walletAddress: user.walletAddress,
     },
     parsed.data.referralCode ?? null
   );

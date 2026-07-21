@@ -118,14 +118,19 @@ vouchers.post("/:id/redeem", requireUser, async (c) => {
       userEmail: user.userEmail,
       voucherId,
       idempotencyKey,
+      // Trusted wallet from the Privy account (server-side) — captured on the
+      // row so the webhook/sweep can attribute the payment without relying on
+      // the (spoofable, often-empty) app_users table.
+      walletAddress: user.walletAddress,
     });
 
-    if (alreadyExists) {
-      return c.json({ redemption, alreadyExists: true });
-    }
-
+    // txDetails ships on EVERY success response — an alreadyExists row that
+    // still needs its signature (double-click reuse, idempotent replay) is
+    // signed by the app using these very fields; omitting them stranded the
+    // flow at "Treasury wallet tidak tersedia".
     return c.json({
       redemption,
+      ...(alreadyExists ? { alreadyExists: true } : {}),
       txDetails: {
         tokenContractAddress: process.env.WEALTH_CONTRACT_ADDRESS,
         treasuryWalletAddress: process.env.DEV_WALLET_ADDRESS,
