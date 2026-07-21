@@ -321,24 +321,39 @@ const RECONCILE_TRANSFER_TOPIC =
 
 /**
  * A successful tx receipt is NOT proof of payment. Verify the receipt actually
- * contains a $WEALTH transfer INTO the treasury for `expectedAmount` — exactly
- * what the webhook validates. Without this, a user could submit ANY successful
- * txHash (someone else's transfer, any unrelated success) and reconcile would
- * confirm it → a free voucher (C1).
+ * contains a $WEALTH transfer INTO the treasury for `expectedAmount` FROM the
+ * expected payer — exactly what the webhook validates. Without this, a user
+ * could submit ANY successful txHash (someone else's transfer, any unrelated
+ * success) and reconcile would confirm it → a free voucher (C1).
+ *
+ * `expectedFrom` (round-3 #1): the payer wallet captured on the redemption row
+ * at initiate. When set, the matching transfer's SENDER must equal it — this
+ * stops an attacker from claiming SOMEONE ELSE'S unclaimed legitimate txHash
+ * against their own near-identical PENDING row (theft). When null (legacy rows
+ * created before wallet capture), the FROM check is SKIPPED so a real payment
+ * is never false-negatived; token/treasury/amount are still enforced.
  */
 function receiptPaysTreasury(
   receipt: { logs: ReadonlyArray<{ address: string; topics: string[]; data: string }> },
   expectedAmount: Prisma.Decimal,
+  expectedFrom: string | null,
 ): boolean {
   const treasury = process.env.DEV_WALLET_ADDRESS?.toLowerCase();
   const wealth = process.env.WEALTH_CONTRACT_ADDRESS?.toLowerCase();
   if (!treasury || !wealth) return false;
+  const expectedPayer = expectedFrom ? expectedFrom.toLowerCase() : null;
   for (const log of receipt.logs) {
     if (log.address.toLowerCase() !== wealth) continue;
     if (log.topics[0] !== RECONCILE_TRANSFER_TOPIC || log.topics.length < 3)
       continue;
     const to = `0x${log.topics[2]!.slice(-40)}`.toLowerCase();
     if (to !== treasury) continue;
+    // Verify the SENDER when we know who should have paid. topics[1] is the
+    // indexed `from` (32-byte word); the address is its low 20 bytes.
+    if (expectedPayer) {
+      const from = `0x${log.topics[1]!.slice(-40)}`.toLowerCase();
+      if (from !== expectedPayer) continue;
+    }
     const amount = new Prisma.Decimal(BigInt(log.data).toString()).div(
       new Prisma.Decimal(10).pow(18),
     );
@@ -352,7 +367,13 @@ export async function reconcileRedemptionById(
 ): Promise<ReconcileOutcome> {
   const redemption = await prisma.redemption.findUnique({
     where: { id: redemptionId },
-    select: { id: true, status: true, txHash: true, wealthAmount: true },
+    select: {
+      id: true,
+      status: true,
+      txHash: true,
+      wealthAmount: true,
+      walletAddress: true,
+    },
   });
 
   if (!redemption) throw new Error("Redemption not found");
@@ -375,7 +396,13 @@ export async function reconcileRedemptionById(
     if (receipt.status === "success") {
       // Only confirm if the receipt ACTUALLY pays the treasury the right amount
       // of $WEALTH — a bare "success" is not proof (C1 free-voucher fix).
-      if (!receiptPaysTreasury(receipt, redemption.wealthAmount)) {
+      if (
+        !receiptPaysTreasury(
+          receipt,
+          redemption.wealthAmount,
+          redemption.walletAddress,
+        )
+      ) {
         console.warn(
           `[reconcile] tx ${redemption.txHash} succeeded but is NOT a $WEALTH→treasury payment of ${redemption.wealthAmount.toString()} — refusing to confirm ${redemption.id}`,
         );

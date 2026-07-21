@@ -129,3 +129,121 @@ describe("reconcileRedemptionById — a bare success is NOT proof of payment (C1
     expect(out).toEqual({ reconciled: false, reason: "not-a-payment" });
   });
 });
+
+describe("reconcileRedemptionById — verify the SENDER (round-3 #1)", () => {
+  test("EXPLOIT: row has walletAddress, receipt FROM a DIFFERENT wallet → REFUSED", async () => {
+    // Attacker submits SOMEONE ELSE's legit txHash (correct token/treasury/amount
+    // but the transfer's `from` is the real payer, not the attacker's wallet).
+    db.redemption.findUnique.mockResolvedValue({
+      id: "red1",
+      status: "PENDING",
+      txHash: TX,
+      wealthAmount: AMOUNT,
+      walletAddress: "0x" + "88".repeat(20), // the attacker's own wallet
+    });
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [transferLog({})], // from = PAYER, not the attacker
+    });
+    const out = await reconcileRedemptionById("red1");
+    expect(out).toEqual({ reconciled: false, reason: "not-a-payment" });
+    expect(db.redemption.updateMany).not.toHaveBeenCalled();
+  });
+
+  test("row walletAddress matches the transfer FROM (case-insensitive) → CONFIRMED", async () => {
+    db.redemption.findUnique.mockResolvedValue({
+      id: "red1",
+      status: "PENDING",
+      txHash: TX,
+      wealthAmount: AMOUNT,
+      walletAddress: PAYER.toUpperCase(), // stored differently-cased on purpose
+    });
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [transferLog({})], // from = PAYER
+    });
+    const out = await reconcileRedemptionById("red1");
+    expect(out).toEqual({ reconciled: true, status: "CONFIRMED" });
+  });
+
+  test("legacy row (walletAddress null) with a valid transfer → CONFIRMED (FROM check skipped)", async () => {
+    db.redemption.findUnique.mockResolvedValue({
+      id: "red1",
+      status: "PENDING",
+      txHash: TX,
+      wealthAmount: AMOUNT,
+      walletAddress: null, // created before wallet capture
+    });
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [transferLog({})],
+    });
+    const out = await reconcileRedemptionById("red1");
+    expect(out).toEqual({ reconciled: true, status: "CONFIRMED" });
+  });
+
+  test("$WEALTH→treasury transfer is NOT logs[0] (batched tx) → still found + CONFIRMED", async () => {
+    db.redemption.findUnique.mockResolvedValue({
+      id: "red1",
+      status: "PENDING",
+      txHash: TX,
+      wealthAmount: AMOUNT,
+      walletAddress: PAYER,
+    });
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [
+        transferLog({ token: "0x" + "12".repeat(20) }), // unrelated token first
+        transferLog({ to: "0x" + "99".repeat(20) }), // right token, wrong dest
+        transferLog({}), // the real payment, buried
+      ],
+    });
+    const out = await reconcileRedemptionById("red1");
+    expect(out).toEqual({ reconciled: true, status: "CONFIRMED" });
+  });
+});
+
+describe("reconcileRedemptionById — fail-closed on missing env", () => {
+  test("DEV_WALLET_ADDRESS unset → REFUSED, never confirms", async () => {
+    delete process.env.DEV_WALLET_ADDRESS;
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [transferLog({})],
+    });
+    const out = await reconcileRedemptionById("red1");
+    expect(out).toEqual({ reconciled: false, reason: "not-a-payment" });
+    expect(db.redemption.updateMany).not.toHaveBeenCalled();
+  });
+
+  test("WEALTH_CONTRACT_ADDRESS unset → REFUSED, never confirms", async () => {
+    delete process.env.WEALTH_CONTRACT_ADDRESS;
+    getTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: [transferLog({})],
+    });
+    const out = await reconcileRedemptionById("red1");
+    expect(out).toEqual({ reconciled: false, reason: "not-a-payment" });
+    expect(db.redemption.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("reconcileRedemptionById — reverted receipt", () => {
+  test("status reverted → FAILED (releasePendingRedemption path)", async () => {
+    db.redemption.findUnique.mockResolvedValue({
+      id: "red1",
+      status: "PENDING",
+      txHash: TX,
+      wealthAmount: AMOUNT,
+      walletAddress: PAYER,
+      voucherId: "v1",
+      slotId: null,
+      qrCodes: [],
+    });
+    getTransactionReceipt.mockResolvedValue({
+      status: "reverted",
+      logs: [],
+    });
+    const out = await reconcileRedemptionById("red1");
+    expect(out).toEqual({ reconciled: true, status: "FAILED" });
+  });
+});
