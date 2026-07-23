@@ -354,6 +354,11 @@ model AppUser {
   // Manual fraud-review label (see WpFraudReviewStatus). Operational only — does
   // NOT gate earning/spending. Set by managers from the WP Fraud tab.
   fraudReviewStatus WpFraudReviewStatus @default(NONE)
+  // Referral commission rate in basis points (1000 = 10%). Set per-user by a
+  // manager in the back-office; KOLs get a higher rate. Applied in real time to
+  // the WP a referee earns from quests (see services/referral.ts). A FLAGGED
+  // referrer earns no referral bonus.
+  referralRateBps Int @default(1000)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

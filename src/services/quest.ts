@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
 import { wibDateString } from "../lib/time.js";
 import { creditWithTx, getBalance, WpCapExceededError } from "./wp.js";
+import { creditReferrerForQuest } from "./referral.js";
 import { isUniqueViolation } from "../lib/prisma-errors.js";
 
 // Quest engine: daily check-in streak, honor-based task claims, and the
@@ -94,7 +95,10 @@ export interface ClaimResult {
   alreadyClaimed: boolean;
   reward: number;
   base?: number;
+  /** The claimer's own deposited self-bonus (+10%), not a referrer credit. */
   referralBonus?: number;
+  /** WP minted to this user's referrer from this claim (0 if none). */
+  referrerCredited?: number;
 }
 
 /**
@@ -124,18 +128,17 @@ export async function claimTask(
     });
     if (done) return { alreadyClaimed: true, reward: 0 };
 
-    await tx.questCompletion.create({
+    const completion = await tx.questCompletion.create({
       data: { appUserId, questId: quest.id, periodKey },
+      select: { id: true },
     });
 
     const user = await tx.appUser.findUnique({
       where: { id: appUserId },
-      select: { hasDeposited: true },
+      select: { hasDeposited: true, referredById: true },
     });
-    const referralBonus = user?.hasDeposited
-      ? Math.floor(quest.rewardWp * 0.1)
-      : 0;
-    const total = quest.rewardWp + referralBonus;
+    const selfBonus = user?.hasDeposited ? Math.floor(quest.rewardWp * 0.1) : 0;
+    const total = quest.rewardWp + selfBonus;
 
     await creditWithTx(tx, {
       appUserId,
@@ -146,11 +149,22 @@ export async function claimTask(
       note: quest.title,
     });
 
+    // Real-time referral: credit this user's referrer a % of the quest's base
+    // reward (minted on top, best-effort — never fails this claim). See referral.ts.
+    const referrerCredited = await creditReferrerForQuest(tx, {
+      refereeId: appUserId,
+      refereeReferredById: user?.referredById ?? null,
+      refereeHasDeposited: user?.hasDeposited ?? false,
+      basisWp: quest.rewardWp,
+      sourceRefId: completion.id,
+    });
+
     return {
       alreadyClaimed: false,
       reward: total,
       base: quest.rewardWp,
-      referralBonus,
+      referralBonus: selfBonus,
+      referrerCredited,
     };
   });
 }

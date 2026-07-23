@@ -155,6 +155,8 @@ describe("claimTask", () => {
       reward: 20,
       base: 20,
       referralBonus: 0,
+      // No referrer on this user → no referral credit.
+      referrerCredited: 0,
     });
     expect(db.questCompletion.create).toHaveBeenCalledTimes(1);
     expect(db.wpLedger.create.mock.calls[0][0].data.amount).toBe(20);
