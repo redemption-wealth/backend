@@ -52,6 +52,11 @@ export const fraudReviewSchema = z.object({
   status: z.enum(["NONE", "REVIEWING", "CLEARED", "FLAGGED"]),
 });
 
+// Referral commission rate in basis points (0..10000 = 0%..100%). 1000 = 10%.
+export const referralRateSchema = z.object({
+  referralRateBps: z.coerce.number().int().min(0).max(10000),
+});
+
 // Manual WP grant/clawback. Non-zero; sign is the direction.
 export const wpAdjustSchema = z.object({
   amount: z.coerce.number().int().refine((n) => n !== 0, "Amount tidak boleh 0"),

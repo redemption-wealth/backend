@@ -91,6 +91,7 @@ export async function listAppUsers(q: AppUserListQuery = {}) {
         email: true,
         walletAddress: true,
         referralCode: true,
+        referralRateBps: true,
         hasDeposited: true,
         createdAt: true,
         _count: { select: { referrals: true } },
@@ -135,6 +136,7 @@ export async function listAppUsers(q: AppUserListQuery = {}) {
         email: u.email,
         walletAddress: u.walletAddress,
         referralCode: u.referralCode,
+        referralRateBps: u.referralRateBps,
         hasDeposited: u.hasDeposited,
         createdAt: u.createdAt,
         referrals: u._count.referrals,
@@ -156,6 +158,7 @@ export async function getAppUserDetail(id: string) {
       email: true,
       walletAddress: true,
       referralCode: true,
+      referralRateBps: true,
       referredById: true,
       hasDeposited: true,
       qualifiedAt: true,
@@ -369,4 +372,26 @@ export async function setFraudReviewStatus(
     select: { id: true, fraudReviewStatus: true },
   });
   return { appUserId: updated.id, fraudReviewStatus: updated.fraudReviewStatus };
+}
+
+/**
+ * Set an AppUser's referral commission rate (basis points, 0..10000). Managers
+ * raise KOLs here. Returns null if the user isn't found.
+ */
+export async function setReferralRate(
+  appUserId: string,
+  referralRateBps: number
+): Promise<{ appUserId: string; referralRateBps: number } | null> {
+  const exists = await prisma.appUser.findUnique({
+    where: { id: appUserId },
+    select: { id: true },
+  });
+  if (!exists) return null;
+
+  const updated = await prisma.appUser.update({
+    where: { id: appUserId },
+    data: { referralRateBps },
+    select: { id: true, referralRateBps: true },
+  });
+  return { appUserId: updated.id, referralRateBps: updated.referralRateBps };
 }

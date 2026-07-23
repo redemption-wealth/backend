@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { requireManager, type AuthEnv } from "../../middleware/auth.js";
-import { wpAdjustSchema } from "../../schemas/wp-admin.js";
-import { listAppUsers, getAppUserDetail } from "../../services/wpAdmin.js";
+import { wpAdjustSchema, referralRateSchema } from "../../schemas/wp-admin.js";
+import { listAppUsers, getAppUserDetail, setReferralRate } from "../../services/wpAdmin.js";
 import { adminAdjust } from "../../services/wp.js";
 
 const adminAppUsers = new Hono<AuthEnv>();
@@ -34,6 +34,18 @@ adminAppUsers.post("/:id/wp-adjust", async (c) => {
     ? `${parsed.data.note} (by ${admin.email})`
     : `Adjust by ${admin.email}`;
   const result = await adminAdjust(c.req.param("id"), parsed.data.amount, note);
+  return c.json(result);
+});
+
+// PATCH /api/admin/app-users/:id/referral-rate — set the user's referral % (bps).
+// Managers raise KOLs here. Applied in real time to the user's referees' quest claims.
+adminAppUsers.patch("/:id/referral-rate", async (c) => {
+  const parsed = referralRateSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) {
+    return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
+  }
+  const result = await setReferralRate(c.req.param("id"), parsed.data.referralRateBps);
+  if (!result) return c.json({ error: "User tidak ditemukan" }, 404);
   return c.json(result);
 });
 
