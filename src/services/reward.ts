@@ -1,6 +1,10 @@
 import { prisma } from "../db.js";
 import { spendWithTx, creditWithTx } from "./wp.js";
 import { evaluateMilestoneQuests } from "./quest.js";
+import { EVM_ADDRESS_REGEX, type RedeemRewardInput } from "../schemas/wp.js";
+
+// Reward categories that require a physical shipping address at redeem time.
+const PHYSICAL_CATEGORIES = new Set(["MERCH", "SEMBAKO"]);
 
 // WP reward catalog + redemption. Redeeming is gated on the anti-bot rule:
 // only users who have actually deposited $WEALTH (hasDeposited) may spend WP on
@@ -39,6 +43,77 @@ export class OutOfStockError extends Error {
     super("Stok reward habis");
     this.name = "OutOfStockError";
   }
+}
+
+/** Reward's campaign window has closed (expiresAt in the past). Maps to 409. */
+export class RewardExpiredError extends Error {
+  constructor() {
+    super("Reward sudah kedaluwarsa");
+    this.name = "RewardExpiredError";
+  }
+}
+
+/**
+ * Physical reward (MERCH/SEMBAKO) redeemed without a complete shipping payload
+ * (recipientName + recipientPhone + shippingAddress). Maps to 400.
+ */
+export class ShippingRequiredError extends Error {
+  constructor() {
+    super("Alamat pengiriman wajib diisi (nama, telepon, alamat)");
+    this.name = "ShippingRequiredError";
+  }
+}
+
+/**
+ * CRYPTO reward redeemed without a valid EVM payout wallet (empty / non-0x /
+ * wrong length). Maps to 400.
+ */
+export class WalletAddressRequiredError extends Error {
+  constructor() {
+    super("Alamat wallet tujuan tidak valid");
+    this.name = "WalletAddressRequiredError";
+  }
+}
+
+/**
+ * Validate + narrow the category-specific fulfilment capture for a redeem.
+ * Physical rewards (MERCH/SEMBAKO) need a complete shipping address; CRYPTO
+ * rewards need a valid EVM wallet. Fields not relevant to the category are
+ * dropped (never persisted). Throws a 400-mapped domain error on a missing/
+ * invalid required field. Captured fields are write-once at redeem (no update path).
+ */
+function resolveFulfilment(
+  category: string,
+  input: RedeemRewardInput | undefined
+): {
+  recipientName: string | null;
+  recipientPhone: string | null;
+  shippingAddress: string | null;
+  walletAddress: string | null;
+} {
+  const empty = {
+    recipientName: null,
+    recipientPhone: null,
+    shippingAddress: null,
+    walletAddress: null,
+  };
+
+  if (PHYSICAL_CATEGORIES.has(category)) {
+    const name = input?.recipientName?.trim();
+    const phone = input?.recipientPhone?.trim();
+    const address = input?.shippingAddress?.trim();
+    if (!name || !phone || !address) throw new ShippingRequiredError();
+    return { ...empty, recipientName: name, recipientPhone: phone, shippingAddress: address };
+  }
+
+  if (category === "CRYPTO") {
+    const wallet = input?.walletAddress?.trim();
+    if (!wallet || !EVM_ADDRESS_REGEX.test(wallet)) throw new WalletAddressRequiredError();
+    return { ...empty, walletAddress: wallet };
+  }
+
+  // VOUCHER (and any other category): no fulfilment capture.
+  return empty;
 }
 
 /**
@@ -80,7 +155,11 @@ export async function listRewards() {
  *            fulfillmentNote (empty pool → OutOfStockError, no WP is spent).
  *   MANUAL → decrement `stock` and create a PENDING redemption for an admin.
  */
-export async function redeemReward(appUserId: string, rewardId: string) {
+export async function redeemReward(
+  appUserId: string,
+  rewardId: string,
+  fulfilment?: RedeemRewardInput
+) {
   const redemption = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`reward:${rewardId}`}))`;
 
@@ -96,6 +175,13 @@ export async function redeemReward(appUserId: string, rewardId: string) {
 
     const reward = await tx.wpReward.findUnique({ where: { id: rewardId } });
     if (!reward || !reward.isActive) throw new RewardNotAvailableError(rewardId);
+    // Expiry gate (all models): a time-boxed reward past its window is closed.
+    if (reward.expiresAt && reward.expiresAt.getTime() < Date.now())
+      throw new RewardExpiredError();
+
+    // Validate + narrow the category-specific fulfilment capture (shipping for
+    // MERCH/SEMBAKO, EVM wallet for CRYPTO) BEFORE reserving stock or debiting WP.
+    const capture = resolveFulfilment(reward.category, fulfilment);
 
     const isAuto = reward.fulfillmentType === "AUTO";
 
@@ -131,6 +217,7 @@ export async function redeemReward(appUserId: string, rewardId: string) {
           status: "FULFILLED",
           fulfilledBy: "auto",
           fulfillmentNote: asset.value,
+          ...capture,
         },
       });
       // Claim the asset. The per-reward advisory lock already serializes redeems,
@@ -156,6 +243,7 @@ export async function redeemReward(appUserId: string, rewardId: string) {
         rewardId: reward.id,
         wpSpent: reward.wpCost,
         status: "PENDING",
+        ...capture,
       },
     });
   });
@@ -266,7 +354,8 @@ export async function listWpRedemptions(q: RedemptionListQuery = {}) {
 export async function fulfillRedemption(
   id: string,
   adminEmail: string,
-  fulfillmentNote?: string
+  fulfillmentNote?: string,
+  payoutTxHash?: string
 ) {
   const redemption = await prisma.$transaction(async (tx) => {
     const r = await tx.wpRedemption.findUnique({ where: { id } });
@@ -278,6 +367,8 @@ export async function fulfillRedemption(
         status: "FULFILLED",
         fulfilledBy: adminEmail,
         fulfillmentNote: fulfillmentNote ?? r.fulfillmentNote,
+        // CRYPTO campaign: record the manual on-chain payout tx hash if given.
+        payoutTxHash: payoutTxHash ?? r.payoutTxHash,
       },
     });
   });

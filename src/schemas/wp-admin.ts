@@ -22,20 +22,46 @@ export const updateQuestSchema = createQuestSchema
   .partial()
   .extend({ isActive: z.boolean().optional() });
 
-export const createRewardSchema = z.object({
+const rewardBase = z.object({
   title: z.string().min(2).max(200),
-  category: z.enum(["VOUCHER", "MERCH", "SEMBAKO"]),
+  category: z.enum(["VOUCHER", "MERCH", "SEMBAKO", "CRYPTO"]),
   partnerName: z.string().max(200).optional(),
   wpCost: z.coerce.number().int().min(1),
   stock: z.coerce.number().int().min(0).nullable().optional(),
   imageUrl: urlOrEmpty,
   // AUTO = fulfilled instantly from the asset pool; MANUAL = admin ships/fulfils.
   fulfillmentType: z.enum(["AUTO", "MANUAL"]).default("MANUAL"),
+  // CRYPTO campaign fields. Optional at the object level; REQUIRED when
+  // category === "CRYPTO" (enforced by requireCryptoFields below).
+  cryptoAsset: z.string().trim().min(1).max(50).optional(),
+  cryptoAmount: z.string().trim().min(1).max(100).optional(),
+  // Accept an ISO date string and coerce to Date. Nullable so an update can
+  // clear it on a non-crypto reward.
+  expiresAt: z.coerce.date().nullable().optional(),
 });
 
-export const updateRewardSchema = createRewardSchema
+// When a payload sets category to CRYPTO it must carry the three campaign
+// fields. On updates that don't touch category this is a no-op (category
+// undefined), so editing an existing CRYPTO reward's title alone still works.
+function requireCryptoFields(
+  v: { category?: string; cryptoAsset?: string; cryptoAmount?: string; expiresAt?: Date | null },
+  ctx: z.RefinementCtx,
+) {
+  if (v.category !== "CRYPTO") return;
+  if (!v.cryptoAsset)
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["cryptoAsset"], message: "Wajib untuk reward CRYPTO" });
+  if (!v.cryptoAmount)
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["cryptoAmount"], message: "Wajib untuk reward CRYPTO" });
+  if (!v.expiresAt)
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["expiresAt"], message: "Wajib untuk reward CRYPTO" });
+}
+
+export const createRewardSchema = rewardBase.superRefine(requireCryptoFields);
+
+export const updateRewardSchema = rewardBase
   .partial()
-  .extend({ isActive: z.boolean().optional() });
+  .extend({ isActive: z.boolean().optional() })
+  .superRefine(requireCryptoFields);
 
 // Bulk-add pool assets to an AUTO reward. `values` is the pasted list of codes /
 // links / image URLs / QR payloads (one per line on the client).
@@ -69,6 +95,9 @@ export const redemptionStatusSchema = z.object({
   note: z.string().max(300).optional(),
   // User-visible fulfillment note (voucher code / shipping note) on FULFILLED.
   fulfillmentNote: z.string().max(500).optional(),
+  // CRYPTO campaign: the on-chain payout tx hash the admin records on FULFILLED
+  // after sending the crypto manually. Recorded on the redemption, not sent.
+  payoutTxHash: z.string().trim().max(120).optional(),
 });
 
 // WP settings cockpit. Wave 1 exposed the monthly issuance cap; Wave 2 adds the

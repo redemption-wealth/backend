@@ -32,7 +32,12 @@ adminWpRedemptions.patch("/:id", async (c) => {
   try {
     const redemption =
       parsed.data.status === "FULFILLED"
-        ? await fulfillRedemption(id, admin.email, parsed.data.fulfillmentNote)
+        ? await fulfillRedemption(
+            id,
+            admin.email,
+            parsed.data.fulfillmentNote,
+            parsed.data.payoutTxHash,
+          )
         : await rejectRedemption(id, admin.email, parsed.data.note);
     return c.json({ redemption });
   } catch (e) {
