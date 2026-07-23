@@ -19,6 +19,10 @@
 ALTER TABLE public.app_users
   ADD COLUMN IF NOT EXISTS "referralRateBps" integer NOT NULL DEFAULT 1000;
 
+-- Backs the referral idempotency lookup (referrer, refType, source refId).
+CREATE INDEX IF NOT EXISTS "wp_ledger_appUserId_refType_refId_idx"
+  ON public.wp_ledger ("appUserId", "refType", "refId");
+
 -- ── Phase 2: Use WP (physical goods + crypto campaign + expiry) ──────────────
 -- Physical-goods shipping capture + crypto payout capture on redemptions.
 ALTER TABLE public.wp_redemptions

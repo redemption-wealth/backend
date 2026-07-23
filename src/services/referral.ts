@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { creditWithTx, WpCapExceededError } from "./wp.js";
+import { isUniqueViolation } from "../lib/prisma-errors.js";
 
 // Default referral commission rate (basis points) when a referrer has no custom
 // rate set. 1000 bps = 10%. Managers raise KOLs in the back-office.
@@ -40,6 +41,9 @@ export async function creditReferrerForQuest(
 ): Promise<number> {
   const { refereeReferredById, refereeHasDeposited, basisWp, sourceRefId } = input;
   if (!refereeReferredById || !refereeHasDeposited) return 0;
+  // Defense-in-depth: never let a user be their own referrer (self-referral is
+  // also blocked at set-time in applyReferralCode, but guard the credit path too).
+  if (refereeReferredById === input.refereeId) return 0;
 
   const referrer = await tx.appUser.findUnique({
     where: { id: refereeReferredById },
@@ -70,6 +74,8 @@ export async function creditReferrerForQuest(
   } catch (e) {
     // Cap reached → the referrer bonus lapses; must NOT fail the referee's claim.
     if (e instanceof WpCapExceededError) return 0;
+    // Raced a concurrent duplicate for this source completion → exactly-once no-op.
+    if (isUniqueViolation(e)) return 0;
     throw e;
   }
   return amount;

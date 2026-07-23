@@ -122,6 +122,22 @@ describe("referral percentage on quest claim", () => {
     expect(await balanceOf(referee.id)).toBe(100);
   });
 
+  it("credits nothing on a self-referral (defense-in-depth)", async () => {
+    const user = await createUser({ hasDeposited: true });
+    // Force the pathological state where a user is their own referrer.
+    await testPrisma.appUser.update({
+      where: { id: user.id },
+      data: { referredById: user.id },
+    });
+    const quest = await createQuest(100);
+
+    await claimTask(user.id, quest.key);
+
+    // Only the user's own TASK credit — no self-paid referral bonus.
+    expect(await testPrisma.wpLedger.count({ where: { refType: "referral_quest" } })).toBe(0);
+    expect(await balanceOf(user.id)).toBe(110);
+  });
+
   it("credits nothing when the referrer is fraud-flagged", async () => {
     const flagged = await createUser({ flagged: true });
     const referee = await createUser({ hasDeposited: true, referredById: flagged.id });

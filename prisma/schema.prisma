@@ -388,6 +388,8 @@ model WpLedger {
 
   @@index([appUserId, createdAt])
   @@index([type, createdAt])
+  // Backs the referral idempotency lookup by (referrer, refType, source refId).
+  @@index([appUserId, refType, refId])
   @@map("wp_ledger")
 }
 

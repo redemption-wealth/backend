@@ -214,10 +214,15 @@ export async function applyReferralCode(appUserId: string, rawCode: string) {
   if (referrerId === appUserId)
     throw new ReferralCodeError("Tidak bisa memakai kode referral sendiri");
 
-  await prisma.appUser.update({
-    where: { id: appUserId },
+  // Atomic set-once: only writes if the user still has no referrer and hasn't
+  // deposited. Closes the read-then-write race (two concurrent applies, or an
+  // apply racing qualification) — a losing writer is a no-op, not a silent overwrite.
+  const res = await prisma.appUser.updateMany({
+    where: { id: appUserId, referredById: null, hasDeposited: false },
     data: { referredById: referrerId },
   });
+  if (res.count === 0)
+    throw new ReferralCodeError("Kode referral sudah tidak bisa dipakai");
   return getReferralInfo(appUserId);
 }
 
