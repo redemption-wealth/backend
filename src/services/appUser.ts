@@ -15,13 +15,34 @@ import { uniqueViolationOn } from "../lib/prisma-errors.js";
 const REFERRAL_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const REFERRAL_CODE_LEN = 8;
 
-export function generateReferralCode(len = REFERRAL_CODE_LEN): string {
+function randomChars(len: number): string {
   const bytes = randomBytes(len);
   let out = "";
   for (let i = 0; i < len; i++) {
     out += REFERRAL_ALPHABET[bytes[i]! % REFERRAL_ALPHABET.length];
   }
   return out;
+}
+
+// Length of the random suffix appended after a vanity (name) prefix.
+const REFERRAL_SUFFIX_LEN = 4;
+
+/**
+ * Generate a referral code. When a `seed` (name or email) is supplied we build a
+ * vanity code — an uppercased letter prefix from the seed + a random suffix, e.g.
+ * "WISNU7K3M" — which is more memorable/shareable (the pattern Airbnb, Poshmark,
+ * etc. use) while the suffix still guarantees uniqueness. Seeds with no usable
+ * letters (or none supplied) fall back to a pure-random code. Codes are matched
+ * case-insensitively (resolveReferrerId uppercases), so we always emit uppercase.
+ */
+export function generateReferralCode(seed?: string): string {
+  const prefix = (seed ?? "")
+    .split("@")[0]! // drop the email domain if an email was passed
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "") // letters only; keeps names readable
+    .slice(0, 6);
+  if (prefix.length >= 2) return prefix + randomChars(REFERRAL_SUFFIX_LEN);
+  return randomChars(REFERRAL_CODE_LEN);
 }
 
 export interface SyncAppUserInput {
@@ -235,7 +256,8 @@ async function createAppUserWithUniqueCode(data: CreateAppUserData) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       return await prisma.appUser.create({
-        data: { ...data, referralCode: generateReferralCode() },
+        // Seed the vanity prefix from the email local-part (no name at signup).
+        data: { ...data, referralCode: generateReferralCode(data.email) },
       });
     } catch (e) {
       // Robust across Prisma versions: reads both meta.target and the PrismaPg
