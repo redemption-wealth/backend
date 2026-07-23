@@ -303,6 +303,12 @@ model QrCode {
 model Redemption {
   id                     String           @id @default(cuid())
   userEmail              String
+  // The AppUser (Privy identity) that made this redemption. Set at creation from
+  // the authenticated account, so qualification (hasDeposited) is tied to the
+  // specific account — NOT the shared, non-unique email (a Privy email can map to
+  // many accounts, so an email-keyed gate is sybil-able). Nullable for legacy rows.
+  appUserId              String?
+  appUser                AppUser?         @relation("AppUserRedemptions", fields: [appUserId], references: [id], onDelete: SetNull)
   voucherId              String
   voucher                Voucher          @relation(fields: [voucherId], references: [id], onDelete: Restrict)
   merchantId             String
@@ -325,6 +331,7 @@ model Redemption {
   qrCodes QrCode[]
 
   @@index([userEmail, status])
+  @@index([appUserId, status])
   @@index([voucherId])
   @@map("redemptions")
 }
@@ -367,6 +374,8 @@ model AppUser {
   streak        CheckinStreak?
   wpRedemptions WpRedemption[]
   wpConversions WpConversion[]
+  // On-chain voucher redemptions made by this account (qualification source).
+  redemptions   Redemption[]      @relation("AppUserRedemptions")
 
   @@index([referredById])
   @@index([email])

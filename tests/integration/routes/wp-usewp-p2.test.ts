@@ -43,8 +43,8 @@ async function createManager() {
 }
 
 let depositSeq = 0;
-/** Give `email` a CONFIRMED redemption so the hasDeposited gate flips. */
-async function seedDeposit(email: string, wealth = 1000) {
+/** Give a user a CONFIRMED redemption tied to their account (appUserId). */
+async function seedDeposit(email: string, appUserId: string, wealth = 1000) {
   depositSeq += 1;
   const tag = `usewp-dep-${Date.now()}-${depositSeq}`;
   const merchant = await testPrisma.merchant.create({ data: { name: tag } });
@@ -67,6 +67,7 @@ async function seedDeposit(email: string, wealth = 1000) {
   await testPrisma.redemption.create({
     data: {
       userEmail: email,
+      appUserId,
       voucherId: voucher.id,
       merchantId: merchant.id,
       slotId: slot.id,
@@ -102,8 +103,14 @@ async function balanceOf(appUserId: string): Promise<number> {
 /** Deposited + funded user ready to redeem. */
 async function fundedUser(wp = 1000) {
   const u = makeUser();
-  await seedDeposit(u.email);
   const appUser = await provision(u);
+  // Tie a CONFIRMED redemption to THIS account and flip the per-account gate
+  // (qualification-by-appUserId is exercised directly in the sybil test below).
+  await seedDeposit(u.email, appUser.id);
+  await testPrisma.appUser.update({
+    where: { id: appUser.id },
+    data: { hasDeposited: true, qualifiedAt: new Date() },
+  });
   if (wp > 0) await adminAdjust(appUser.id, wp, "seed");
   return { u, appUser };
 }

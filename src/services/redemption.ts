@@ -10,12 +10,16 @@ interface InitiateRedemptionParams {
   userEmail: string;
   voucherId: string;
   idempotencyKey: string;
+  // The authenticated AppUser making this redemption. Ties the deposit to the
+  // specific account so qualification can't be shared across same-email accounts.
+  appUserId?: string | null;
 }
 
 export async function initiateRedemption({
   userEmail,
   voucherId,
   idempotencyKey,
+  appUserId,
 }: InitiateRedemptionParams) {
   // Check idempotency (scoped to user)
   const existing = await prisma.redemption.findFirst({
@@ -105,6 +109,7 @@ export async function initiateRedemption({
     const newRedemption = await tx.redemption.create({
       data: {
         userEmail,
+        appUserId: appUserId ?? null,
         voucherId,
         merchantId: voucher.merchantId,
         slotId: availableSlot.id,

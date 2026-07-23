@@ -226,16 +226,12 @@ async function milestoneProgress(
       where: { referredById: appUserId, qualifiedAt: { not: null } },
     });
   }
-  // REDEEM → count the user's ON-CHAIN redemptions (the `redemption` model),
-  // joined by EMAIL with no FK, mirroring userHasConfirmedRedemption in
-  // appUser.ts. CONFIRMED means they actually sent $WEALTH on-chain.
-  const user = await client.appUser.findUnique({
-    where: { id: appUserId },
-    select: { email: true },
-  });
-  if (!user) return 0;
+  // REDEEM → count this account's ON-CHAIN redemptions (the `redemption` model),
+  // tied by appUserId (set at redeem time), mirroring userHasConfirmedRedemption
+  // in appUser.ts. CONFIRMED means they actually sent $WEALTH on-chain. Counting
+  // by appUserId (not the shared email) keeps the counter per-account/sybil-safe.
   return client.redemption.count({
-    where: { userEmail: user.email, status: "CONFIRMED" },
+    where: { appUserId, status: "CONFIRMED" },
   });
 }
 

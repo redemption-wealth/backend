@@ -23,6 +23,37 @@ ALTER TABLE public.app_users
 CREATE INDEX IF NOT EXISTS "wp_ledger_appUserId_refType_refId_idx"
   ON public.wp_ledger ("appUserId", "refType", "refId");
 
+-- ── Security (Finding 2): tie deposit qualification to the ACCOUNT, not the email
+-- A Privy email can map to many accounts, so the old email-keyed hasDeposited gate
+-- let one real deposit qualify every sybil sharing the email. Redemptions now carry
+-- the AppUser that made them; hasDeposited counts CONFIRMED redemptions by appUserId.
+ALTER TABLE public.redemptions
+  ADD COLUMN IF NOT EXISTS "appUserId" text;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'redemptions_appUserId_fkey'
+  ) THEN
+    ALTER TABLE public.redemptions
+      ADD CONSTRAINT "redemptions_appUserId_fkey"
+      FOREIGN KEY ("appUserId") REFERENCES public.app_users(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS "redemptions_appUserId_status_idx"
+  ON public.redemptions ("appUserId", "status");
+
+-- Backfill legacy rows ONLY where the email maps to exactly ONE account (safe /
+-- unambiguous). Rows whose email is shared or unmatched stay NULL; those users
+-- simply re-qualify on their next CONFIRMED redemption. Never deletes data.
+UPDATE public.redemptions r
+SET "appUserId" = au.id
+FROM public.app_users au
+WHERE r."appUserId" IS NULL
+  AND au.email = r."userEmail"
+  AND (SELECT count(*) FROM public.app_users a2 WHERE a2.email = r."userEmail") = 1;
+
 -- ── Phase 2: Use WP (physical goods + crypto campaign + expiry) ──────────────
 -- Physical-goods shipping capture + crypto payout capture on redemptions.
 ALTER TABLE public.wp_redemptions

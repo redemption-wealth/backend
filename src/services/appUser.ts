@@ -65,31 +65,31 @@ export async function syncAppUser(
   const { privyUserId, userEmail } = input;
   const walletAddress = input.walletAddress ?? null;
 
-  const hasDeposited = await userHasConfirmedRedemption(userEmail);
   const existing = await prisma.appUser.findUnique({
     where: { privyId: privyUserId },
   });
 
   if (!existing) {
+    // A brand-new account has no redemptions tied to it yet, so it can't be
+    // qualified. It qualifies on a LATER sync once THIS account has its own
+    // CONFIRMED redemption — qualification is per-account, never per shared email.
     const referredById = referralCode
       ? await resolveReferrerId(referralCode)
       : null;
-    const appUser = await createAppUserWithUniqueCode({
+    return createAppUserWithUniqueCode({
       privyId: privyUserId,
       email: userEmail,
       walletAddress,
       referredById,
-      hasDeposited,
-      qualifiedAt: hasDeposited ? new Date() : null,
+      hasDeposited: false,
+      qualifiedAt: null,
     });
-    if (hasDeposited && appUser.referredById) {
-      // Referral is now a % of the referee's future quest claims (referral.ts);
-      // qualifying only completes the referrer's INVITE milestone.
-      await evaluateMilestoneQuests(appUser.referredById);
-    }
-    return appUser;
   }
 
+  // Qualification is tied to THIS account's own CONFIRMED redemptions (appUserId),
+  // NOT the non-unique email — a Privy email can map to many accounts, so an
+  // email-keyed gate would let one deposit qualify every sybil sharing the email.
+  const hasDeposited = await userHasConfirmedRedemption(existing.id);
   // referredById is set-once; never overwritten on later syncs.
   const justQualified = !existing.hasDeposited && hasDeposited;
   const appUser = await prisma.appUser.update({
@@ -239,9 +239,9 @@ export async function getOrCreateAppUser(input: SyncAppUserInput) {
   return syncAppUser(input);
 }
 
-async function userHasConfirmedRedemption(userEmail: string): Promise<boolean> {
+async function userHasConfirmedRedemption(appUserId: string): Promise<boolean> {
   const count = await prisma.redemption.count({
-    where: { userEmail, status: "CONFIRMED" },
+    where: { appUserId, status: "CONFIRMED" },
   });
   return count > 0;
 }

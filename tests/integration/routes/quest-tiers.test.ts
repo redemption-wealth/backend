@@ -35,9 +35,26 @@ async function provision(u: { privyUserId: string; email: string; token: string 
   mockPrivyAs(u.privyUserId, u.email);
   const res = await authGet("/api/wp/balance", u.token);
   expect(res.status).toBe(200);
-  return (await testPrisma.appUser.findUnique({
+  const row = (await testPrisma.appUser.findUnique({
     where: { privyId: u.privyUserId },
   }))!;
+  // Qualification is per-account (appUserId). Link deposits seeded by email
+  // (before the account existed) to the account and flip the gate.
+  await testPrisma.redemption.updateMany({
+    where: { userEmail: u.email, appUserId: null },
+    data: { appUserId: row.id },
+  });
+  const confirmed = await testPrisma.redemption.count({
+    where: { appUserId: row.id, status: "CONFIRMED" },
+  });
+  if (confirmed > 0 && !row.hasDeposited) {
+    await testPrisma.appUser.update({
+      where: { id: row.id },
+      data: { hasDeposited: true, qualifiedAt: new Date() },
+    });
+    row.hasDeposited = true;
+  }
+  return row;
 }
 
 async function balanceOf(appUserId: string): Promise<number> {
@@ -49,8 +66,8 @@ async function balanceOf(appUserId: string): Promise<number> {
 }
 
 let depSeq = 0;
-/** Create one CONFIRMED on-chain redemption for `email` (flips hasDeposited). */
-async function seedConfirmedRedemption(email: string) {
+/** Create one CONFIRMED on-chain redemption, optionally tied to an account. */
+async function seedConfirmedRedemption(email: string, appUserId?: string) {
   depSeq += 1;
   const tag = `qtier-dep-${Date.now()}-${depSeq}`;
   const merchant = await testPrisma.merchant.create({ data: { name: tag } });
@@ -73,6 +90,7 @@ async function seedConfirmedRedemption(email: string) {
   await testPrisma.redemption.create({
     data: {
       userEmail: email,
+      appUserId: appUserId ?? null,
       voucherId: voucher.id,
       merchantId: merchant.id,
       slotId: slot.id,
@@ -157,8 +175,8 @@ describe("REDEEM milestone progress (on-chain, by email)", () => {
       },
     });
     const u = makeUser();
-    await provision(u);
-    for (let i = 0; i < 4; i++) await seedConfirmedRedemption(u.email);
+    const appUser = await provision(u);
+    for (let i = 0; i < 4; i++) await seedConfirmedRedemption(u.email, appUser.id);
 
     const quests = await questsList(u);
     const redeem = quests.find((q) => q.key === "redeem-tier");
@@ -348,8 +366,8 @@ describe("tier claim fires the referral hook", () => {
   test("referrer earns 10% of the tier base when a referee claims a tier", async () => {
     const referrer = await directUser(); // default rate 10%
     const referee = await directUser({ referredById: referrer.id, deposited: true });
-    // One CONFIRMED on-chain redemption → REDEEM progress = 1 for tier 1.
-    await seedConfirmedRedemption(referee.email);
+    // One CONFIRMED on-chain redemption tied to the referee → REDEEM progress = 1.
+    await seedConfirmedRedemption(referee.email, referee.id);
     const quest = await testPrisma.quest.create({
       data: {
         key: `redeem-tier-ref-${Date.now()}`,

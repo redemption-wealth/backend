@@ -307,16 +307,16 @@ describe("evaluateMilestoneQuests", () => {
     expect(db.wpLedger.create).not.toHaveBeenCalled();
   });
 
-  test("REDEEM: counts CONFIRMED on-chain redemptions by email (no FK)", async () => {
+  test("REDEEM: counts this account's CONFIRMED on-chain redemptions by appUserId", async () => {
     db.quest.findMany.mockResolvedValue([redeemQuest]);
-    db.appUser.findUnique.mockResolvedValue({ email: "u@test.com" });
     db.redemption.count.mockResolvedValue(3);
     db.questCompletion.findUnique.mockResolvedValue(null);
 
     await evaluateMilestoneQuests("u1");
 
+    // Counted per-account (appUserId), NOT by the shared/sybil-able email.
     expect(db.redemption.count.mock.calls[0][0].where).toEqual({
-      userEmail: "u@test.com",
+      appUserId: "u1",
       status: "CONFIRMED",
     });
     expect(db.wpLedger.create.mock.calls[0][0].data.amount).toBe(150);

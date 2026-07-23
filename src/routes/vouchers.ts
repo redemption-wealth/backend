@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { prisma } from "../db.js";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { initiateRedemption } from "../services/redemption.js";
+import { getOrCreateAppUser } from "../services/appUser.js";
 import { getLiveFeeConfig, injectFeeFields } from "../services/pricing.js";
 import { redeemVoucherSchema, voucherQuerySchema } from "../schemas/voucher.js";
 
@@ -114,8 +115,16 @@ vouchers.post("/:id/redeem", requireUser, async (c) => {
   const { idempotencyKey } = parsed.data;
 
   try {
+    // Resolve (or provision) the account so the redemption is tied to this
+    // specific AppUser — qualification (hasDeposited) is per-account, not per
+    // shared email (a Privy email can map to many accounts → sybil otherwise).
+    const appUser = await getOrCreateAppUser({
+      privyUserId: user.privyUserId,
+      userEmail: user.userEmail,
+    });
     const { redemption, alreadyExists } = await initiateRedemption({
       userEmail: user.userEmail,
+      appUserId: appUser.id,
       voucherId,
       idempotencyKey,
     });
