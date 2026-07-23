@@ -18,3 +18,26 @@
 -- KOLs higher (e.g. 4000 = 40%) from the back-office. Default 10% for everyone.
 ALTER TABLE public.app_users
   ADD COLUMN IF NOT EXISTS "referralRateBps" integer NOT NULL DEFAULT 1000;
+
+-- ── Phase 2: Use WP (physical goods + crypto campaign + expiry) ──────────────
+-- Physical-goods shipping capture + crypto payout capture on redemptions.
+ALTER TABLE public.wp_redemptions
+  ADD COLUMN IF NOT EXISTS "recipientName" text,
+  ADD COLUMN IF NOT EXISTS "recipientPhone" text,
+  ADD COLUMN IF NOT EXISTS "shippingAddress" text,
+  ADD COLUMN IF NOT EXISTS "walletAddress" text,
+  ADD COLUMN IF NOT EXISTS "payoutTxHash" text;
+
+-- Crypto campaign display fields + voucher-style expiry on rewards. `category`
+-- gains a new allowed TEXT value 'CRYPTO' (no enum → no ALTER TYPE).
+ALTER TABLE public.wp_rewards
+  ADD COLUMN IF NOT EXISTS "cryptoAsset" text,
+  ADD COLUMN IF NOT EXISTS "cryptoAmount" text,
+  ADD COLUMN IF NOT EXISTS "expiresAt" timestamptz;
+
+-- ── Phase 3: Quest tiers ─────────────────────────────────────────────────────
+-- Tiered/repeatable milestone quests: reward at tier N = N × milestoneBaseWp,
+-- unlocked at each count in milestoneLadder (CSV). Null → legacy single-shot.
+ALTER TABLE public.quests
+  ADD COLUMN IF NOT EXISTS "milestoneBaseWp" integer,
+  ADD COLUMN IF NOT EXISTS "milestoneLadder" text;

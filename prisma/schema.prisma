@@ -427,6 +427,11 @@ model Quest {
   rewardWp    Int
   cadence     String // ONCE | DAILY
   targetCount Int      @default(1)
+  // Tiered/repeatable milestone quests (INVITE/REDEEM). Reward at tier N =
+  // N × milestoneBaseWp, unlocked at each count in milestoneLadder (CSV, e.g.
+  // "1,3,5,10,20,30,50,100"). Null → the quest uses legacy single-shot rewardWp.
+  milestoneBaseWp Int?
+  milestoneLadder String?
   actionUrl   String?
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
@@ -464,7 +469,7 @@ model CheckinStreak {
 model WpReward {
   id          String   @id @default(cuid())
   title       String
-  category    String // VOUCHER | MERCH | SEMBAKO
+  category    String // VOUCHER | MERCH | SEMBAKO | CRYPTO
   partnerName String?
   wpCost      Int
   stock       Int? // null = unlimited. Only meaningful for MANUAL fulfillment.
@@ -477,6 +482,13 @@ model WpReward {
   //   MANUAL → create a PENDING redemption for an admin to fulfill/ship (physical
   //            merch/sembako). Uses `stock` as before.
   fulfillmentType String @default("MANUAL") // AUTO | MANUAL
+  // CRYPTO campaign rewards: the asset + fixed amount the admin sends manually to
+  // the user's EVM address (display only). e.g. cryptoAsset "ETH", cryptoAmount "0.0001".
+  cryptoAsset  String?
+  cryptoAmount String?
+  // Use-WP rewards behave like vouchers: an optional expiry / campaign end.
+  // Null = no expiry. Redeeming an expired reward is rejected.
+  expiresAt   DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -519,6 +531,16 @@ model WpRedemption {
   // Manager wants the end user to see when the redemption is FULFILLED.
   fulfillmentNote String?
   fulfilledBy String?
+  // Physical goods (MERCH/SEMBAKO): shipping details captured at redeem time and
+  // immutable after. Fulfilment is manual; the user coordinates with an admin via
+  // a Telegram contact link.
+  recipientName   String?
+  recipientPhone  String?
+  shippingAddress String?
+  // CRYPTO campaign: the user's EVM (0x…) address to receive the token, plus the
+  // on-chain txHash the admin records after sending manually.
+  walletAddress String?
+  payoutTxHash  String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
