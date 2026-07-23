@@ -11,15 +11,18 @@ const QUESTS = [
   { key: "daily-tweet", title: "Tweet tentang $WEALTH & mention @thewealthcrypto", category: "DAILY", rewardWp: 15, cadence: "DAILY", actionUrl: "https://twitter.com/intent/tweet?text=%24WEALTH%20%40thewealthcrypto" },
   { key: "daily-gm-telegram", title: "GM / GN di Telegram Community", category: "DAILY", rewardWp: 5, cadence: "DAILY", actionUrl: "https://t.me/thewealthcrypto" },
   { key: "daily-upvote-cmc", title: "Upvote & comment $WEALTH di CoinMarketCap", category: "DAILY", rewardWp: 10, cadence: "DAILY", actionUrl: "https://coinmarketcap.com/" },
-  // Social tasks (claim once)
-  { key: "social-follow-x", title: "Follow X @thewealthcrypto", category: "SOCIAL", rewardWp: 20, cadence: "ONCE", actionUrl: "https://twitter.com/thewealthcrypto" },
-  { key: "social-follow-ig", title: "Follow Instagram Wealth", category: "SOCIAL", rewardWp: 20, cadence: "ONCE", actionUrl: "https://instagram.com/" },
-  { key: "social-follow-tiktok", title: "Follow TikTok Wealth", category: "SOCIAL", rewardWp: 20, cadence: "ONCE", actionUrl: "https://tiktok.com/" },
-  { key: "social-follow-telegram", title: "Follow Telegram Channel", category: "SOCIAL", rewardWp: 20, cadence: "ONCE", actionUrl: "https://t.me/thewealthcrypto" },
-  { key: "social-join-telegram", title: "Join Telegram Community", category: "SOCIAL", rewardWp: 25, cadence: "ONCE", actionUrl: "https://t.me/thewealthcrypto" },
-  // Milestone quests (auto-awarded once the running count hits targetCount).
-  { key: "invite-5-friends", title: "Undang 5 teman yang deposit", category: "INVITE", rewardWp: 250, cadence: "ONCE", targetCount: 5 },
-  { key: "redeem-3-times", title: "Tukar reward 3 kali", category: "REDEEM", rewardWp: 150, cadence: "ONCE", targetCount: 3 },
+  // Social tasks (claim once). Honor-based → intentionally low WP (Phase 3 social
+  // tuning): social follows are self-attested, so they pay a small nudge only.
+  { key: "social-follow-x", title: "Follow X @thewealthcrypto", category: "SOCIAL", rewardWp: 5, cadence: "ONCE", actionUrl: "https://twitter.com/thewealthcrypto" },
+  { key: "social-follow-ig", title: "Follow Instagram Wealth", category: "SOCIAL", rewardWp: 5, cadence: "ONCE", actionUrl: "https://instagram.com/" },
+  { key: "social-follow-tiktok", title: "Follow TikTok Wealth", category: "SOCIAL", rewardWp: 5, cadence: "ONCE", actionUrl: "https://tiktok.com/" },
+  { key: "social-follow-telegram", title: "Follow Telegram Channel", category: "SOCIAL", rewardWp: 5, cadence: "ONCE", actionUrl: "https://t.me/thewealthcrypto" },
+  { key: "social-join-telegram", title: "Join Telegram Community", category: "SOCIAL", rewardWp: 8, cadence: "ONCE", actionUrl: "https://t.me/thewealthcrypto" },
+  // Tiered milestone quests (Phase 3): user-claimed per ladder rung. Reward for
+  // tier T = T * milestoneBaseWp. INVITE counts qualified referrals; REDEEM counts
+  // CONFIRMED on-chain redemptions (by email).
+  { key: "invite-5-friends", title: "Undang teman yang deposit", category: "INVITE", rewardWp: 0, cadence: "ONCE", targetCount: 1, milestoneBaseWp: 50, milestoneLadder: "1,3,5,10,20" },
+  { key: "redeem-3-times", title: "Tukar reward on-chain", category: "REDEEM", rewardWp: 0, cadence: "ONCE", targetCount: 1, milestoneBaseWp: 30, milestoneLadder: "1,3,5,10" },
 ] as const;
 
 const REWARDS = [
@@ -34,6 +37,8 @@ export async function seedWp() {
   for (const q of QUESTS) {
     const actionUrl = "actionUrl" in q ? q.actionUrl : null;
     const targetCount = "targetCount" in q ? q.targetCount : 1;
+    const milestoneBaseWp = "milestoneBaseWp" in q ? q.milestoneBaseWp : null;
+    const milestoneLadder = "milestoneLadder" in q ? q.milestoneLadder : null;
     await prisma.quest.upsert({
       where: { key: q.key },
       update: {
@@ -43,6 +48,8 @@ export async function seedWp() {
         cadence: q.cadence,
         actionUrl,
         targetCount,
+        milestoneBaseWp,
+        milestoneLadder,
         sortOrder: sortOrder++,
         isActive: true,
       },
@@ -54,6 +61,8 @@ export async function seedWp() {
         cadence: q.cadence,
         actionUrl,
         targetCount,
+        milestoneBaseWp,
+        milestoneLadder,
         sortOrder: sortOrder - 1,
       },
     });

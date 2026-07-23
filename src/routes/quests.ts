@@ -7,7 +7,9 @@ import {
   listQuestsForUser,
   checkin,
   claimTask,
+  claimMilestoneTier,
   QuestNotAvailableError,
+  TierLockedError,
 } from "../services/quest.js";
 import { getBalance, WpCapExceededError } from "../services/wp.js";
 
@@ -84,7 +86,23 @@ quests.post("/checkin", requireUser, questClaimLimiter, async (c) => {
   }
 });
 
-// POST /api/quests/:key/claim — claim a task (honor-based, idempotent per period).
+/**
+ * Parse an optional `tier` from the claim body. Returns the positive integer
+ * tier, or null if the body has no `tier` (→ honor claim). Throws on a malformed
+ * tier so the caller can 400.
+ */
+function parseTier(body: unknown): number | null {
+  if (!body || typeof body !== "object" || !("tier" in body)) return null;
+  const raw = (body as { tier: unknown }).tier;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+    throw new RangeError("invalid tier");
+  }
+  return raw;
+}
+
+// POST /api/quests/:key/claim — claim a task. Honor-based (DAILY/SOCIAL) by
+// default; with a body `{ tier: N }` it claims one tier of a tiered milestone
+// quest (progress-verified server-side).
 quests.post("/:key/claim", requireUser, questClaimLimiter, async (c) => {
   const user = c.get("userAuth");
   const key = c.req.param("key");
@@ -92,11 +110,30 @@ quests.post("/:key/claim", requireUser, questClaimLimiter, async (c) => {
     privyUserId: user.privyUserId,
     userEmail: user.userEmail,
   });
+
+  let tier: number | null;
   try {
-    const result = await claimTask(appUser.id, key);
+    let body: unknown = {};
+    try {
+      body = await c.req.json();
+    } catch {
+      body = {};
+    }
+    tier = parseTier(body);
+  } catch {
+    return c.json({ error: "Tier tidak valid" }, 400);
+  }
+
+  try {
+    const result =
+      tier != null
+        ? await claimMilestoneTier(appUser.id, key, tier)
+        : await claimTask(appUser.id, key);
     const balance = await getBalance(appUser.id);
     return c.json({ ...result, balance });
   } catch (e) {
+    if (e instanceof TierLockedError)
+      return c.json({ error: "Tier ini belum terbuka" }, 409);
     if (e instanceof QuestNotAvailableError)
       return c.json({ error: "Quest tidak tersedia" }, 404);
     if (e instanceof WpCapExceededError) return c.json({ error: CAP_MESSAGE }, 429);

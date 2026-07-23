@@ -6,7 +6,7 @@ vi.mock("@/db.js", () => {
     quest: { findUnique: vi.fn(), findMany: vi.fn() },
     questCompletion: { findUnique: vi.fn(), create: vi.fn(), findMany: vi.fn() },
     appUser: { findUnique: vi.fn(), count: vi.fn() },
-    wpRedemption: { count: vi.fn() },
+    redemption: { count: vi.fn() },
     wpLedger: { aggregate: vi.fn(), create: vi.fn() },
     appSettings: { findUnique: vi.fn() },
   };
@@ -192,6 +192,25 @@ describe("claimTask", () => {
     );
   });
 
+  test("SECURITY: rejects honor-claiming a milestone quest (no unearned mint)", async () => {
+    db.quest.findUnique.mockResolvedValue({
+      id: "qi",
+      key: "invite-5-friends",
+      isActive: true,
+      category: "INVITE",
+      cadence: "ONCE",
+      rewardWp: 250,
+      title: "Undang 5 teman",
+    });
+
+    await expect(
+      claimTask("u1", "invite-5-friends")
+    ).rejects.toBeInstanceOf(QuestNotAvailableError);
+    // No completion written, no WP minted.
+    expect(db.questCompletion.create).not.toHaveBeenCalled();
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
+  });
+
   test("throws for an inactive (isActive:false) quest", async () => {
     db.quest.findUnique.mockResolvedValue({ ...quest, isActive: false });
     await expect(claimTask("u1", "follow-x")).rejects.toBeInstanceOf(
@@ -278,7 +297,8 @@ describe("evaluateMilestoneQuests", () => {
 
   test("does not re-award an already-completed milestone (idempotent)", async () => {
     db.quest.findMany.mockResolvedValue([redeemQuest]);
-    db.wpRedemption.count.mockResolvedValue(3); // target met
+    db.appUser.findUnique.mockResolvedValue({ email: "u@test.com" });
+    db.redemption.count.mockResolvedValue(3); // target met
     db.questCompletion.findUnique.mockResolvedValue({ id: "already" });
 
     await evaluateMilestoneQuests("u1");
@@ -287,23 +307,25 @@ describe("evaluateMilestoneQuests", () => {
     expect(db.wpLedger.create).not.toHaveBeenCalled();
   });
 
-  test("REDEEM: counts FULFILLED redemptions", async () => {
+  test("REDEEM: counts CONFIRMED on-chain redemptions by email (no FK)", async () => {
     db.quest.findMany.mockResolvedValue([redeemQuest]);
-    db.wpRedemption.count.mockResolvedValue(3);
+    db.appUser.findUnique.mockResolvedValue({ email: "u@test.com" });
+    db.redemption.count.mockResolvedValue(3);
     db.questCompletion.findUnique.mockResolvedValue(null);
 
     await evaluateMilestoneQuests("u1");
 
-    expect(db.wpRedemption.count.mock.calls[0][0].where).toEqual({
-      appUserId: "u1",
-      status: "FULFILLED",
+    expect(db.redemption.count.mock.calls[0][0].where).toEqual({
+      userEmail: "u@test.com",
+      status: "CONFIRMED",
     });
     expect(db.wpLedger.create.mock.calls[0][0].data.amount).toBe(150);
   });
 
   test("edge: exactly at target awards (progress === targetCount)", async () => {
     db.quest.findMany.mockResolvedValue([redeemQuest]);
-    db.wpRedemption.count.mockResolvedValue(3); // exactly the target of 3
+    db.appUser.findUnique.mockResolvedValue({ email: "u@test.com" });
+    db.redemption.count.mockResolvedValue(3); // exactly the target of 3
     db.questCompletion.findUnique.mockResolvedValue(null);
 
     await evaluateMilestoneQuests("u1");
@@ -312,9 +334,24 @@ describe("evaluateMilestoneQuests", () => {
     expect(db.wpLedger.create).toHaveBeenCalledTimes(1);
   });
 
+  test("skips TIERED milestones (milestoneBaseWp set) — those are user-claimed", async () => {
+    db.quest.findMany.mockResolvedValue([
+      { ...redeemQuest, milestoneBaseWp: 30, milestoneLadder: null },
+    ]);
+    db.appUser.findUnique.mockResolvedValue({ email: "u@test.com" });
+    db.redemption.count.mockResolvedValue(100); // way past target
+
+    await evaluateMilestoneQuests("u1");
+
+    // Auto-award must NOT fire for tiered quests.
+    expect(db.questCompletion.create).not.toHaveBeenCalled();
+    expect(db.wpLedger.create).not.toHaveBeenCalled();
+  });
+
   test("cap reached → swallows WpCapExceededError (no completion, retried later)", async () => {
     db.quest.findMany.mockResolvedValue([redeemQuest]);
-    db.wpRedemption.count.mockResolvedValue(3); // target met
+    db.appUser.findUnique.mockResolvedValue({ email: "u@test.com" });
+    db.redemption.count.mockResolvedValue(3); // target met
     db.questCompletion.findUnique.mockResolvedValue(null);
     // Issuance already at cap so creditWithTx throws WpCapExceededError.
     db.appSettings.findUnique.mockResolvedValue({ wpMonthlyCapWp: 0 });
