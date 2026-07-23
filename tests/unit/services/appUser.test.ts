@@ -168,7 +168,10 @@ describe("syncAppUser", () => {
     expect(updateArg.data.referredById).toBeUndefined();
   });
 
-  test("pays flat two-sided referral bonuses when a referee first qualifies", async () => {
+  // NOTE: the flat two-sided referral bonus was removed in Wave 6 (referral is now
+  // a real-time % of quest claims — see tests/integration/services/referral-quest.test.ts).
+  // syncAppUser no longer pays anything on qualify; it only evaluates the INVITE milestone.
+  test("does not pay any flat referral bonus when a referee first qualifies", async () => {
     db.redemption.count.mockResolvedValue(1); // referee now has a CONFIRMED redemption
     db.appUser.findUnique.mockResolvedValue({
       id: "u3",
@@ -176,64 +179,9 @@ describe("syncAppUser", () => {
       referredById: "ref1",
     });
     db.appUser.update.mockResolvedValue({ id: "u3", referredById: "ref1" });
-    db.wpLedger.findFirst.mockResolvedValue(null); // neither leg paid yet
-    db.wpLedger.aggregate.mockResolvedValue({ _sum: { amount: 300 } });
-    // Flat amounts come from settings (defaults 50/50 when columns are absent).
-    db.appSettings.findUnique.mockResolvedValue({
-      wpMonthlyCapWp: 1_000_000,
-      wpReferrerBonusWp: 50,
-      wpRefereeWelcomeWp: 50,
-    });
-    db.wpLedger.create.mockResolvedValue({ id: "l1" });
 
     await syncAppUser({ privyUserId: "privy_3", userEmail: "c@x.com" });
 
-    // Two rows: flat referrer bonus + flat referee welcome. Amount is FLAT, not a
-    // % of the referee's 300 WP balance.
-    expect(db.wpLedger.create).toHaveBeenCalledTimes(2);
-    const referrerArg = db.wpLedger.create.mock.calls[0][0];
-    expect(referrerArg.data.appUserId).toBe("ref1"); // credited to the referrer
-    expect(referrerArg.data.amount).toBe(50); // flat, not floor(300 * 0.1)
-    expect(referrerArg.data.type).toBe("REFERRAL_BONUS");
-    expect(referrerArg.data.refType).toBe("referral");
-    expect(referrerArg.data.refId).toBe("u3"); // one bonus per referee
-    const refereeArg = db.wpLedger.create.mock.calls[1][0];
-    expect(refereeArg.data.appUserId).toBe("u3"); // welcome to the referee
-    expect(refereeArg.data.amount).toBe(50);
-    expect(refereeArg.data.refType).toBe("referral_welcome");
-  });
-
-  test("does not double-pay the referral bonus", async () => {
-    db.redemption.count.mockResolvedValue(1);
-    db.appUser.findUnique.mockResolvedValue({
-      id: "u3",
-      hasDeposited: false,
-      referredById: "ref1",
-    });
-    db.appUser.update.mockResolvedValue({ id: "u3", referredById: "ref1" });
-    db.wpLedger.findFirst.mockResolvedValue({ id: "existing-bonus" }); // already paid
-
-    await syncAppUser({ privyUserId: "privy_3", userEmail: "c@x.com" });
-
-    expect(db.wpLedger.create).not.toHaveBeenCalled();
-  });
-
-  test("referral bonus counts against the monthly cap (skipped when exhausted)", async () => {
-    db.redemption.count.mockResolvedValue(1);
-    db.appUser.findUnique.mockResolvedValue({
-      id: "u3",
-      hasDeposited: false,
-      referredById: "ref1",
-    });
-    db.appUser.update.mockResolvedValue({ id: "u3", referredById: "ref1" });
-    db.wpLedger.findFirst.mockResolvedValue(null); // no prior bonus
-    // referee balance 50 → bonus 5, but this month's issuance is already at cap
-    db.wpLedger.aggregate.mockResolvedValue({ _sum: { amount: 50 } });
-    db.appSettings.findUnique.mockResolvedValue({ wpMonthlyCapWp: 50 });
-
-    await syncAppUser({ privyUserId: "privy_3", userEmail: "c@x.com" });
-
-    // Routed through the capped credit path → WpCapExceededError swallowed, no row.
     expect(db.wpLedger.create).not.toHaveBeenCalled();
   });
 });

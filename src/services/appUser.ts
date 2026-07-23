@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { prisma } from "../db.js";
-import { creditWithTx, WpCapExceededError } from "./wp.js";
 import { evaluateMilestoneQuests } from "./quest.js";
+import { DEFAULT_REFERRAL_RATE_BPS } from "./referral.js";
 import { uniqueViolationOn } from "../lib/prisma-errors.js";
 
 // End-user (AppUser) identity for the WEALTH Points gamification layer.
@@ -55,8 +55,8 @@ export interface SyncAppUserInput {
  * Upsert the AppUser for a Privy identity. Idempotent: safe to call on every
  * authenticated request. On first sight it generates a referral code and, if a
  * referral code was supplied, records the referrer (set-once). It also keeps
- * `hasDeposited`/`qualifiedAt` in sync and, when a user first qualifies, pays
- * the one-time referral bonus to their referrer.
+ * `hasDeposited`/`qualifiedAt` in sync and, when a user first qualifies,
+ * evaluates their referrer's INVITE milestone.
  */
 export async function syncAppUser(
   input: SyncAppUserInput,
@@ -83,8 +83,8 @@ export async function syncAppUser(
       qualifiedAt: hasDeposited ? new Date() : null,
     });
     if (hasDeposited && appUser.referredById) {
-      await maybePayReferralBonuses(appUser.id, appUser.referredById);
-      // This referee qualifying may complete the referrer's INVITE milestone.
+      // Referral is now a % of the referee's future quest claims (referral.ts);
+      // qualifying only completes the referrer's INVITE milestone.
       await evaluateMilestoneQuests(appUser.referredById);
     }
     return appUser;
@@ -101,18 +101,12 @@ export async function syncAppUser(
     },
   });
   if (justQualified && appUser.referredById) {
-    await maybePayReferralBonuses(appUser.id, appUser.referredById);
-    // This referee qualifying may complete the referrer's INVITE milestone.
+    // Referral is now a % of the referee's future quest claims (referral.ts);
+    // qualifying only completes the referrer's INVITE milestone.
     await evaluateMilestoneQuests(appUser.referredById);
   }
   return appUser;
 }
-
-// Flat referral bonuses (fallbacks when AppSettings has no row yet). The live
-// values are read from AppSettings so a manager can tune them without a deploy.
-// Both are paid ONCE, only when the referee first deposits (anti-bot gate).
-export const REFERRER_BONUS_WP_DEFAULT = 50; // paid to the referrer
-export const REFEREE_WELCOME_WP_DEFAULT = 50; // paid to the referee (welcome)
 
 /** Mask an email for display: "andini@gmail.com" → "and***@gmail.com". */
 function maskEmail(email: string): string {
@@ -124,19 +118,17 @@ function maskEmail(email: string): string {
   return `${shown}***${domain}`;
 }
 
-/** Referral tab data: code, headline stats, joined friends, and code-entry state. */
+/** Referral tab data: code, this user's rate, earnings, joined friends, code-entry state. */
 export async function getReferralInfo(appUserId: string) {
   const me = await prisma.appUser.findUnique({
     where: { id: appUserId },
-    select: { referralCode: true, referredById: true, hasDeposited: true },
+    select: {
+      referralCode: true,
+      referredById: true,
+      hasDeposited: true,
+      referralRateBps: true,
+    },
   });
-
-  const settings = await prisma.appSettings.findUnique({
-    where: { id: "singleton" },
-    select: { wpReferrerBonusWp: true, wpRefereeWelcomeWp: true },
-  });
-  const referrerBonusWp = settings?.wpReferrerBonusWp ?? REFERRER_BONUS_WP_DEFAULT;
-  const refereeWelcomeWp = settings?.wpRefereeWelcomeWp ?? REFEREE_WELCOME_WP_DEFAULT;
 
   const friends = await prisma.appUser.findMany({
     where: { referredById: appUserId },
@@ -144,34 +136,51 @@ export async function getReferralInfo(appUserId: string) {
     orderBy: { createdAt: "desc" },
   });
 
-  // Per-friend + total bonus earned AS A REFERRER (refType "referral"). The
-  // referee's own welcome bonus uses refType "referral_welcome" and is excluded.
-  const bonuses = await prisma.wpLedger.findMany({
-    where: { appUserId, type: "REFERRAL_BONUS", refType: "referral" },
+  // Earnings AS A REFERRER now come from referees' quest claims (refType
+  // "referral_quest"). refId is the referee's QuestCompletion id, so map it back
+  // to the friend to show a per-friend contribution.
+  const earnings = await prisma.wpLedger.findMany({
+    where: { appUserId, type: "REFERRAL_BONUS", refType: "referral_quest" },
     select: { refId: true, amount: true },
   });
-  const bonusByReferee = new Map(bonuses.map((b) => [b.refId, b.amount]));
-  const bonusWpReceived = bonuses.reduce((sum, b) => sum + b.amount, 0);
+  const referralWpEarned = earnings.reduce((sum, e) => sum + e.amount, 0);
+
+  const completionIds = earnings
+    .map((e) => e.refId)
+    .filter((id): id is string => id != null);
+  const completions = completionIds.length
+    ? await prisma.questCompletion.findMany({
+        where: { id: { in: completionIds } },
+        select: { id: true, appUserId: true },
+      })
+    : [];
+  const refereeByCompletion = new Map(completions.map((c) => [c.id, c.appUserId]));
+  const wpByFriend = new Map<string, number>();
+  for (const e of earnings) {
+    const friendId = e.refId ? refereeByCompletion.get(e.refId) : undefined;
+    if (friendId) wpByFriend.set(friendId, (wpByFriend.get(friendId) ?? 0) + e.amount);
+  }
 
   const hasReferrer = me?.referredById != null;
+  const ratePercent = (me?.referralRateBps ?? DEFAULT_REFERRAL_RATE_BPS) / 100;
 
   return {
     referralCode: me?.referralCode ?? null,
-    // A user can still attach a friend's code only if they haven't set one yet
-    // AND haven't qualified yet (the bonus is paid at qualification).
+    // A user can attach a friend's code only if they haven't set one yet AND
+    // haven't qualified yet.
     hasReferrer,
     canApplyCode: !hasReferrer && !(me?.hasDeposited ?? false),
+    // What THIS user earns as a referrer: a percentage of each friend's quest claims.
+    ratePercent,
     stats: {
       friendsJoined: friends.length,
-      bonusWpReceived,
-      referrerBonusWp,
-      refereeWelcomeWp,
+      referralWpEarned,
     },
     friends: friends.map((f) => ({
       label: maskEmail(f.email),
       joinedAt: f.createdAt,
       qualified: f.hasDeposited,
-      bonusWp: bonusByReferee.get(f.id) ?? 0,
+      contributedWp: wpByFriend.get(f.id) ?? 0,
     })),
   };
 }
@@ -270,81 +279,7 @@ async function createAppUserWithUniqueCode(data: CreateAppUserData) {
   throw new Error("Failed to generate a unique referral code");
 }
 
-/**
- * One-time referral payout, run when a referee first qualifies (deposits):
- *   1. Referrer gets a FLAT bonus (`wpReferrerBonusWp`).
- *   2. Referee gets a FLAT welcome bonus (`wpRefereeWelcomeWp`).
- *
- * Both are idempotent (one ledger row each) and gated on the referee actually
- * depositing — the core anti-sybil defence (plan §2): a ring of empty bot
- * accounts that never deposit yields nothing. Flat (not "% of balance") so the
- * payout is predictable and can't be inflated by farming WP before depositing.
- * Routed through creditWithTx so both count against the monthly issuance cap; a
- * cap hit lapses that leg gracefully instead of failing the whole sync.
- */
-async function maybePayReferralBonuses(refereeId: string, referrerId: string) {
-  await prisma.$transaction(async (tx) => {
-    // Serialize per referee so two concurrent qualify-syncs can't double-pay.
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`refbonus:${refereeId}`}))`;
-
-    const settings = await tx.appSettings.findUnique({
-      where: { id: "singleton" },
-      select: { wpReferrerBonusWp: true, wpRefereeWelcomeWp: true },
-    });
-    const referrerBonus = settings?.wpReferrerBonusWp ?? REFERRER_BONUS_WP_DEFAULT;
-    const refereeWelcome = settings?.wpRefereeWelcomeWp ?? REFEREE_WELCOME_WP_DEFAULT;
-
-    // 1. Referrer flat bonus — dedup: one "referral" row per referee, on the referrer.
-    if (referrerBonus > 0) {
-      const paid = await tx.wpLedger.findFirst({
-        where: {
-          appUserId: referrerId,
-          type: "REFERRAL_BONUS",
-          refType: "referral",
-          refId: refereeId,
-        },
-        select: { id: true },
-      });
-      if (!paid) {
-        try {
-          await creditWithTx(tx, {
-            appUserId: referrerId,
-            amount: referrerBonus,
-            type: "REFERRAL_BONUS",
-            refType: "referral",
-            refId: refereeId,
-            note: "Bonus referral: teman deposit",
-          });
-        } catch (e) {
-          if (!(e instanceof WpCapExceededError)) throw e; // cap hit → lapse this leg
-        }
-      }
-    }
-
-    // 2. Referee flat welcome — dedup: one "referral_welcome" row on the referee.
-    if (refereeWelcome > 0) {
-      const paid = await tx.wpLedger.findFirst({
-        where: {
-          appUserId: refereeId,
-          type: "REFERRAL_BONUS",
-          refType: "referral_welcome",
-        },
-        select: { id: true },
-      });
-      if (!paid) {
-        try {
-          await creditWithTx(tx, {
-            appUserId: refereeId,
-            amount: refereeWelcome,
-            type: "REFERRAL_BONUS",
-            refType: "referral_welcome",
-            refId: referrerId,
-            note: "Welcome bonus: pakai kode referral",
-          });
-        } catch (e) {
-          if (!(e instanceof WpCapExceededError)) throw e; // cap hit → lapse this leg
-        }
-      }
-    }
-  });
-}
+// The old flat two-sided referral payout (maybePayReferralBonuses) was removed in
+// Wave 6: referral is now purely a real-time percentage of the referee's quest
+// claims (see services/referral.ts). Historical "referral"/"referral_welcome"
+// ledger rows are left untouched.
