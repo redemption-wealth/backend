@@ -2,6 +2,10 @@ node_modules/
 dist/
 .env
 .env.bak*
+.env.test
+.env.*.local
+.env.local
+.env.prod.real
 *.log
 
 # build info

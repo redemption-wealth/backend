@@ -3,10 +3,12 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import { beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { resolveTestDatabaseUrl } from "./helpers/assert-local-db.js";
 
-// Create test Prisma client with adapter for Prisma 7
+// Guarded: refuses any non-local DB so beforeEach deleteMany() can never wipe
+// the shared Supabase DEV/PROD data.
 const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: resolveTestDatabaseUrl(),
 });
 const adapter = new PrismaPg(pool);
 const testPrisma = new PrismaClient({ adapter });
