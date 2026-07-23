@@ -44,7 +44,12 @@ adminAppUsers.patch("/:id/referral-rate", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Validation failed", details: parsed.error.flatten() }, 400);
   }
-  const result = await setReferralRate(c.req.param("id"), parsed.data.referralRateBps);
+  const admin = c.get("adminAuth");
+  const result = await setReferralRate(
+    c.req.param("id"),
+    parsed.data.referralRateBps,
+    admin.email
+  );
   if (!result) return c.json({ error: "User tidak ditemukan" }, 404);
   return c.json(result);
 });

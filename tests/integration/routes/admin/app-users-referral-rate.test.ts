@@ -41,6 +41,9 @@ describe("PATCH /api/admin/app-users/:id/referral-rate", () => {
     expect((await res.json()).referralRateBps).toBe(4000);
     const fresh = await testPrisma.appUser.findUnique({ where: { id: user.id } });
     expect(fresh?.referralRateBps).toBe(4000);
+    // Audit (Finding 7): who/when is recorded.
+    expect(fresh?.referralRateUpdatedBy).toBeTruthy();
+    expect(fresh?.referralRateUpdatedAt).toBeInstanceOf(Date);
   });
 
   it("accepts the boundary values 0 and 10000 (edge)", async () => {

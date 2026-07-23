@@ -159,6 +159,8 @@ export async function getAppUserDetail(id: string) {
       walletAddress: true,
       referralCode: true,
       referralRateBps: true,
+      referralRateUpdatedBy: true,
+      referralRateUpdatedAt: true,
       referredById: true,
       hasDeposited: true,
       qualifiedAt: true,
@@ -380,7 +382,8 @@ export async function setFraudReviewStatus(
  */
 export async function setReferralRate(
   appUserId: string,
-  referralRateBps: number
+  referralRateBps: number,
+  updatedBy?: string
 ): Promise<{ appUserId: string; referralRateBps: number } | null> {
   const exists = await prisma.appUser.findUnique({
     where: { id: appUserId },
@@ -390,7 +393,12 @@ export async function setReferralRate(
 
   const updated = await prisma.appUser.update({
     where: { id: appUserId },
-    data: { referralRateBps },
+    // Audit (Finding 7): record which manager changed the rate and when.
+    data: {
+      referralRateBps,
+      referralRateUpdatedBy: updatedBy ?? null,
+      referralRateUpdatedAt: new Date(),
+    },
     select: { id: true, referralRateBps: true },
   });
   return { appUserId: updated.id, referralRateBps: updated.referralRateBps };

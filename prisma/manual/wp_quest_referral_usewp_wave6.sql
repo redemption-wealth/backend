@@ -17,7 +17,10 @@
 -- Per-user referral commission rate in basis points (1000 = 10%). Manager sets
 -- KOLs higher (e.g. 4000 = 40%) from the back-office. Default 10% for everyone.
 ALTER TABLE public.app_users
-  ADD COLUMN IF NOT EXISTS "referralRateBps" integer NOT NULL DEFAULT 1000;
+  ADD COLUMN IF NOT EXISTS "referralRateBps" integer NOT NULL DEFAULT 1000,
+  -- Audit (Finding 7): who last changed the referral rate + when.
+  ADD COLUMN IF NOT EXISTS "referralRateUpdatedBy" text,
+  ADD COLUMN IF NOT EXISTS "referralRateUpdatedAt" timestamptz;
 
 -- Backs the referral idempotency lookup (referrer, refType, source refId).
 CREATE INDEX IF NOT EXISTS "wp_ledger_appUserId_refType_refId_idx"

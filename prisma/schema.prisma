@@ -366,6 +366,9 @@ model AppUser {
   // the WP a referee earns from quests (see services/referral.ts). A FLAGGED
   // referrer earns no referral bonus.
   referralRateBps Int @default(1000)
+  // Audit (Finding 7): who last changed the rate and when (manager email + ts).
+  referralRateUpdatedBy String?
+  referralRateUpdatedAt DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
