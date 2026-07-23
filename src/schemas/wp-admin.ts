@@ -16,6 +16,16 @@ export const createQuestSchema = z.object({
   targetCount: z.coerce.number().int().min(1).default(1),
   actionUrl: urlOrEmpty,
   sortOrder: z.coerce.number().int().default(0),
+  // Tiered milestones (INVITE/REDEEM): reward at tier N = N × milestoneBaseWp,
+  // unlocked at each count in milestoneLadder (CSV). Both null → single-shot.
+  milestoneBaseWp: z.coerce.number().int().min(1).nullable().optional(),
+  milestoneLadder: z
+    .string()
+    .trim()
+    .max(200)
+    .nullable()
+    .optional()
+    .transform((v) => (v ? v : null)),
 });
 
 export const updateQuestSchema = createQuestSchema
