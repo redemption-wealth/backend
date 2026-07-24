@@ -226,7 +226,13 @@ export async function convertWp(
       throw new DepositCapError(depositTotal.toString(), alreadyConverted.toString());
     }
 
-    // Global monthly $WEALTH budget.
+    // Global monthly $WEALTH budget. The per-user lock above does NOT order two
+    // different users, so without a shared lock both could read the same
+    // pre-commit global total and jointly overshoot the budget. Take a single
+    // constant-keyed lock so the read+check+burn of the budget-affecting section
+    // is serialized across ALL users. (Always acquired AFTER the per-user lock;
+    // no other path takes this key, so the ordering can't deadlock.)
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('wp-convert-budget'))`;
     const globalThisMonth = await convertedWealthThisMonthGlobal(tx);
     if (
       globalThisMonth.add(wealthAmount).gt(settings.wpConversionMonthlyBudgetWealth)

@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { testPrisma } from "../../setup.integration.js";
-import { convertWp, DepositCapError } from "@/services/wpConversion.js";
+import {
+  convertWp,
+  DepositCapError,
+  MonthlyBudgetError,
+} from "@/services/wpConversion.js";
 
 /**
  * Security (anti-sybil): the WP->$WEALTH conversion deposit cap must be keyed by
@@ -72,28 +76,21 @@ async function grantWp(appUserId: string, amount: number) {
   });
 }
 
-async function enableConversion() {
+async function enableConversion(opts: { budgetWealth?: string } = {}) {
   // rate 1 → wpAmount == $WEALTH owed; huge per-user/global ceilings so ONLY the
-  // per-account deposit cap can bind in these tests.
+  // control under test can bind (override budget where a test targets it).
+  const budget = opts.budgetWealth ?? "1000000000";
+  const common = {
+    wpConversionEnabled: true,
+    wpConversionRate: 1,
+    wpConvertMinWp: 1,
+    wpConvertMaxWpPerMonth: 1_000_000_000,
+    wpConversionMonthlyBudgetWealth: budget,
+  };
   await testPrisma.appSettings.upsert({
     where: { id: "singleton" },
-    update: {
-      wpConversionEnabled: true,
-      wpConversionRate: 1,
-      wpConvertMinWp: 1,
-      wpConvertMaxWpPerMonth: 1_000_000_000,
-      wpConversionMonthlyBudgetWealth: "1000000000",
-    },
-    create: {
-      id: "singleton",
-      appFeeRate: 3,
-      gasFeeAmount: 0,
-      wpConversionEnabled: true,
-      wpConversionRate: 1,
-      wpConvertMinWp: 1,
-      wpConvertMaxWpPerMonth: 1_000_000_000,
-      wpConversionMonthlyBudgetWealth: "1000000000",
-    },
+    update: common,
+    create: { id: "singleton", appFeeRate: 3, gasFeeAmount: 0, ...common },
   });
 }
 
@@ -153,5 +150,49 @@ describe("conversion deposit cap is per-account, not per-email (anti-sybil)", ()
     );
     expect(res.status).toBe("PENDING");
     expect(res.wpBurned).toBe(100);
+  });
+});
+
+describe("global monthly conversion budget holds under a cross-user race", () => {
+  it("two different users converting at once cannot jointly exceed the budget", async () => {
+    // Budget fits exactly ONE 5-$WEALTH conversion. Distinct emails so the
+    // per-account deposit cap (ample here) never binds — only the GLOBAL budget.
+    await enableConversion({ budgetWealth: "5" });
+    const emailA = "race-a@test";
+    const emailB = "race-b@test";
+    const a = await makeAccount(emailA);
+    const b = await makeAccount(emailB);
+    await seedConfirmedRedemption(a.id, emailA, "1000");
+    await seedConfirmedRedemption(b.id, emailB, "1000");
+    await grantWp(a.id, 5);
+    await grantWp(b.id, 5);
+
+    const results = await Promise.allSettled([
+      convertWp(
+        { id: a.id, email: emailA, hasDeposited: true, fraudReviewStatus: "NONE" },
+        5,
+        "0x" + "a".repeat(40),
+      ),
+      convertWp(
+        { id: b.id, email: emailB, hasDeposited: true, fraudReviewStatus: "NONE" },
+        5,
+        "0x" + "b".repeat(40),
+      ),
+    ]);
+
+    const ok = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(ok.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      MonthlyBudgetError,
+    );
+
+    // Committed (PENDING/FULFILLED) $WEALTH must never exceed the 5 budget.
+    const committed = await testPrisma.wpConversion.aggregate({
+      _sum: { wealthAmount: true },
+      where: { status: { in: ["PENDING", "FULFILLED"] } },
+    });
+    expect(Number(committed._sum.wealthAmount ?? 0)).toBeLessThanOrEqual(5);
   });
 });
