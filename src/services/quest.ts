@@ -146,7 +146,8 @@ export async function claimTask(
       where: { id: appUserId },
       select: { hasDeposited: true, referredById: true },
     });
-    const selfBonus = user?.hasDeposited ? Math.floor(quest.rewardWp * 0.1) : 0;
+    // Round-half-up so a small quest still pays a ≥1 self-bonus (matches referral).
+    const selfBonus = user?.hasDeposited ? Math.round(quest.rewardWp * 0.1) : 0;
     const total = quest.rewardWp + selfBonus;
 
     await creditWithTx(tx, {
@@ -410,7 +411,7 @@ export async function claimMilestoneTier(
       where: { id: appUserId },
       select: { hasDeposited: true, referredById: true },
     });
-    const referralBonus = user?.hasDeposited ? Math.floor(base * 0.1) : 0;
+    const referralBonus = user?.hasDeposited ? Math.round(base * 0.1) : 0;
     const total = base + referralBonus;
 
     await creditWithTx(tx, {

@@ -149,10 +149,21 @@ describe("referral percentage on quest claim", () => {
   });
 
   // ── edge ──────────────────────────────────────────────────────────────────
-  it("writes no ledger row when the rounded bonus is zero", async () => {
+  it("rounds a small quest's commission UP to 1 (round-half-up)", async () => {
     const referrer = await createUser(); // 10%
     const referee = await createUser({ hasDeposited: true, referredById: referrer.id });
-    const quest = await createQuest(5); // floor(5 * 0.10) = 0
+    const quest = await createQuest(5); // round(5 * 0.10) = round(0.5) = 1
+
+    await claimTask(referee.id, quest.key);
+
+    expect(await referralRows(referrer.id)).toHaveLength(1);
+    expect(await balanceOf(referrer.id)).toBe(1);
+  });
+
+  it("writes no ledger row when the rounded bonus is truly zero", async () => {
+    const referrer = await createUser(); // 10%
+    const referee = await createUser({ hasDeposited: true, referredById: referrer.id });
+    const quest = await createQuest(4); // round(4 * 0.10) = round(0.4) = 0
 
     await claimTask(referee.id, quest.key);
 

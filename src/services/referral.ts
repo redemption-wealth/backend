@@ -52,7 +52,9 @@ export async function creditReferrerForQuest(
   if (!referrer || referrer.fraudReviewStatus === "FLAGGED") return 0;
 
   const rateBps = referrer.referralRateBps ?? DEFAULT_REFERRAL_RATE_BPS;
-  const amount = Math.floor((basisWp * rateBps) / 10_000);
+  // Round-half-up (not floor) so a small quest still pays the referrer ≥1 WP
+  // instead of silently rounding a fraction to zero (e.g. 5 WP × 10% = 0.5 → 1).
+  const amount = Math.round((basisWp * rateBps) / 10_000);
   if (amount <= 0) return 0;
 
   // Idempotency: at most one referral credit per (referrer, source completion).
