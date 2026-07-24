@@ -25,6 +25,16 @@ enum RedemptionStatus {
   CONFIRMED
   FAILED
   EXPIRED
+  REFUNDED
+}
+
+// Review state of a treasury inflow that couldn't be auto-matched to exactly
+// one PENDING redemption (hybrid policy — see docs/redemption-reliability-plan.md).
+enum UnmatchedTransferStatus {
+  OPEN
+  MATCHED
+  REFUNDED
+  IGNORED
 }
 
 enum QrStatus {
@@ -221,6 +231,11 @@ model AppSettings {
   // month must stay at or under this). Same $WEALTH type as Redemption.wealthAmount.
   wpConversionMonthlyBudgetWealth Decimal @default(10000) @db.Decimal(36, 18)
 
+  // Heartbeat: set every time the treasury-inflow sweep completes. GET
+  // /api/cron/health reports its staleness so an external uptime monitor can
+  // alert if the sweep silently stops running (e.g. CRON_SECRET rotated → 401).
+  lastInflowSweepAt DateTime?
+
   updatedAt      DateTime @updatedAt
 
   @@map("app_settings")
@@ -313,18 +328,27 @@ model Redemption {
   voucher                Voucher          @relation(fields: [voucherId], references: [id], onDelete: Restrict)
   merchantId             String
   merchant               Merchant         @relation(fields: [merchantId], references: [id], onDelete: Restrict)
-  slotId                 String           @unique
-  slot                   RedemptionSlot   @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  // Nullable: failed/expired attempts are KEPT as history (never deleted) and
+  // detached from their slot on release, so the unique constraint can't lock a
+  // slot forever. NULL = slot already released back to stock.
+  slotId                 String?          @unique
+  slot                   RedemptionSlot?  @relation(fields: [slotId], references: [id], onDelete: Restrict)
   wealthAmount           Decimal          @db.Decimal(36, 18)
   priceIdrAtRedeem       Int
   wealthPriceIdrAtRedeem Decimal          @db.Decimal(18, 4)
   appFeeAmount           Decimal          @db.Decimal(36, 18)
   gasFeeAmount           Decimal          @db.Decimal(36, 18)
   txHash                 String?          @unique
+  // Payer wallet captured at initiate — lets the webhook/sweep match an
+  // on-chain transfer back to this redemption even when the app never
+  // submitted the txHash (the 2026-07-16 lost-redemption case).
+  walletAddress          String?
   idempotencyKey         String           @unique
   status                 RedemptionStatus @default(PENDING)
   confirmedAt            DateTime?
   failedAt               DateTime?
+  refundTxHash           String?          @unique
+  refundedAt             DateTime?
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
 
@@ -334,6 +358,32 @@ model Redemption {
   @@index([appUserId, status])
   @@index([voucherId])
   @@map("redemptions")
+}
+
+// A $WEALTH transfer that arrived in the treasury but could not be
+// auto-matched to exactly one PENDING redemption (hybrid policy: exact single
+// match auto-confirms; 0 or >1 candidates land here for admin review).
+// Guarantees NO incoming money can ever go unrecorded.
+model UnmatchedTransfer {
+  id                  String                  @id @default(cuid())
+  txHash              String                  @unique
+  fromAddress         String
+  toAddress           String
+  tokenAddress        String
+  amount              Decimal                 @db.Decimal(36, 18)
+  // Filled when the wallet maps to a known AppUser (ambiguous-candidates case).
+  userEmail           String?
+  status              UnmatchedTransferStatus @default(OPEN)
+  matchedRedemptionId String?
+  refundTxHash        String?                 @unique
+  resolvedBy          String? // admin id/email who resolved it
+  resolvedAt          DateTime?
+  note                String?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  @@index([status, createdAt])
+  @@map("unmatched_transfers")
 }
 
 // ─── WEALTH Points (WP) — Quest & Rewards ────────────────────────────────────
@@ -379,6 +429,9 @@ model AppUser {
   wpConversions WpConversion[]
   // On-chain voucher redemptions made by this account (qualification source).
   redemptions   Redemption[]      @relation("AppUserRedemptions")
+
+  // Webhook fallback match looks AppUsers up by wallet.
+  @@index([walletAddress])
 
   @@index([referredById])
   @@index([email])

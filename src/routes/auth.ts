@@ -2,11 +2,57 @@ import { Hono } from "hono";
 import bcryptjs from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import { prisma } from "../db.js";
-import { requireAdmin, type AuthEnv } from "../middleware/auth.js";
+import { requireAdmin, requireUser, type AuthEnv } from "../middleware/auth.js";
 import { loginLimiter, setPasswordLimiter } from "../middleware/rate-limit.js";
 import { signInSchema, setupPasswordSchema, changePasswordSchema } from "../schemas/auth.js";
+import { syncSchema } from "../schemas/quest.js";
+import { syncAppUser } from "../services/appUser.js";
 
 const authRoutes = new Hono<AuthEnv>();
+
+// ─── POST /api/auth/user-sync ────────────────────────────────────────────────
+// App-user identity sync. The WALLET is taken SERVER-SIDE from the Privy
+// account (c.get("userAuth").walletAddress), NEVER from the request body — a
+// client-supplied wallet could claim someone else's address and misdirect a
+// treasury inflow's attribution (round-2 audit #1). The body's referralCode is
+// still honored. Wallet may be null when the embedded wallet isn't provisioned
+// yet; the app re-syncs once Privy provides it.
+authRoutes.post("/user-sync", requireUser, async (c) => {
+  const user = c.get("userAuth");
+  let body: unknown = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  const parsed = syncSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Input tidak valid", details: parsed.error.flatten() },
+      400,
+    );
+  }
+
+  const appUser = await syncAppUser(
+    {
+      privyUserId: user.privyUserId,
+      userEmail: user.userEmail,
+      // Server-derived wallet only — the body's walletAddress is ignored.
+      walletAddress: user.walletAddress,
+    },
+    parsed.data.referralCode ?? null,
+  );
+  return c.json({
+    user: {
+      id: appUser.id,
+      email: appUser.email,
+      privyUserId: appUser.privyId,
+      walletAddress: appUser.walletAddress,
+      createdAt: appUser.createdAt,
+      updatedAt: appUser.updatedAt,
+    },
+  });
+});
 
 // ─── POST /api/auth/sign-in/email ────────────────────────────────────────────
 // Custom login: checks Admin existence, detects NULL password, verifies bcrypt.

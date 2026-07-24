@@ -63,7 +63,8 @@ export async function syncAppUser(
   referralCode?: string | null
 ) {
   const { privyUserId, userEmail } = input;
-  const walletAddress = input.walletAddress ?? null;
+  // Normalized for the transfer matcher's wallet→user lookup.
+  const walletAddress = input.walletAddress?.toLowerCase() ?? null;
 
   const existing = await prisma.appUser.findUnique({
     where: { privyId: privyUserId },
@@ -96,7 +97,12 @@ export async function syncAppUser(
     where: { id: existing.id },
     data: {
       email: userEmail,
-      walletAddress,
+      // Only ever ADD/refresh a wallet — a sync fired before the embedded
+      // wallet exists must not wipe a stored address to NULL. The wallet is
+      // the transfer matcher's key to pair treasury inflows with users
+      // (2026-07-17 lost-redemption case: this exact wipe left the matcher
+      // blind for the payer).
+      ...(walletAddress ? { walletAddress } : {}),
       ...(justQualified ? { hasDeposited: true, qualifiedAt: new Date() } : {}),
     },
   });

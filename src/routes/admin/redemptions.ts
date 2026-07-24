@@ -1,22 +1,36 @@
 import { Hono } from "hono";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db.js";
-import { requireOwner, type AuthEnv } from "../../middleware/auth.js";
+import {
+  requireManager,
+  requireOwner,
+  requireOwnerOrManager,
+  type AuthEnv,
+} from "../../middleware/auth.js";
 import { parseSort, buildOrderBy } from "../../lib/list-query.js";
 import { getDateRange } from "../../services/analytics.js";
+import {
+  ensureQrAssigned,
+  reconcileRedemptionById,
+} from "../../services/redemption.js";
+import { refundRedemption } from "../../services/refund.js";
 
 const adminRedemptions = new Hono<AuthEnv>();
 
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+
 // GET /api/admin/redemptions/counts — Count by status (owner only)
 // Must be registered before /:id to avoid param swallowing "counts"
-adminRedemptions.get("/counts", requireOwner, async (c) => {
-  const [all, confirmed, pending, failed] = await Promise.all([
+adminRedemptions.get("/counts", requireOwnerOrManager, async (c) => {
+  const [all, confirmed, pending, failed, expired, refunded] = await Promise.all([
     prisma.redemption.count(),
     prisma.redemption.count({ where: { status: "CONFIRMED" } }),
     prisma.redemption.count({ where: { status: "PENDING" } }),
     prisma.redemption.count({ where: { status: "FAILED" } }),
+    prisma.redemption.count({ where: { status: "EXPIRED" } }),
+    prisma.redemption.count({ where: { status: "REFUNDED" } }),
   ]);
-  return c.json({ all, confirmed, pending, failed });
+  return c.json({ all, confirmed, pending, failed, expired, refunded });
 });
 
 // GET /api/admin/redemptions/recent?limit=10&period=daily|monthly|yearly
@@ -61,11 +75,17 @@ adminRedemptions.get("/recent", requireOwner, async (c) => {
 });
 
 // GET /api/admin/redemptions — List redemptions (owner only)
-adminRedemptions.get("/", requireOwner, async (c) => {
+adminRedemptions.get("/", requireOwnerOrManager, async (c) => {
   // Normalise + validate the status filter. The UI sends lowercase
   // (?status=confirmed) but the enum is upper-case; passing the raw value to
   // Prisma threw an enum error → 500. Ignore anything that isn't a real status.
-  const REDEMPTION_STATUSES = ["PENDING", "CONFIRMED", "FAILED"] as const;
+  const REDEMPTION_STATUSES = [
+    "PENDING",
+    "CONFIRMED",
+    "FAILED",
+    "EXPIRED",
+    "REFUNDED",
+  ] as const;
   const statusRaw = c.req.query("status")?.toUpperCase();
   const status = REDEMPTION_STATUSES.includes(
     statusRaw as (typeof REDEMPTION_STATUSES)[number],
@@ -127,9 +147,12 @@ adminRedemptions.get("/", requireOwner, async (c) => {
       appFeeAmount: r.appFeeAmount.toString(),
       gasFeeAmount: r.gasFeeAmount.toString(),
       txHash: r.txHash,
+      walletAddress: r.walletAddress,
       status: r.status,
       confirmedAt: r.confirmedAt,
       failedAt: r.failedAt,
+      refundTxHash: r.refundTxHash,
+      refundedAt: r.refundedAt,
       redeemedAt: r.createdAt,
       user: { email: r.userEmail },
       voucher: r.voucher,
@@ -140,7 +163,7 @@ adminRedemptions.get("/", requireOwner, async (c) => {
 });
 
 // GET /api/admin/redemptions/:id — Get redemption detail (owner only)
-adminRedemptions.get("/:id", requireOwner, async (c) => {
+adminRedemptions.get("/:id", requireOwnerOrManager, async (c) => {
   const id = c.req.param("id");
 
   const redemption = await prisma.redemption.findUnique({
@@ -167,15 +190,93 @@ adminRedemptions.get("/:id", requireOwner, async (c) => {
       appFeeAmount: redemption.appFeeAmount.toString(),
       gasFeeAmount: redemption.gasFeeAmount.toString(),
       txHash: redemption.txHash,
+      walletAddress: redemption.walletAddress,
       status: redemption.status,
       confirmedAt: redemption.confirmedAt,
       failedAt: redemption.failedAt,
+      refundTxHash: redemption.refundTxHash,
+      refundedAt: redemption.refundedAt,
       redeemedAt: redemption.createdAt,
       user: { email: redemption.userEmail },
       voucher: redemption.voucher,
       qrCodes: redemption.qrCodes,
     },
   });
+});
+
+// POST /api/admin/redemptions/:id/reconcile — force an on-chain re-check
+// (manager) — same service the user-facing reconcile uses.
+adminRedemptions.post("/:id/reconcile", requireManager, async (c) => {
+  const id = c.req.param("id");
+  try {
+    const outcome = await reconcileRedemptionById(id);
+    return c.json({ ok: true, outcome });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Reconcile failed" },
+      400,
+    );
+  }
+});
+
+// POST /api/admin/redemptions/:id/resend-assets — "Kirim voucher manual":
+// re-run the idempotent QR/barcode assignment for a CONFIRMED redemption
+// whose assets did not come through (manager).
+adminRedemptions.post("/:id/resend-assets", requireManager, async (c) => {
+  const id = c.req.param("id");
+  const redemption = await prisma.redemption.findUnique({
+    where: { id },
+    select: { id: true, status: true },
+  });
+  if (!redemption) return c.json({ error: "Redemption not found" }, 404);
+  if (redemption.status !== "CONFIRMED") {
+    return c.json({ error: "Redemption is not CONFIRMED" }, 400);
+  }
+  try {
+    await ensureQrAssigned(id);
+    const qrCodes = await prisma.qrCode.findMany({
+      where: { redemptionId: id },
+      select: { id: true, status: true },
+    });
+    return c.json({ ok: true, qrAssigned: qrCodes.length });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Asset assignment failed" },
+      400,
+    );
+  }
+});
+
+// POST /api/admin/redemptions/:id/refund — record a VERIFIED on-chain refund
+// (manager). Semi-manual flow: the admin already sent $WEALTH back from the
+// treasury by hand; the backend verifies token/sender/recipient/amount
+// on-chain before anything is recorded.
+adminRedemptions.post("/:id/refund", requireManager, async (c) => {
+  const id = c.req.param("id");
+  const admin = c.get("adminAuth");
+  let body: { refundTxHash?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  if (
+    !body.refundTxHash ||
+    typeof body.refundTxHash !== "string" ||
+    !TX_HASH_RE.test(body.refundTxHash)
+  ) {
+    return c.json({ error: "Valid refundTxHash is required" }, 400);
+  }
+
+  try {
+    const result = await refundRedemption(id, body.refundTxHash, admin.email);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Refund failed" },
+      400,
+    );
+  }
 });
 
 export default adminRedemptions;
