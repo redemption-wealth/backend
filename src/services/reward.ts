@@ -2,6 +2,7 @@ import { prisma } from "../db.js";
 import { spendWithTx, creditWithTx } from "./wp.js";
 import { evaluateMilestoneQuests } from "./quest.js";
 import { EVM_ADDRESS_REGEX, type RedeemRewardInput } from "../schemas/wp.js";
+import { isWibDayExpired } from "../lib/time.js";
 
 // Reward categories that require a physical shipping address at redeem time.
 const PHYSICAL_CATEGORIES = new Set(["MERCH", "SEMBAKO"]);
@@ -175,8 +176,10 @@ export async function redeemReward(
 
     const reward = await tx.wpReward.findUnique({ where: { id: rewardId } });
     if (!reward || !reward.isActive) throw new RewardNotAvailableError(rewardId);
-    // Expiry gate (all models): a time-boxed reward past its window is closed.
-    if (reward.expiresAt && reward.expiresAt.getTime() < Date.now())
+    // Expiry gate (all models): a date-boxed reward is valid through the END of
+    // its WIB day (M3), so compare against end-of-day WIB — not the raw stored
+    // midnight, which would close the reward ~17h early.
+    if (reward.expiresAt && isWibDayExpired(reward.expiresAt))
       throw new RewardExpiredError();
 
     // Validate + narrow the category-specific fulfilment capture (shipping for
