@@ -1,7 +1,7 @@
 import { prisma } from "../db.js";
 import { spendWithTx, creditWithTx } from "./wp.js";
 import { evaluateMilestoneQuests } from "./quest.js";
-import { EVM_ADDRESS_REGEX, type RedeemRewardInput } from "../schemas/wp.js";
+import { toChecksumAddress, type RedeemRewardInput } from "../schemas/wp.js";
 import { isWibDayExpired } from "../lib/time.js";
 
 // Reward categories that require a physical shipping address at redeem time.
@@ -109,8 +109,14 @@ function resolveFulfilment(
 
   if (category === "CRYPTO") {
     const wallet = input?.walletAddress?.trim();
-    if (!wallet || !EVM_ADDRESS_REGEX.test(wallet)) throw new WalletAddressRequiredError();
-    return { ...empty, walletAddress: wallet };
+    if (!wallet) throw new WalletAddressRequiredError();
+    // EIP-55: reject a malformed / bad-checksum address and store the canonical
+    // checksummed form (this is where the manual $WEALTH payout will be sent).
+    try {
+      return { ...empty, walletAddress: toChecksumAddress(wallet) };
+    } catch {
+      throw new WalletAddressRequiredError();
+    }
   }
 
   // VOUCHER (and any other category): no fulfilment capture.
@@ -326,6 +332,13 @@ export class RedemptionNotPendingError extends Error {
   }
 }
 
+export class PayoutProofRequiredError extends Error {
+  constructor() {
+    super("Isi tx hash payout untuk menuntaskan reward crypto");
+    this.name = "PayoutProofRequiredError";
+  }
+}
+
 export interface RedemptionListQuery {
   status?: string;
   limit?: number;
@@ -365,17 +378,26 @@ export async function fulfillRedemption(
   payoutTxHash?: string
 ) {
   const redemption = await prisma.$transaction(async (tx) => {
-    const r = await tx.wpRedemption.findUnique({ where: { id } });
+    const r = await tx.wpRedemption.findUnique({
+      where: { id },
+      include: { reward: { select: { category: true } } },
+    });
     if (!r) throw new RewardNotAvailableError(id);
     if (r.status !== "PENDING") throw new RedemptionNotPendingError();
+    // CRYPTO payouts must carry on-chain proof: a $WEALTH send can't be marked
+    // FULFILLED without a tx hash (given now or already recorded). Traceability.
+    const finalTxHash = payoutTxHash ?? r.payoutTxHash;
+    if (r.reward.category === "CRYPTO" && !finalTxHash) {
+      throw new PayoutProofRequiredError();
+    }
     return tx.wpRedemption.update({
       where: { id },
       data: {
         status: "FULFILLED",
         fulfilledBy: adminEmail,
         fulfillmentNote: fulfillmentNote ?? r.fulfillmentNote,
-        // CRYPTO campaign: record the manual on-chain payout tx hash if given.
-        payoutTxHash: payoutTxHash ?? r.payoutTxHash,
+        // CRYPTO campaign: record the manual on-chain payout tx hash.
+        payoutTxHash: finalTxHash,
       },
     });
   });

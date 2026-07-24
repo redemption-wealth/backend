@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach } from "vitest";
+import { getAddress } from "viem";
 import {
   testPrisma,
   mockVerifyAuthToken,
@@ -18,7 +19,8 @@ import { adminAdjust } from "@/services/wp.js";
 // ────────────────────────────────────────────────────────────────────────────
 
 const fixtures = createFixtures(testPrisma);
-const ADDR = "0xaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaA";
+// A valid EIP-55 checksummed address (the backend normalizes + stores this form).
+const ADDR = getAddress("0x" + "a".repeat(40));
 
 function mockPrivyAs(privyUserId: string, email: string) {
   mockVerifyAuthToken.mockResolvedValue({ userId: privyUserId });
@@ -395,6 +397,20 @@ describe("redeem: crypto campaign wallet + payout", () => {
     expect(await balanceOf(appUser.id)).toBe(900); // WP debited
   });
 
+  test("a wrong-checksum (typo'd) wallet is rejected (EIP-55)", async () => {
+    const reward = await cryptoReward();
+    const { u } = await fundedUser(1000);
+    mockPrivyAs(u.privyUserId, u.email);
+    // Mixed-case address whose EIP-55 checksum is wrong → 400, not silently stored.
+    const badChecksum = "0xaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaA";
+    const res = await jsonPost(
+      `/api/rewards/${reward.id}/redeem`,
+      { walletAddress: badChecksum },
+      u.token,
+    );
+    expect(res.status).toBe(400);
+  });
+
   test("fulfill records payoutTxHash → FULFILLED", async () => {
     const reward = await cryptoReward();
     const { u } = await fundedUser();
@@ -413,6 +429,26 @@ describe("redeem: crypto campaign wallet + payout", () => {
     const row = await testPrisma.wpRedemption.findUnique({ where: { id: redemption.id } });
     expect(row!.status).toBe("FULFILLED");
     expect(row!.payoutTxHash).toBe("0xdeadbeef");
+  });
+
+  test("a CRYPTO payout cannot be FULFILLED without a tx hash", async () => {
+    const reward = await cryptoReward();
+    const { u } = await fundedUser();
+    mockPrivyAs(u.privyUserId, u.email);
+    const { redemption } = await (
+      await jsonPost(`/api/rewards/${reward.id}/redeem`, { walletAddress: ADDR }, u.token)
+    ).json();
+
+    const { token: mgr } = await createManager();
+    // No payoutTxHash → 400 (traceability); the row stays PENDING.
+    const res = await jsonPatch(
+      `/api/admin/wp-redemptions/${redemption.id}`,
+      { status: "FULFILLED" },
+      mgr,
+    );
+    expect(res.status).toBe(400);
+    const row = await testPrisma.wpRedemption.findUnique({ where: { id: redemption.id } });
+    expect(row!.status).toBe("PENDING");
   });
 
   test("reject refunds WP (reuses rejectRedemption)", async () => {

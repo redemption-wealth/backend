@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getAddress, isAddress } from "viem";
 
 // User-facing WP schemas.
 
@@ -6,17 +7,40 @@ import { z } from "zod";
 // reward campaign (payout wallet capture).
 export const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
-// POST /api/wp/convert — burn WP for $WEALTH. `toAddress` is validated loosely
-// as an EVM address (0x + 40 hex); the admin sends $WEALTH there manually.
+/**
+ * Validate + normalize an EVM address to its EIP-55 checksummed form. `isAddress`
+ * with `strict: true` accepts an all-lowercase / all-uppercase address (no
+ * checksum to verify) or a correctly checksummed one, but REJECTS a mixed-case
+ * address whose checksum is wrong — the EIP-55 typo guard the bare `0x + 40 hex`
+ * regex misses. Manual $WEALTH payouts go to whatever we store, so we store the
+ * canonical checksummed value. Throws on any invalid input.
+ */
+export function toChecksumAddress(value: string): string {
+  const v = value.trim();
+  if (!isAddress(v, { strict: true })) {
+    throw new Error("Invalid EVM address");
+  }
+  return getAddress(v);
+}
+
+/** Zod EVM-address field: EIP-55 checksum-validated, normalized to checksummed. */
+export const evmAddressSchema = z.string().transform((v, ctx) => {
+  try {
+    return toChecksumAddress(v);
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Alamat wallet tidak valid" });
+    return z.NEVER;
+  }
+});
+
+// POST /api/wp/convert — burn WP for $WEALTH. `toAddress` is EIP-55 validated and
+// stored checksummed; the admin sends $WEALTH there manually.
 export const convertWpSchema = z.object({
   wpAmount: z.coerce
     .number()
     .int()
     .positive("Jumlah WP harus lebih dari 0"),
-  toAddress: z
-    .string()
-    .trim()
-    .regex(EVM_ADDRESS_REGEX, "Alamat wallet tidak valid"),
+  toAddress: evmAddressSchema,
 });
 
 // POST /api/rewards/:id/redeem — optional fulfilment payload. All fields are
