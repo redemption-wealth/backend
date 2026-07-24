@@ -54,9 +54,25 @@ const rewardBase = z.object({
 // fields. On updates that don't touch category this is a no-op (category
 // undefined), so editing an existing CRYPTO reward's title alone still works.
 function requireCryptoFields(
-  v: { category?: string; cryptoAsset?: string; cryptoAmount?: string; expiresAt?: Date | null },
+  v: {
+    category?: string;
+    cryptoAsset?: string;
+    cryptoAmount?: string;
+    expiresAt?: Date | null;
+    fulfillmentType?: string;
+  },
   ctx: z.RefinementCtx,
 ) {
+  // AUTO instant-fulfilment (from a code pool) only makes sense for digital
+  // vouchers. Physical goods + crypto must be MANUAL so an admin actually
+  // ships/sends them — never auto-marked FULFILLED with no delivery.
+  if (v.category && v.category !== "VOUCHER" && v.fulfillmentType === "AUTO") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["fulfillmentType"],
+      message: "Hanya voucher yang boleh AUTO; barang & crypto harus MANUAL",
+    });
+  }
   if (v.category !== "CRYPTO") return;
   if (!v.cryptoAsset)
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["cryptoAsset"], message: "Wajib untuk reward CRYPTO" });

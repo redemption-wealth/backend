@@ -168,6 +168,29 @@ describe("admin: CRYPTO reward category + fields", () => {
     expect(row!.expiresAt).not.toBeNull();
   });
 
+  test("CRYPTO with fulfillmentType AUTO → 400 (must be MANUAL)", async () => {
+    const res = await createReward({
+      title: "Airdrop AUTO",
+      category: "CRYPTO",
+      wpCost: 500,
+      cryptoAsset: "USDC",
+      cryptoAmount: "5",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      fulfillmentType: "AUTO",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("MERCH with fulfillmentType AUTO → 400 (only voucher may AUTO)", async () => {
+    const res = await createReward({
+      title: "Kaos AUTO",
+      category: "MERCH",
+      wpCost: 500,
+      fulfillmentType: "AUTO",
+    });
+    expect(res.status).toBe(400);
+  });
+
   test("CRYPTO missing expiresAt → 400", async () => {
     const res = await createReward({
       title: "Airdrop",

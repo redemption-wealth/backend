@@ -183,7 +183,11 @@ export async function redeemReward(
     // MERCH/SEMBAKO, EVM wallet for CRYPTO) BEFORE reserving stock or debiting WP.
     const capture = resolveFulfilment(reward.category, fulfilment);
 
-    const isAuto = reward.fulfillmentType === "AUTO";
+    // AUTO instant-fulfilment is ONLY valid for digital vouchers. Physical goods
+    // and CRYPTO must go through the MANUAL admin queue even if misconfigured as
+    // AUTO — otherwise a crypto/goods redemption would be marked FULFILLED with a
+    // pool string and no token/parcel ever sent.
+    const isAuto = reward.fulfillmentType === "AUTO" && reward.category === "VOUCHER";
 
     // Reserve an asset (AUTO) or check stock (MANUAL) BEFORE spending WP.
     let asset: { id: string; value: string } | null = null;
@@ -445,6 +449,8 @@ export async function listUserRedemptions(appUserId: string, q: LedgerQuery = {}
       wpSpent: true,
       status: true,
       fulfillmentNote: true,
+      walletAddress: true,
+      payoutTxHash: true,
       createdAt: true,
       reward: {
         select: { title: true, category: true, partnerName: true, imageUrl: true },
@@ -462,6 +468,9 @@ export async function listUserRedemptions(appUserId: string, q: LedgerQuery = {}
     wpSpent: r.wpSpent,
     status: r.status,
     fulfillmentNote: r.fulfillmentNote,
+    // CRYPTO: expose the payout wallet + tx hash so the user can verify receipt.
+    walletAddress: r.walletAddress,
+    payoutTxHash: r.payoutTxHash,
     createdAt: r.createdAt,
   }));
 }
