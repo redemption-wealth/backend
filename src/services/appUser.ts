@@ -87,12 +87,10 @@ export async function syncAppUser(
     });
   }
 
-  // Qualification is tied to THIS account's own CONFIRMED redemptions (appUserId),
-  // NOT the non-unique email — a Privy email can map to many accounts, so an
-  // email-keyed gate would let one deposit qualify every sybil sharing the email.
-  const hasDeposited = await userHasConfirmedRedemption(existing.id);
-  // referredById is set-once; never overwritten on later syncs.
-  const justQualified = !existing.hasDeposited && hasDeposited;
+  // Eligibility is LIVE-derived from THIS account's CONFIRMED redemptions
+  // (appUserId, not the shared email — see confirmedRedemptionCount). The stored
+  // hasDeposited/qualifiedAt columns are vestigial and no longer written here.
+  const deposited = await hasRedeemed(existing.id);
   const appUser = await prisma.appUser.update({
     where: { id: existing.id },
     data: {
@@ -103,15 +101,17 @@ export async function syncAppUser(
       // (2026-07-17 lost-redemption case: this exact wipe left the matcher
       // blind for the payer).
       ...(walletAddress ? { walletAddress } : {}),
-      ...(justQualified ? { hasDeposited: true, qualifiedAt: new Date() } : {}),
     },
   });
-  if (justQualified && appUser.referredById) {
-    // Referral is now a % of the referee's future quest claims (referral.ts);
-    // qualifying only completes the referrer's INVITE milestone.
+  // Eagerly complete the referrer's INVITE milestone once this referee has
+  // redeemed. Unconditional + idempotent (the QuestCompletion "once" unique key
+  // no-ops after the first award), so we don't need a stored prior-state diff.
+  if (deposited && appUser.referredById) {
     await evaluateMilestoneQuests(appUser.referredById);
   }
-  return appUser;
+  // Return the LIVE eligibility (not the vestigial stored column) so every caller
+  // — and the /sync API response — reflects the current redemption reality.
+  return { ...appUser, hasDeposited: deposited };
 }
 
 /** Mask an email for display: "andini@gmail.com" → "and***@gmail.com". */
@@ -131,14 +131,22 @@ export async function getReferralInfo(appUserId: string) {
     select: {
       referralCode: true,
       referredById: true,
-      hasDeposited: true,
       referralRateBps: true,
     },
   });
+  // Live eligibility (count > 0), not a stored flag.
+  const deposited = await hasRedeemed(appUserId);
 
+  // One query: a friend is "qualified" once they have ≥1 CONFIRMED redemption.
+  // Filtered relation _count keeps this a single round-trip (no per-friend N+1).
   const friends = await prisma.appUser.findMany({
     where: { referredById: appUserId },
-    select: { id: true, email: true, hasDeposited: true, createdAt: true },
+    select: {
+      id: true,
+      email: true,
+      createdAt: true,
+      _count: { select: { redemptions: { where: { status: "CONFIRMED" } } } },
+    },
     orderBy: { createdAt: "desc" },
   });
 
@@ -175,7 +183,7 @@ export async function getReferralInfo(appUserId: string) {
     // A user can attach a friend's code only if they haven't set one yet AND
     // haven't qualified yet.
     hasReferrer,
-    canApplyCode: !hasReferrer && !(me?.hasDeposited ?? false),
+    canApplyCode: !hasReferrer && !deposited,
     // What THIS user earns as a referrer: a percentage of each friend's quest claims.
     ratePercent,
     stats: {
@@ -185,7 +193,7 @@ export async function getReferralInfo(appUserId: string) {
     friends: friends.map((f) => ({
       label: maskEmail(f.email),
       joinedAt: f.createdAt,
-      qualified: f.hasDeposited,
+      qualified: f._count.redemptions > 0,
       contributedWp: wpByFriend.get(f.id) ?? 0,
     })),
   };
@@ -208,11 +216,14 @@ export class ReferralCodeError extends Error {
 export async function applyReferralCode(appUserId: string, rawCode: string) {
   const me = await prisma.appUser.findUnique({
     where: { id: appUserId },
-    select: { id: true, referredById: true, hasDeposited: true },
+    select: { id: true, referredById: true },
   });
   if (!me) throw new ReferralCodeError("Pengguna tidak ditemukan");
   if (me.referredById) throw new ReferralCodeError("Kamu sudah memakai kode referral");
-  if (me.hasDeposited)
+  // Eligibility is live now: a code can only be attached before the first redeem.
+  // (Best-effort — a redeem landing between this check and the write could sneak
+  // one in; this is a cosmetic-attribution path, not a money path, so no lock.)
+  if (await hasRedeemed(appUserId))
     throw new ReferralCodeError("Kode referral hanya bisa dipakai sebelum deposit pertama");
 
   const referrerId = await resolveReferrerId(rawCode);
@@ -220,11 +231,10 @@ export async function applyReferralCode(appUserId: string, rawCode: string) {
   if (referrerId === appUserId)
     throw new ReferralCodeError("Tidak bisa memakai kode referral sendiri");
 
-  // Atomic set-once: only writes if the user still has no referrer and hasn't
-  // deposited. Closes the read-then-write race (two concurrent applies, or an
-  // apply racing qualification) — a losing writer is a no-op, not a silent overwrite.
+  // Atomic set-once on the referrer: only writes if the user still has no
+  // referrer (closes the two-concurrent-applies race; a losing writer no-ops).
   const res = await prisma.appUser.updateMany({
-    where: { id: appUserId, referredById: null, hasDeposited: false },
+    where: { id: appUserId, referredById: null },
     data: { referredById: referrerId },
   });
   if (res.count === 0)
@@ -245,11 +255,26 @@ export async function getOrCreateAppUser(input: SyncAppUserInput) {
   return syncAppUser(input);
 }
 
-async function userHasConfirmedRedemption(appUserId: string): Promise<boolean> {
-  const count = await prisma.redemption.count({
+/**
+ * The single source of truth for a user's redemption-derived state: the number
+ * of THIS account's CONFIRMED on-chain redemptions, keyed by appUserId (not the
+ * shared Privy email, so sybils don't share it). Everything derives from this
+ * live count — eligibility to spend WP is `count > 0`, and the REDEEM milestone
+ * ladder is the count itself. A refund flips a row out of CONFIRMED, so both drop
+ * automatically with no flag to reset. (The AppUser.hasDeposited / qualifiedAt
+ * columns are now vestigial — nothing reads them for gating.)
+ */
+export async function confirmedRedemptionCount(
+  appUserId: string
+): Promise<number> {
+  return prisma.redemption.count({
     where: { appUserId, status: "CONFIRMED" },
   });
-  return count > 0;
+}
+
+/** Convenience boolean: has this account redeemed on-chain at least once. */
+export async function hasRedeemed(appUserId: string): Promise<boolean> {
+  return (await confirmedRedemptionCount(appUserId)) > 0;
 }
 
 async function resolveReferrerId(code: string): Promise<string | null> {

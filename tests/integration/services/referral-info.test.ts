@@ -11,22 +11,63 @@ import { claimTask } from "@/services/quest.js";
  */
 
 let seq = 0;
+// Eligibility ("deposited") is LIVE-derived from CONFIRMED redemptions, so seed a
+// real one rather than setting a flag.
+async function seedConfirmedRedemption(appUserId: string) {
+  seq += 1;
+  const tag = `ri-red-${seq}-${Date.now()}`;
+  const merchant = await testPrisma.merchant.create({ data: { name: tag } });
+  const voucher = await testPrisma.voucher.create({
+    data: {
+      merchantId: merchant.id,
+      title: `${tag}-v`,
+      basePrice: 1,
+      totalStock: 1,
+      remainingStock: 1,
+      appFeeSnapshot: 0,
+      gasFeeSnapshot: 0,
+      startDate: new Date("2020-01-01"),
+      expiryDate: new Date("2030-01-01"),
+    },
+  });
+  const slot = await testPrisma.redemptionSlot.create({
+    data: { voucherId: voucher.id, slotIndex: 0, status: "AVAILABLE" },
+  });
+  await testPrisma.redemption.create({
+    data: {
+      userEmail: `${tag}@test.local`,
+      appUserId,
+      voucherId: voucher.id,
+      merchantId: merchant.id,
+      slotId: slot.id,
+      wealthAmount: "10",
+      priceIdrAtRedeem: 1,
+      wealthPriceIdrAtRedeem: "1",
+      appFeeAmount: "0",
+      gasFeeAmount: "0",
+      idempotencyKey: `${tag}-idm`,
+      status: "CONFIRMED",
+    },
+  });
+}
+
 async function createUser(opts: {
   hasDeposited?: boolean;
   referredById?: string | null;
   referralRateBps?: number;
 } = {}) {
   seq += 1;
-  return testPrisma.appUser.create({
+  const user = await testPrisma.appUser.create({
     data: {
       privyId: `privy-${seq}`,
       email: `friend${seq}@gmail.com`,
       referralCode: `REF${seq}`,
-      hasDeposited: opts.hasDeposited ?? false,
       referredById: opts.referredById ?? null,
       ...(opts.referralRateBps !== undefined ? { referralRateBps: opts.referralRateBps } : {}),
     },
   });
+  if (opts.hasDeposited) await seedConfirmedRedemption(user.id);
+  return user;
 }
 
 let questSeq = 0;
@@ -51,6 +92,10 @@ beforeEach(async () => {
   await testPrisma.wpRedemption.deleteMany();
   await testPrisma.wpConversion.deleteMany();
   await testPrisma.quest.deleteMany();
+  await testPrisma.redemption.deleteMany();
+  await testPrisma.redemptionSlot.deleteMany();
+  await testPrisma.voucher.deleteMany();
+  await testPrisma.merchant.deleteMany();
   await testPrisma.appUser.deleteMany();
 });
 

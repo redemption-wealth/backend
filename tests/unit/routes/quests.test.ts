@@ -21,6 +21,7 @@ vi.mock("@/middleware/auth.js", () => ({
 vi.mock("@/services/appUser.js", () => ({
   syncAppUser: vi.fn(),
   getOrCreateAppUser: vi.fn(),
+  hasRedeemed: vi.fn(async () => false),
 }));
 vi.mock("@/services/quest.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/services/quest.js")>();

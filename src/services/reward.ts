@@ -172,13 +172,19 @@ export async function redeemReward(
 
     const user = await tx.appUser.findUnique({
       where: { id: appUserId },
-      select: { hasDeposited: true, fraudReviewStatus: true },
+      select: { fraudReviewStatus: true },
     });
     if (!user) throw new RewardNotAvailableError(rewardId);
     // Manual fraud-review gate: a FLAGGED user is blocked from this value-out
     // action (reversible — reading the current label restores access instantly).
     if (user.fraudReviewStatus === "FLAGGED") throw new AccountUnderReviewError();
-    if (!user.hasDeposited) throw new NotQualifiedError(); // anti-bot gate
+    // Anti-bot gate — LIVE: eligible once this account has ≥1 CONFIRMED on-chain
+    // redemption (drops back to ineligible if that redemption is later refunded).
+    const deposited =
+      (await tx.redemption.count({
+        where: { appUserId, status: "CONFIRMED" },
+      })) > 0;
+    if (!deposited) throw new NotQualifiedError();
 
     const reward = await tx.wpReward.findUnique({ where: { id: rewardId } });
     if (!reward || !reward.isActive) throw new RewardNotAvailableError(rewardId);

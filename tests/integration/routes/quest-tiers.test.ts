@@ -106,20 +106,21 @@ async function seedConfirmedRedemption(email: string, appUserId?: string) {
 }
 
 let refSeq = 0;
-/** Create a qualified (deposited) referral pointing at `referrerId`. */
+/** Create a qualified referral pointing at `referrerId`. "Qualified" is now LIVE:
+ *  the referee must own a CONFIRMED on-chain redemption, not just a flag. */
 async function seedQualifiedReferral(referrerId: string) {
   refSeq += 1;
   const uid = `${Date.now()}-${refSeq}`;
-  await testPrisma.appUser.create({
+  const email = `qtier-ref-${uid}@test.com`;
+  const referee = await testPrisma.appUser.create({
     data: {
       privyId: `qtier-ref-privy-${uid}`,
-      email: `qtier-ref-${uid}@test.com`,
+      email,
       referralCode: `QTREF${refSeq}${Date.now().toString(36).toUpperCase()}`.slice(0, 20),
       referredById: referrerId,
-      hasDeposited: true,
-      qualifiedAt: new Date(),
     },
   });
+  await seedConfirmedRedemption(email, referee.id);
 }
 
 async function makeInviteTier(overrides?: {

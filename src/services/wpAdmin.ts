@@ -92,9 +92,15 @@ export async function listAppUsers(q: AppUserListQuery = {}) {
         walletAddress: true,
         referralCode: true,
         referralRateBps: true,
-        hasDeposited: true,
         createdAt: true,
-        _count: { select: { referrals: true } },
+        // LIVE eligibility, batched into this one query (no per-user N+1):
+        // a filtered relation count of CONFIRMED redemptions.
+        _count: {
+          select: {
+            referrals: true,
+            redemptions: { where: { status: "CONFIRMED" } },
+          },
+        },
       },
     }),
     prisma.appUser.count({ where }),
@@ -137,7 +143,7 @@ export async function listAppUsers(q: AppUserListQuery = {}) {
         walletAddress: u.walletAddress,
         referralCode: u.referralCode,
         referralRateBps: u.referralRateBps,
-        hasDeposited: u.hasDeposited,
+        hasDeposited: u._count.redemptions > 0,
         createdAt: u.createdAt,
         referrals: u._count.referrals,
         balance: balMap.get(u.id) ?? 0,
@@ -162,11 +168,15 @@ export async function getAppUserDetail(id: string) {
       referralRateUpdatedBy: true,
       referralRateUpdatedAt: true,
       referredById: true,
-      hasDeposited: true,
-      qualifiedAt: true,
+      qualifiedAt: true, // vestigial — kept for response shape only
       fraudReviewStatus: true,
       createdAt: true,
-      _count: { select: { referrals: true } },
+      _count: {
+        select: {
+          referrals: true,
+          redemptions: { where: { status: "CONFIRMED" } },
+        },
+      },
     },
   });
   if (!user) return null;
@@ -188,6 +198,8 @@ export async function getAppUserDetail(id: string) {
 
   return {
     ...user,
+    // LIVE eligibility (count > 0), overriding the vestigial stored flag.
+    hasDeposited: user._count.redemptions > 0,
     referrals: user._count.referrals,
     balance: balAgg._sum?.amount ?? 0,
     totalEarnedWp,
@@ -210,13 +222,19 @@ async function joinEmails(
 ): Promise<EarnerRow[]> {
   const users = await prisma.appUser.findMany({
     where: { id: { in: rows.map((r) => r.appUserId) } },
-    select: { id: true, email: true, hasDeposited: true, fraudReviewStatus: true },
+    select: {
+      id: true,
+      email: true,
+      fraudReviewStatus: true,
+      // LIVE eligibility, batched (filtered relation count) — no per-user N+1.
+      _count: { select: { redemptions: { where: { status: "CONFIRMED" } } } },
+    },
   });
   const byId = new Map(users.map((u) => [u.id, u]));
   return rows.map((r) => ({
     appUserId: r.appUserId,
     email: byId.get(r.appUserId)?.email ?? null,
-    hasDeposited: byId.get(r.appUserId)?.hasDeposited ?? false,
+    hasDeposited: (byId.get(r.appUserId)?._count.redemptions ?? 0) > 0,
     totalWp: r._sum.amount ?? 0,
     fraudReviewStatus: byId.get(r.appUserId)?.fraudReviewStatus ?? "NONE",
   }));

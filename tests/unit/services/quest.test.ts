@@ -176,7 +176,8 @@ describe("claimTask", () => {
   test("qualified user gets a +10% self-bonus", async () => {
     db.quest.findUnique.mockResolvedValue(quest);
     db.questCompletion.findUnique.mockResolvedValue(null);
-    db.appUser.findUnique.mockResolvedValue({ hasDeposited: true });
+    db.appUser.findUnique.mockResolvedValue({ referredById: null });
+    db.redemption.count.mockResolvedValue(1); // has redeemed → eligible
 
     const res = await claimTask("u1", "follow-x");
 
@@ -276,7 +277,7 @@ describe("evaluateMilestoneQuests", () => {
     // progress met → completion written + reward credited
     expect(db.appUser.count.mock.calls[0][0].where).toEqual({
       referredById: "u1",
-      qualifiedAt: { not: null },
+      redemptions: { some: { status: "CONFIRMED" } },
     });
     expect(db.questCompletion.create).toHaveBeenCalledWith({
       data: { appUserId: "u1", questId: "qi", periodKey: "once" },

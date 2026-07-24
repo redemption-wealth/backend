@@ -59,6 +59,11 @@ async function seedConfirmedRedemptionFor(appUserId: string, email: string) {
 }
 
 beforeEach(async () => {
+  // Clear everything that RESTRICT-references appUser (conversions/redemptions/
+  // ledger left by prior test files) so the appUser wipe below can't fail.
+  await testPrisma.wpConversion.deleteMany();
+  await testPrisma.wpRedemption.deleteMany();
+  await testPrisma.wpLedger.deleteMany();
   await testPrisma.redemption.deleteMany();
   await testPrisma.qrCode.deleteMany();
   await testPrisma.redemptionSlot.deleteMany();

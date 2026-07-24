@@ -144,10 +144,15 @@ export async function claimTask(
 
     const user = await tx.appUser.findUnique({
       where: { id: appUserId },
-      select: { hasDeposited: true, referredById: true },
+      select: { referredById: true },
     });
+    // Eligibility is LIVE: deposited == this account has ≥1 CONFIRMED redemption.
+    const deposited =
+      (await tx.redemption.count({
+        where: { appUserId, status: "CONFIRMED" },
+      })) > 0;
     // Round-half-up so a small quest still pays a ≥1 self-bonus (matches referral).
-    const selfBonus = user?.hasDeposited ? Math.round(quest.rewardWp * 0.1) : 0;
+    const selfBonus = deposited ? Math.round(quest.rewardWp * 0.1) : 0;
     const total = quest.rewardWp + selfBonus;
 
     await creditWithTx(tx, {
@@ -164,7 +169,7 @@ export async function claimTask(
     const referrerCredited = await creditReferrerForQuest(tx, {
       refereeId: appUserId,
       refereeReferredById: user?.referredById ?? null,
-      refereeHasDeposited: user?.hasDeposited ?? false,
+      refereeHasDeposited: deposited,
       basisWp: quest.rewardWp,
       sourceRefId: completion.id,
     });
@@ -224,8 +229,14 @@ async function milestoneProgress(
   category: MilestoneCategory
 ): Promise<number> {
   if (category === "INVITE") {
+    // A referee "counts" once they have ≥1 CONFIRMED on-chain redemption — LIVE,
+    // so a referee's refund drops the referrer's INVITE progress. (Was the
+    // set-once qualifiedAt flag, which never reversed.)
     return client.appUser.count({
-      where: { referredById: appUserId, qualifiedAt: { not: null } },
+      where: {
+        referredById: appUserId,
+        redemptions: { some: { status: "CONFIRMED" } },
+      },
     });
   }
   // REDEEM → count this account's ON-CHAIN redemptions (the `redemption` model),
@@ -407,11 +418,12 @@ export async function claimMilestoneTier(
     });
 
     const base = tierReward(tier, quest.milestoneBaseWp);
-    const user = await tx.appUser.findUnique({
-      where: { id: appUserId },
-      select: { hasDeposited: true },
-    });
-    const referralBonus = user?.hasDeposited ? Math.round(base * 0.1) : 0;
+    // Self-bonus eligibility is LIVE (count > 0), same as claimTask.
+    const deposited =
+      (await tx.redemption.count({
+        where: { appUserId, status: "CONFIRMED" },
+      })) > 0;
+    const referralBonus = deposited ? Math.round(base * 0.1) : 0;
     const total = base + referralBonus;
 
     await creditWithTx(tx, {

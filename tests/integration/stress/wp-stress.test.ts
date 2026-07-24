@@ -13,16 +13,18 @@ import { adminAdjust } from "@/services/wp.js";
 let seq = 0;
 async function makeUser(opts: { deposited?: boolean; referredById?: string; rateBps?: number } = {}) {
   seq += 1;
-  return testPrisma.appUser.create({
+  const user = await testPrisma.appUser.create({
     data: {
       privyId: `stress-${seq}-${Date.now()}`,
       email: `stress${seq}@test.local`,
       referralCode: `STRESS${seq}${Date.now().toString(36).toUpperCase()}`.slice(0, 20),
-      hasDeposited: opts.deposited ?? false,
       referredById: opts.referredById ?? null,
       ...(opts.rateBps !== undefined ? { referralRateBps: opts.rateBps } : {}),
     },
   });
+  // Eligibility is LIVE — a "deposited" user must own a CONFIRMED redemption.
+  if (opts.deposited) await seedConfirmedRedemption(user.id, user.email);
+  return user;
 }
 
 async function balanceOf(appUserId: string): Promise<number> {

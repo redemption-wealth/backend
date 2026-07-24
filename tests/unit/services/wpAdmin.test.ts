@@ -17,8 +17,8 @@ beforeEach(() => {
 describe("listAppUsers enrichment", () => {
   test("adds totalEarnedWp, lastActiveAt and derived tier per user", async () => {
     prismaMock.appUser.findMany.mockResolvedValue([
-      { id: "u1", email: "a@x.com", walletAddress: null, referralCode: "R1", hasDeposited: true, createdAt: NOW, _count: { referrals: 2 } },
-      { id: "u2", email: "b@x.com", walletAddress: null, referralCode: "R2", hasDeposited: false, createdAt: NOW, _count: { referrals: 0 } },
+      { id: "u1", email: "a@x.com", walletAddress: null, referralCode: "R1", createdAt: NOW, _count: { referrals: 2, redemptions: 1 } },
+      { id: "u2", email: "b@x.com", walletAddress: null, referralCode: "R2", createdAt: NOW, _count: { referrals: 0, redemptions: 0 } },
     ] as never);
     prismaMock.appUser.count.mockResolvedValue(2 as never);
 
@@ -56,8 +56,8 @@ describe("getAppUserDetail enrichment", () => {
   test("returns tier + totalEarnedWp + lastActiveAt + fraudReviewStatus", async () => {
     prismaMock.appUser.findUnique.mockResolvedValue({
       id: "u1", email: "a@x.com", walletAddress: null, referralCode: "R1",
-      referredById: null, hasDeposited: true, qualifiedAt: null,
-      fraudReviewStatus: "REVIEWING", createdAt: NOW, _count: { referrals: 1 },
+      referredById: null, qualifiedAt: null,
+      fraudReviewStatus: "REVIEWING", createdAt: NOW, _count: { referrals: 1, redemptions: 1 },
     } as never);
     // Promise.all order: balAgg, earnedAgg, lastActiveAgg, ledger
     prismaMock.wpLedger.aggregate
@@ -101,10 +101,10 @@ describe("getFraudReport", () => {
     // joinEmails findMany (called for top then fast)
     prismaMock.appUser.findMany
       .mockResolvedValueOnce([
-        { id: "u1", email: "a@x.com", hasDeposited: true, fraudReviewStatus: "NONE" },
+        { id: "u1", email: "a@x.com", _count: { redemptions: 1 }, fraudReviewStatus: "NONE" },
       ] as never)
       .mockResolvedValueOnce([
-        { id: "u2", email: "b@x.com", hasDeposited: false, fraudReviewStatus: "FLAGGED" },
+        { id: "u2", email: "b@x.com", _count: { redemptions: 0 }, fraudReviewStatus: "FLAGGED" },
       ] as never);
 
     prismaMock.appUser.count

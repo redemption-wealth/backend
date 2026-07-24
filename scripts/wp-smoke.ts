@@ -207,11 +207,9 @@ async function main() {
   }
   assert(gated, "redeem rejected with NotQualifiedError before deposit (ANTI-BOT GATE)");
 
-  // 5. Simulate deposit + grant WP
-  await prisma.appUser.update({
-    where: { id: user.id },
-    data: { hasDeposited: true, qualifiedAt: new Date() },
-  });
+  // 5. Simulate deposit (a CONFIRMED on-chain redemption — eligibility is now
+  //    LIVE-derived from these, not a stored flag) + grant WP.
+  await seedConfirmedDeposit(user.id);
   await adminAdjust(user.id, 600, "e2e top-up");
   assert((await getBalance(user.id)) === 606, "balance = 606 after grant (6 + 600)");
 
@@ -245,17 +243,10 @@ async function main() {
   assert(!!redeem3, "redeem-3-times milestone quest is seeded");
   assert(redeem3!.milestoneBaseWp === 30, "redeem-3-times is tiered (base 30 WP)");
 
-  // Progress-gated: with zero on-chain redemptions, claiming tier 1 is locked.
-  let tierLockedEarly = false;
-  try {
-    await claimMilestoneTier(user.id, "redeem-3-times", 1);
-  } catch (e) {
-    tierLockedEarly = e instanceof TierLockedError;
-  }
-  assert(tierLockedEarly, "tier 1 locked before any on-chain redemption (progress-gated)");
-
-  // Record 3 CONFIRMED on-chain redemptions tied to THIS account (appUserId).
-  await seedOnchainRedemptions(user.id, 3);
+  // The deposit in step 5 is itself a CONFIRMED on-chain redemption (deposit ==
+  // redeem in the live model), so REDEEM progress already sits at 1. Add 2 more
+  // (distinct merchant) to reach exactly 3 total.
+  await seedOnchainRedemptions(user.id, 2);
 
   // Listing now exposes tiered state: progress 3 + which ladder rungs (1,3,5,10)
   // are claimable. At progress 3 only tiers 1 and 3 are reached.
@@ -365,7 +356,6 @@ async function main() {
   const convUser = {
     id: user.id,
     email: EMAIL,
-    hasDeposited: true,
     fraudReviewStatus: "NONE" as const,
   };
 

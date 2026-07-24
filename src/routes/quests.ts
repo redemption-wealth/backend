@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { questClaimLimiter } from "../middleware/rate-limit.js";
 import { syncSchema } from "../schemas/quest.js";
-import { syncAppUser, getOrCreateAppUser } from "../services/appUser.js";
+import { syncAppUser, getOrCreateAppUser, hasRedeemed } from "../services/appUser.js";
 import {
   listQuestsForUser,
   checkin,
@@ -61,7 +61,13 @@ quests.post("/sync", requireUser, async (c) => {
     parsed.data.referralCode ?? null
   );
   const balance = await getBalance(appUser.id);
-  return c.json({ appUser: publicAppUser(appUser), balance });
+  return c.json({
+    appUser: publicAppUser({
+      ...appUser,
+      hasDeposited: await hasRedeemed(appUser.id),
+    }),
+    balance,
+  });
 });
 
 // GET /api/quests — quests + this user's state + balance + check-in status.

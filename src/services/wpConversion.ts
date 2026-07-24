@@ -166,7 +166,6 @@ async function confirmedDepositTotal(
 export interface ConvertUser {
   id: string;
   email: string;
-  hasDeposited: boolean;
   fraudReviewStatus: "NONE" | "REVIEWING" | "CLEARED" | "FLAGGED";
 }
 
@@ -192,7 +191,6 @@ export async function convertWp(
   // Manual fraud-review gate: a FLAGGED user is blocked from this value-out
   // action (reversible — set back to NONE/CLEARED to restore access instantly).
   if (appUser.fraudReviewStatus === "FLAGGED") throw new AccountUnderReviewError();
-  if (!appUser.hasDeposited) throw new NotQualifiedError(); // anti-bot gate
   if (wpAmount < settings.wpConvertMinWp) {
     throw new ConversionBelowMinError(settings.wpConvertMinWp);
   }
@@ -222,6 +220,9 @@ export async function convertWp(
       confirmedDepositTotal(tx, appUser.id),
       convertedWealthCumulative(tx, appUser.id),
     ]);
+    // Anti-bot gate — LIVE: a user with zero confirmed deposits (e.g. their only
+    // redemption was refunded) has no headroom and isn't eligible to convert.
+    if (depositTotal.lte(0)) throw new NotQualifiedError();
     if (alreadyConverted.add(wealthAmount).gt(depositTotal)) {
       throw new DepositCapError(depositTotal.toString(), alreadyConverted.toString());
     }
@@ -288,13 +289,18 @@ export interface ConvertInfo {
 export async function getConvertInfo(appUser: ConvertUser): Promise<ConvertInfo> {
   const settings = await loadSettings(prisma);
   const usedWp = await convertedWpThisMonth(prisma, appUser.id);
+  // LIVE eligibility: ≥1 CONFIRMED redemption for this account.
+  const deposited =
+    (await prisma.redemption.count({
+      where: { appUserId: appUser.id, status: "CONFIRMED" },
+    })) > 0;
   return {
     enabled: settings.wpConversionEnabled,
     rate: settings.wpConversionRate,
     minWp: settings.wpConvertMinWp,
     maxWpPerMonth: settings.wpConvertMaxWpPerMonth,
     remainingWpThisMonth: Math.max(0, settings.wpConvertMaxWpPerMonth - usedWp),
-    hasDeposited: appUser.hasDeposited,
+    hasDeposited: deposited,
   };
 }
 
