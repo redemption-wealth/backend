@@ -6,7 +6,7 @@ import {
 } from "../../setup.integration.js";
 import { authGet, jsonPost } from "../../helpers/request.js";
 import { createTestUserToken } from "../../helpers/auth.js";
-import { claimMilestoneTier } from "@/services/quest.js";
+import { claimMilestoneTier, claimAllMilestoneTiers } from "@/services/quest.js";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Phase 3 — tiered milestone quests, REDEEM-by-email progress, and the closed
@@ -393,5 +393,33 @@ describe("tier claim fires the referral hook", () => {
       where: { appUserId: referrer.id, refType: "referral_quest" },
     });
     expect(rows).toBe(1);
+  });
+
+  test("claimAll claims every ready rung at once (M4)", async () => {
+    const user = await directUser({ deposited: true });
+    // 5 CONFIRMED redemptions → REDEEM progress = 5.
+    for (let i = 0; i < 5; i++) await seedConfirmedRedemption(user.email, user.id);
+    const quest = await testPrisma.quest.create({
+      data: {
+        key: `redeem-claimall-${Date.now()}`,
+        title: "Redeem (tiered)",
+        category: "REDEEM",
+        rewardWp: 0,
+        cadence: "ONCE",
+        milestoneBaseWp: 10,
+        milestoneLadder: "1,3,5,10",
+      },
+    });
+
+    const res = await claimAllMilestoneTiers(user.id, quest.key);
+
+    // Rungs 1,3,5 are ≤ progress 5 → all claimed at once (10 needs more).
+    expect(res.tiers).toEqual([1, 3, 5]);
+    // reward = (1+3+5)×10 = 90, + 10% self-bonus each (deposited) = 99.
+    expect(await balanceOf(user.id)).toBe(99);
+    // Re-running claims nothing new.
+    const again = await claimAllMilestoneTiers(user.id, quest.key);
+    expect(again.tiers).toEqual([]);
+    expect(again.alreadyClaimed).toBe(true);
   });
 });

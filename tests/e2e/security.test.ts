@@ -19,11 +19,10 @@ describe("Security Hardening", () => {
     const admin = await fixtures.createAdmin({ role: "admin", email: "owner-check-admin@test.com" });
     const token = await createTestAdminToken({ id: admin.id, email: admin.email });
 
-    // Only check genuinely owner-only routes
-    const routes = [
-      "/api/admin/admins",
-      "/api/admin/settings",
-    ];
+    // Genuinely owner-only GET routes. NOTE: GET /api/admin/settings is NOT here —
+    // #27 intentionally lets any admin READ settings (voucher fee preview). Writing
+    // settings (PUT) is still owner-only, asserted separately below.
+    const routes = ["/api/admin/admins"];
 
     for (const route of routes) {
       const res = await authGet(route, token);

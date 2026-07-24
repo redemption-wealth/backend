@@ -444,6 +444,67 @@ export async function claimMilestoneTier(
   });
 }
 
+/**
+ * Claim ALL currently-claimable rungs of a tiered milestone quest in one call
+ * (ascending), so a user who jumped several rungs doesn't have to tap once per
+ * rung. Each rung is claimed via the same progress-verified, idempotent path;
+ * a cap hit stops the run gracefully (earlier rungs stay credited).
+ */
+export async function claimAllMilestoneTiers(
+  appUserId: string,
+  questKey: string
+): Promise<TierClaimResult & { tiers: number[] }> {
+  const quest = await prisma.quest.findUnique({ where: { key: questKey } });
+  if (
+    !quest ||
+    !quest.isActive ||
+    !isMilestoneCategory(quest.category) ||
+    quest.milestoneBaseWp == null
+  ) {
+    throw new QuestNotAvailableError(questKey);
+  }
+
+  const progress = await milestoneProgress(prisma, appUserId, quest.category);
+  const completions = await prisma.questCompletion.findMany({
+    where: { appUserId, questId: quest.id },
+    select: { periodKey: true },
+  });
+  const completedTiers = completions
+    .map((c) => tierFromPeriodKey(c.periodKey))
+    .filter((t): t is number => t != null);
+
+  const ready = claimableTiers(progress, quest.milestoneLadder, completedTiers);
+
+  let reward = 0;
+  let referralBonus = 0;
+  let referrerCredited = 0;
+  const claimed: number[] = [];
+  for (const tier of ready) {
+    try {
+      const r = await claimMilestoneTier(appUserId, questKey, tier);
+      if (!r.alreadyClaimed) {
+        reward += r.reward;
+        referralBonus += r.referralBonus ?? 0;
+        referrerCredited += r.referrerCredited ?? 0;
+        claimed.push(tier);
+      }
+    } catch (e) {
+      // Raced another claim of this rung → skip; cap reached → stop, keep the rest.
+      if (e instanceof TierLockedError) continue;
+      if (e instanceof WpCapExceededError) break;
+      throw e;
+    }
+  }
+
+  return {
+    alreadyClaimed: claimed.length === 0,
+    reward,
+    referralBonus,
+    referrerCredited,
+    tiers: claimed,
+  };
+}
+
 /** Quests + this user's completion state, balance, and check-in status. */
 export async function listQuestsForUser(appUserId: string) {
   // Lazily award any milestone (INVITE/REDEEM) whose target is now met so the

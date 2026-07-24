@@ -8,6 +8,7 @@ import {
   checkin,
   claimTask,
   claimMilestoneTier,
+  claimAllMilestoneTiers,
   QuestNotAvailableError,
   TierLockedError,
 } from "../services/quest.js";
@@ -111,22 +112,25 @@ quests.post("/:key/claim", requireUser, questClaimLimiter, async (c) => {
     userEmail: user.userEmail,
   });
 
+  let body: unknown = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  const claimAll =
+    !!body && typeof body === "object" && (body as { all?: unknown }).all === true;
   let tier: number | null;
   try {
-    let body: unknown = {};
-    try {
-      body = await c.req.json();
-    } catch {
-      body = {};
-    }
     tier = parseTier(body);
   } catch {
     return c.json({ error: "Tier tidak valid" }, 400);
   }
 
   try {
-    const result =
-      tier != null
+    const result = claimAll
+      ? await claimAllMilestoneTiers(appUser.id, key)
+      : tier != null
         ? await claimMilestoneTier(appUser.id, key, tier)
         : await claimTask(appUser.id, key);
     const balance = await getBalance(appUser.id);
