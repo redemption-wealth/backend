@@ -202,7 +202,8 @@ export async function expireStaleStreaks(): Promise<number> {
 // Progress-based quests that complete once a running count reaches targetCount:
 //   INVITE → this user's referrals who have qualified (referredById == user AND
 //            qualifiedAt != null)
-//   REDEEM → this user's WpRedemption rows with status FULFILLED
+//   REDEEM → this account's ON-CHAIN `redemption` rows with status CONFIRMED,
+//            counted by appUserId (see milestoneProgress)
 // Unlike DAILY/SOCIAL tasks these are not user-claimed; the engine auto-credits
 // quest.rewardWp (type TASK, capped) and writes QuestCompletion(periodKey="once")
 // the first time the target is met.
@@ -401,15 +402,14 @@ export async function claimMilestoneTier(
     const progress = await milestoneProgress(tx, appUserId, quest.category);
     if (progress < tier) throw new TierLockedError(questKey, tier);
 
-    const completion = await tx.questCompletion.create({
+    await tx.questCompletion.create({
       data: { appUserId, questId: quest.id, periodKey },
-      select: { id: true },
     });
 
     const base = tierReward(tier, quest.milestoneBaseWp);
     const user = await tx.appUser.findUnique({
       where: { id: appUserId },
-      select: { hasDeposited: true, referredById: true },
+      select: { hasDeposited: true },
     });
     const referralBonus = user?.hasDeposited ? Math.round(base * 0.1) : 0;
     const total = base + referralBonus;
@@ -424,23 +424,16 @@ export async function claimMilestoneTier(
       note: `${quest.title} — tier ${tier} (${base} WP)`,
     });
 
-    // Tier claims are quest earnings too → credit the claimer's referrer a %
-    // of the tier's base reward (same real-time, capped, best-effort path).
-    const referrerCredited = await creditReferrerForQuest(tx, {
-      refereeId: appUserId,
-      refereeReferredById: user?.referredById ?? null,
-      refereeHasDeposited: user?.hasDeposited ?? false,
-      basisWp: base,
-      sourceRefId: completion.id,
-    });
-
+    // Referral % is paid ONLY on regular quest claims (claimTask), NOT on
+    // milestone tiers (INVITE/REDEEM) — a referrer earns from their referee's
+    // ordinary quests, not from the referee's own invite/redeem grinding.
     return {
       alreadyClaimed: false,
       reward: total,
       base,
       referralBonus,
       tier,
-      referrerCredited,
+      referrerCredited: 0,
     };
   });
 }

@@ -346,7 +346,7 @@ describe("SECURITY: unearned-mint exploit is closed", () => {
 });
 
 // ─── Referral %: a tier claim also credits the claimer's referrer ─────────────
-describe("tier claim fires the referral hook", () => {
+describe("tier claims do NOT fire the referral hook (referral is regular-quest only)", () => {
   let seq = 0;
   async function directUser(opts: { referredById?: string; deposited?: boolean } = {}) {
     seq += 1;
@@ -363,7 +363,7 @@ describe("tier claim fires the referral hook", () => {
     });
   }
 
-  test("referrer earns 10% of the tier base when a referee claims a tier", async () => {
+  test("referrer earns nothing when a referee claims a milestone tier", async () => {
     const referrer = await directUser(); // default rate 10%
     const referee = await directUser({ referredById: referrer.id, deposited: true });
     // One CONFIRMED on-chain redemption tied to the referee → REDEEM progress = 1.
@@ -384,15 +384,16 @@ describe("tier claim fires the referral hook", () => {
     const result = await claimMilestoneTier(referee.id, quest.key, 1);
 
     expect(result.tier).toBe(1);
-    // Referee: base 20 + 10% self-bonus (deposited) = 22.
+    // Referee still gets base 20 + 10% self-bonus (deposited) = 22.
     expect(await balanceOf(referee.id)).toBe(22);
-    // Referrer: floor(20 * 0.10) = 2, one referral_quest ledger row.
-    expect(result.referrerCredited).toBe(2);
-    expect(await balanceOf(referrer.id)).toBe(2);
+    // Referrer gets NOTHING: referral % is paid only on regular quest claims,
+    // not on the referee's own milestone (INVITE/REDEEM) grinding.
+    expect(result.referrerCredited).toBe(0);
+    expect(await balanceOf(referrer.id)).toBe(0);
     const rows = await testPrisma.wpLedger.count({
       where: { appUserId: referrer.id, refType: "referral_quest" },
     });
-    expect(rows).toBe(1);
+    expect(rows).toBe(0);
   });
 
   test("claimAll claims every ready rung at once (M4)", async () => {
