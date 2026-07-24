@@ -25,6 +25,16 @@ enum RedemptionStatus {
   CONFIRMED
   FAILED
   EXPIRED
+  REFUNDED
+}
+
+// Review state of a treasury inflow that couldn't be auto-matched to exactly
+// one PENDING redemption (hybrid policy — see docs/redemption-reliability-plan.md).
+enum UnmatchedTransferStatus {
+  OPEN
+  MATCHED
+  REFUNDED
+  IGNORED
 }
 
 enum QrStatus {
@@ -199,6 +209,15 @@ model AppSettings {
   // When the running total for the month exceeds this, claim endpoints reject.
   wpMonthlyCapWp Int      @default(1000000)
 
+  // ─── Referral flat bonuses (paid once, when the referee first deposits) ──────
+  // Flat WP paid to the referrer when their referee qualifies (deposits). Replaces
+  // the old "10% of referee balance" formula — flat is predictable and can't be
+  // inflated by the referee farming WP before depositing.
+  wpReferrerBonusWp  Int @default(50)
+  // Flat welcome WP paid to the referee themselves when they first deposit, as a
+  // reason to enter a friend's code. Also gated on deposit (anti-bot).
+  wpRefereeWelcomeWp Int @default(50)
+
   // ─── WP → $WEALTH conversion (manual treasury) ──────────────────────────────
   // Master switch — conversion endpoints reject while false.
   wpConversionEnabled Boolean @default(false)
@@ -211,6 +230,11 @@ model AppSettings {
   // Global monthly $WEALTH budget across all users (PENDING+FULFILLED this WIB
   // month must stay at or under this). Same $WEALTH type as Redemption.wealthAmount.
   wpConversionMonthlyBudgetWealth Decimal @default(10000) @db.Decimal(36, 18)
+
+  // Heartbeat: set every time the treasury-inflow sweep completes. GET
+  // /api/cron/health reports its staleness so an external uptime monitor can
+  // alert if the sweep silently stops running (e.g. CRON_SECRET rotated → 401).
+  lastInflowSweepAt DateTime?
 
   updatedAt      DateTime @updatedAt
 
@@ -294,30 +318,72 @@ model QrCode {
 model Redemption {
   id                     String           @id @default(cuid())
   userEmail              String
+  // The AppUser (Privy identity) that made this redemption. Set at creation from
+  // the authenticated account, so qualification (hasDeposited) is tied to the
+  // specific account — NOT the shared, non-unique email (a Privy email can map to
+  // many accounts, so an email-keyed gate is sybil-able). Nullable for legacy rows.
+  appUserId              String?
+  appUser                AppUser?         @relation("AppUserRedemptions", fields: [appUserId], references: [id], onDelete: SetNull)
   voucherId              String
   voucher                Voucher          @relation(fields: [voucherId], references: [id], onDelete: Restrict)
   merchantId             String
   merchant               Merchant         @relation(fields: [merchantId], references: [id], onDelete: Restrict)
-  slotId                 String           @unique
-  slot                   RedemptionSlot   @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  // Nullable: failed/expired attempts are KEPT as history (never deleted) and
+  // detached from their slot on release, so the unique constraint can't lock a
+  // slot forever. NULL = slot already released back to stock.
+  slotId                 String?          @unique
+  slot                   RedemptionSlot?  @relation(fields: [slotId], references: [id], onDelete: Restrict)
   wealthAmount           Decimal          @db.Decimal(36, 18)
   priceIdrAtRedeem       Int
   wealthPriceIdrAtRedeem Decimal          @db.Decimal(18, 4)
   appFeeAmount           Decimal          @db.Decimal(36, 18)
   gasFeeAmount           Decimal          @db.Decimal(36, 18)
   txHash                 String?          @unique
+  // Payer wallet captured at initiate — lets the webhook/sweep match an
+  // on-chain transfer back to this redemption even when the app never
+  // submitted the txHash (the 2026-07-16 lost-redemption case).
+  walletAddress          String?
   idempotencyKey         String           @unique
   status                 RedemptionStatus @default(PENDING)
   confirmedAt            DateTime?
   failedAt               DateTime?
+  refundTxHash           String?          @unique
+  refundedAt             DateTime?
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
 
   qrCodes QrCode[]
 
   @@index([userEmail, status])
+  @@index([appUserId, status])
   @@index([voucherId])
   @@map("redemptions")
+}
+
+// A $WEALTH transfer that arrived in the treasury but could not be
+// auto-matched to exactly one PENDING redemption (hybrid policy: exact single
+// match auto-confirms; 0 or >1 candidates land here for admin review).
+// Guarantees NO incoming money can ever go unrecorded.
+model UnmatchedTransfer {
+  id                  String                  @id @default(cuid())
+  txHash              String                  @unique
+  fromAddress         String
+  toAddress           String
+  tokenAddress        String
+  amount              Decimal                 @db.Decimal(36, 18)
+  // Filled when the wallet maps to a known AppUser (ambiguous-candidates case).
+  userEmail           String?
+  status              UnmatchedTransferStatus @default(OPEN)
+  matchedRedemptionId String?
+  refundTxHash        String?                 @unique
+  resolvedBy          String? // admin id/email who resolved it
+  resolvedAt          DateTime?
+  note                String?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  @@index([status, createdAt])
+  @@map("unmatched_transfers")
 }
 
 // ─── WEALTH Points (WP) — Quest & Rewards ────────────────────────────────────
@@ -345,6 +411,14 @@ model AppUser {
   // Manual fraud-review label (see WpFraudReviewStatus). Operational only — does
   // NOT gate earning/spending. Set by managers from the WP Fraud tab.
   fraudReviewStatus WpFraudReviewStatus @default(NONE)
+  // Referral commission rate in basis points (1000 = 10%). Set per-user by a
+  // manager in the back-office; KOLs get a higher rate. Applied in real time to
+  // the WP a referee earns from quests (see services/referral.ts). A FLAGGED
+  // referrer earns no referral bonus.
+  referralRateBps Int @default(1000)
+  // Audit (Finding 7): who last changed the rate and when (manager email + ts).
+  referralRateUpdatedBy String?
+  referralRateUpdatedAt DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -353,6 +427,11 @@ model AppUser {
   streak        CheckinStreak?
   wpRedemptions WpRedemption[]
   wpConversions WpConversion[]
+  // On-chain voucher redemptions made by this account (qualification source).
+  redemptions   Redemption[]      @relation("AppUserRedemptions")
+
+  // Webhook fallback match looks AppUsers up by wallet.
+  @@index([walletAddress])
 
   @@index([referredById])
   @@index([email])
@@ -374,6 +453,8 @@ model WpLedger {
 
   @@index([appUserId, createdAt])
   @@index([type, createdAt])
+  // Backs the referral idempotency lookup by (referrer, refType, source refId).
+  @@index([appUserId, refType, refId])
   @@map("wp_ledger")
 }
 
@@ -413,6 +494,11 @@ model Quest {
   rewardWp    Int
   cadence     String // ONCE | DAILY
   targetCount Int      @default(1)
+  // Tiered/repeatable milestone quests (INVITE/REDEEM). Reward at tier N =
+  // N × milestoneBaseWp, unlocked at each count in milestoneLadder (CSV, e.g.
+  // "1,3,5,10,20,30,50,100"). Null → the quest uses legacy single-shot rewardWp.
+  milestoneBaseWp Int?
+  milestoneLadder String?
   actionUrl   String?
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
@@ -450,18 +536,53 @@ model CheckinStreak {
 model WpReward {
   id          String   @id @default(cuid())
   title       String
-  category    String // VOUCHER | MERCH | SEMBAKO
+  category    String // VOUCHER | MERCH | SEMBAKO | CRYPTO
   partnerName String?
   wpCost      Int
-  stock       Int? // null = unlimited
+  stock       Int? // null = unlimited. Only meaningful for MANUAL fulfillment.
   isActive    Boolean  @default(true)
   imageUrl    String?
+  // How a redemption is fulfilled:
+  //   AUTO   → pull one asset from the pool (WpRewardAsset) at redeem time and mark
+  //            the redemption FULFILLED instantly. Availability = count of AVAILABLE
+  //            assets, so `stock` is ignored. Used for digital vouchers (code/QR/link).
+  //   MANUAL → create a PENDING redemption for an admin to fulfill/ship (physical
+  //            merch/sembako). Uses `stock` as before.
+  fulfillmentType String @default("MANUAL") // AUTO | MANUAL
+  // CRYPTO campaign rewards: the asset + fixed amount the admin sends manually to
+  // the user's EVM address (display only). e.g. cryptoAsset "ETH", cryptoAmount "0.0001".
+  cryptoAsset  String?
+  cryptoAmount String?
+  // Use-WP rewards behave like vouchers: an optional expiry / campaign end.
+  // Null = no expiry. Redeeming an expired reward is rejected.
+  expiresAt   DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   redemptions WpRedemption[]
+  assets      WpRewardAsset[]
 
   @@map("wp_rewards")
+}
+
+// Pool of pre-uploaded fulfillment assets for an AUTO reward. Each asset is
+// handed to exactly one redemption. Content is flexible (a code, link, image
+// URL, or QR payload) — interpreted by `kind`. This is the off-chain analogue
+// of the on-chain QrCode pool, minus any blockchain/tx.
+model WpRewardAsset {
+  id           String        @id @default(cuid())
+  rewardId     String
+  reward       WpReward      @relation(fields: [rewardId], references: [id], onDelete: Cascade)
+  kind         String        @default("CODE") // CODE | LINK | IMAGE | QR
+  value        String // the code text / link / image URL / QR payload
+  status       String        @default("AVAILABLE") // AVAILABLE | ASSIGNED
+  redemptionId String?       @unique
+  redemption   WpRedemption? @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
+  assignedAt   DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@index([rewardId, status])
+  @@map("wp_reward_assets")
 }
 
 model WpRedemption {
@@ -477,8 +598,21 @@ model WpRedemption {
   // Manager wants the end user to see when the redemption is FULFILLED.
   fulfillmentNote String?
   fulfilledBy String?
+  // Physical goods (MERCH/SEMBAKO): shipping details captured at redeem time and
+  // immutable after. Fulfilment is manual; the user coordinates with an admin via
+  // a Telegram contact link.
+  recipientName   String?
+  recipientPhone  String?
+  shippingAddress String?
+  // CRYPTO campaign: the user's EVM (0x…) address to receive the token, plus the
+  // on-chain txHash the admin records after sending manually.
+  walletAddress String?
+  payoutTxHash  String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  // Set for AUTO rewards: the pool asset handed to this redemption.
+  assignedAsset WpRewardAsset?
 
   @@index([status, createdAt])
   @@index([appUserId])

@@ -5,6 +5,8 @@ vi.mock("@/db.js", () => {
     appUser: { findUnique: vi.fn() },
     wpReward: { findUnique: vi.fn(), update: vi.fn(), findMany: vi.fn() },
     wpRedemption: { create: vi.fn() },
+    // Eligibility is now LIVE: the gate counts CONFIRMED redemptions.
+    redemption: { count: vi.fn() },
     wpLedger: { aggregate: vi.fn(), create: vi.fn() },
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,6 +38,7 @@ const REWARD = {
 beforeEach(() => {
   vi.resetAllMocks();
   db.$transaction.mockImplementation((cb: (tx: unknown) => unknown) => cb(db));
+  db.redemption.count.mockResolvedValue(1); // default: eligible (has redeemed)
   db.wpLedger.create.mockResolvedValue({ id: "l1" });
   db.wpReward.update.mockResolvedValue({});
   db.wpRedemption.create.mockImplementation(({ data }: any) =>
@@ -45,7 +48,8 @@ beforeEach(() => {
 
 describe("redeemReward — anti-bot gate", () => {
   test("rejects a user who has not deposited", async () => {
-    db.appUser.findUnique.mockResolvedValue({ hasDeposited: false });
+    db.appUser.findUnique.mockResolvedValue({ fraudReviewStatus: "NONE" });
+    db.redemption.count.mockResolvedValue(0); // no CONFIRMED redemption → ineligible
 
     await expect(redeemReward("u1", "r1")).rejects.toBeInstanceOf(
       NotQualifiedError

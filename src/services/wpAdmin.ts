@@ -91,9 +91,16 @@ export async function listAppUsers(q: AppUserListQuery = {}) {
         email: true,
         walletAddress: true,
         referralCode: true,
-        hasDeposited: true,
+        referralRateBps: true,
         createdAt: true,
-        _count: { select: { referrals: true } },
+        // LIVE eligibility, batched into this one query (no per-user N+1):
+        // a filtered relation count of CONFIRMED redemptions.
+        _count: {
+          select: {
+            referrals: true,
+            redemptions: { where: { status: "CONFIRMED" } },
+          },
+        },
       },
     }),
     prisma.appUser.count({ where }),
@@ -135,7 +142,8 @@ export async function listAppUsers(q: AppUserListQuery = {}) {
         email: u.email,
         walletAddress: u.walletAddress,
         referralCode: u.referralCode,
-        hasDeposited: u.hasDeposited,
+        referralRateBps: u.referralRateBps,
+        hasDeposited: u._count.redemptions > 0,
         createdAt: u.createdAt,
         referrals: u._count.referrals,
         balance: balMap.get(u.id) ?? 0,
@@ -156,12 +164,19 @@ export async function getAppUserDetail(id: string) {
       email: true,
       walletAddress: true,
       referralCode: true,
+      referralRateBps: true,
+      referralRateUpdatedBy: true,
+      referralRateUpdatedAt: true,
       referredById: true,
-      hasDeposited: true,
-      qualifiedAt: true,
+      qualifiedAt: true, // vestigial — kept for response shape only
       fraudReviewStatus: true,
       createdAt: true,
-      _count: { select: { referrals: true } },
+      _count: {
+        select: {
+          referrals: true,
+          redemptions: { where: { status: "CONFIRMED" } },
+        },
+      },
     },
   });
   if (!user) return null;
@@ -183,6 +198,8 @@ export async function getAppUserDetail(id: string) {
 
   return {
     ...user,
+    // LIVE eligibility (count > 0), overriding the vestigial stored flag.
+    hasDeposited: user._count.redemptions > 0,
     referrals: user._count.referrals,
     balance: balAgg._sum?.amount ?? 0,
     totalEarnedWp,
@@ -205,13 +222,19 @@ async function joinEmails(
 ): Promise<EarnerRow[]> {
   const users = await prisma.appUser.findMany({
     where: { id: { in: rows.map((r) => r.appUserId) } },
-    select: { id: true, email: true, hasDeposited: true, fraudReviewStatus: true },
+    select: {
+      id: true,
+      email: true,
+      fraudReviewStatus: true,
+      // LIVE eligibility, batched (filtered relation count) — no per-user N+1.
+      _count: { select: { redemptions: { where: { status: "CONFIRMED" } } } },
+    },
   });
   const byId = new Map(users.map((u) => [u.id, u]));
   return rows.map((r) => ({
     appUserId: r.appUserId,
     email: byId.get(r.appUserId)?.email ?? null,
-    hasDeposited: byId.get(r.appUserId)?.hasDeposited ?? false,
+    hasDeposited: (byId.get(r.appUserId)?._count.redemptions ?? 0) > 0,
     totalWp: r._sum.amount ?? 0,
     fraudReviewStatus: byId.get(r.appUserId)?.fraudReviewStatus ?? "NONE",
   }));
@@ -369,4 +392,32 @@ export async function setFraudReviewStatus(
     select: { id: true, fraudReviewStatus: true },
   });
   return { appUserId: updated.id, fraudReviewStatus: updated.fraudReviewStatus };
+}
+
+/**
+ * Set an AppUser's referral commission rate (basis points, 0..10000). Managers
+ * raise KOLs here. Returns null if the user isn't found.
+ */
+export async function setReferralRate(
+  appUserId: string,
+  referralRateBps: number,
+  updatedBy?: string
+): Promise<{ appUserId: string; referralRateBps: number } | null> {
+  const exists = await prisma.appUser.findUnique({
+    where: { id: appUserId },
+    select: { id: true },
+  });
+  if (!exists) return null;
+
+  const updated = await prisma.appUser.update({
+    where: { id: appUserId },
+    // Audit (Finding 7): record which manager changed the rate and when.
+    data: {
+      referralRateBps,
+      referralRateUpdatedBy: updatedBy ?? null,
+      referralRateUpdatedAt: new Date(),
+    },
+    select: { id: true, referralRateBps: true },
+  });
+  return { appUserId: updated.id, referralRateBps: updated.referralRateBps };
 }

@@ -15,6 +15,7 @@ vi.mock("@/middleware/auth.js", () => ({
 
 vi.mock("@/services/appUser.js", () => ({
   getOrCreateAppUser: vi.fn(),
+  hasRedeemed: vi.fn(async () => false),
 }));
 
 const appUserUpdate = vi.fn();

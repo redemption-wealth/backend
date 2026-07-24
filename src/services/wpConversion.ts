@@ -144,18 +144,21 @@ async function convertedWealthThisMonthGlobal(
 
 /**
  * Anti-sybil deposit cap source: the $WEALTH a user has actually sent through
- * the system via CONFIRMED redemptions. Redemptions are linked to the user by
- * email — the SAME join that already gates `hasDeposited`
- * (services/appUser.ts:userHasConfirmedRedemption) — so this per-user total is
- * a clean, authoritative figure, not an invented mapping.
+ * the system via CONFIRMED redemptions. Keyed by `appUserId` — the SAME identity
+ * the `hasDeposited` gate uses (services/appUser.ts:userHasConfirmedRedemption)
+ * and the SAME identity conversions are charged against
+ * (convertedWealthCumulative). It must NOT key by the shared, non-unique Privy
+ * email: one email backs many AppUser accounts, so an email-keyed ceiling would
+ * let each sybil convert against the COMBINED deposits of every account sharing
+ * the email (extracting N²·d $WEALTH for N·d deposited).
  */
 async function confirmedDepositTotal(
   client: RedemptionClient,
-  userEmail: string
+  appUserId: string
 ): Promise<Prisma.Decimal> {
   const agg = await client.redemption.aggregate({
     _sum: { wealthAmount: true },
-    where: { userEmail, status: "CONFIRMED" },
+    where: { appUserId, status: "CONFIRMED" },
   });
   return agg._sum.wealthAmount ?? new Prisma.Decimal(0);
 }
@@ -163,7 +166,6 @@ async function confirmedDepositTotal(
 export interface ConvertUser {
   id: string;
   email: string;
-  hasDeposited: boolean;
   fraudReviewStatus: "NONE" | "REVIEWING" | "CLEARED" | "FLAGGED";
 }
 
@@ -189,7 +191,6 @@ export async function convertWp(
   // Manual fraud-review gate: a FLAGGED user is blocked from this value-out
   // action (reversible — set back to NONE/CLEARED to restore access instantly).
   if (appUser.fraudReviewStatus === "FLAGGED") throw new AccountUnderReviewError();
-  if (!appUser.hasDeposited) throw new NotQualifiedError(); // anti-bot gate
   if (wpAmount < settings.wpConvertMinWp) {
     throw new ConversionBelowMinError(settings.wpConvertMinWp);
   }
@@ -216,14 +217,23 @@ export async function convertWp(
 
     // Anti-sybil deposit cap: cumulative converted ≤ confirmed-deposit total.
     const [depositTotal, alreadyConverted] = await Promise.all([
-      confirmedDepositTotal(tx, appUser.email),
+      confirmedDepositTotal(tx, appUser.id),
       convertedWealthCumulative(tx, appUser.id),
     ]);
+    // Anti-bot gate — LIVE: a user with zero confirmed deposits (e.g. their only
+    // redemption was refunded) has no headroom and isn't eligible to convert.
+    if (depositTotal.lte(0)) throw new NotQualifiedError();
     if (alreadyConverted.add(wealthAmount).gt(depositTotal)) {
       throw new DepositCapError(depositTotal.toString(), alreadyConverted.toString());
     }
 
-    // Global monthly $WEALTH budget.
+    // Global monthly $WEALTH budget. The per-user lock above does NOT order two
+    // different users, so without a shared lock both could read the same
+    // pre-commit global total and jointly overshoot the budget. Take a single
+    // constant-keyed lock so the read+check+burn of the budget-affecting section
+    // is serialized across ALL users. (Always acquired AFTER the per-user lock;
+    // no other path takes this key, so the ordering can't deadlock.)
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('wp-convert-budget'))`;
     const globalThisMonth = await convertedWealthThisMonthGlobal(tx);
     if (
       globalThisMonth.add(wealthAmount).gt(settings.wpConversionMonthlyBudgetWealth)
@@ -279,13 +289,18 @@ export interface ConvertInfo {
 export async function getConvertInfo(appUser: ConvertUser): Promise<ConvertInfo> {
   const settings = await loadSettings(prisma);
   const usedWp = await convertedWpThisMonth(prisma, appUser.id);
+  // LIVE eligibility: ≥1 CONFIRMED redemption for this account.
+  const deposited =
+    (await prisma.redemption.count({
+      where: { appUserId: appUser.id, status: "CONFIRMED" },
+    })) > 0;
   return {
     enabled: settings.wpConversionEnabled,
     rate: settings.wpConversionRate,
     minWp: settings.wpConvertMinWp,
     maxWpPerMonth: settings.wpConvertMaxWpPerMonth,
     remainingWpThisMonth: Math.max(0, settings.wpConvertMaxWpPerMonth - usedWp),
-    hasDeposited: appUser.hasDeposited,
+    hasDeposited: deposited,
   };
 }
 

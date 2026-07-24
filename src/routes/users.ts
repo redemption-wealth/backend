@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
-import { getOrCreateAppUser } from "../services/appUser.js";
+import { getOrCreateAppUser, hasRedeemed } from "../services/appUser.js";
 import { prisma } from "../db.js";
 import { updateProfileSchema } from "../schemas/user.js";
 import { uniqueViolationOn } from "../lib/prisma-errors.js";
@@ -41,7 +41,12 @@ users.get("/me", requireUser, async (c) => {
     privyUserId: user.privyUserId,
     userEmail: user.userEmail,
   });
-  return c.json({ user: toUserResponse(appUser) });
+  return c.json({
+    user: toUserResponse({
+      ...appUser,
+      hasDeposited: await hasRedeemed(appUser.id),
+    }),
+  });
 });
 
 // PATCH /api/users/me — partial profile update. Username uniqueness → 409.
@@ -67,7 +72,12 @@ users.patch("/me", requireUser, async (c) => {
       where: { id: appUser.id },
       data: parsed.data,
     });
-    return c.json({ user: toUserResponse(updated) });
+    return c.json({
+      user: toUserResponse({
+        ...updated,
+        hasDeposited: await hasRedeemed(updated.id),
+      }),
+    });
   } catch (e) {
     // Unique constraint on username → someone already took it. Reads both the
     // legacy meta.target and the PrismaPg driver-adapter constraint shape.

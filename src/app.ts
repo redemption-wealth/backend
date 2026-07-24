@@ -38,6 +38,7 @@ import adminWpSettingsRoutes from "./routes/admin/wp-settings.js";
 import adminWpConversionRoutes from "./routes/admin/wp-conversions.js";
 import adminSearchRoutes from "./routes/admin/search.js";
 import adminNotificationRoutes from "./routes/admin/notifications.js";
+import adminUnmatchedTransferRoutes from "./routes/admin/unmatched-transfers.js";
 
 const app = new Hono();
 
@@ -88,6 +89,7 @@ admin.route("/merchants", adminMerchantRoutes);
 admin.route("/vouchers", adminVoucherRoutes);
 admin.route("/qr-codes", adminQrCodeRoutes);
 admin.route("/redemptions", adminRedemptionRoutes);
+admin.route("/unmatched-transfers", adminUnmatchedTransferRoutes);
 admin.route("/admins", adminAdminRoutes);
 admin.route("/analytics", adminAnalyticsRoutes);
 admin.route("/settings", adminSettingsRoutes);

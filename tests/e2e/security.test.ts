@@ -19,16 +19,28 @@ describe("Security Hardening", () => {
     const admin = await fixtures.createAdmin({ role: "admin", email: "owner-check-admin@test.com" });
     const token = await createTestAdminToken({ id: admin.id, email: admin.email });
 
-    // Only check genuinely owner-only routes
-    const routes = [
-      "/api/admin/admins",
-      "/api/admin/settings",
-    ];
+    // Genuinely owner-only GET routes. GET /api/admin/settings is deliberately
+    // admin-readable since #27 (voucher fee preview); writes (PUT) stay owner-only,
+    // asserted separately below.
+    const routes = ["/api/admin/admins"];
 
     for (const route of routes) {
       const res = await authGet(route, token);
       expect(res.status).toBe(403);
     }
+
+    // Settings: readable by admin, NOT writable.
+    const read = await authGet("/api/admin/settings", token);
+    expect(read.status).toBe(200);
+    const write = await app.request("/api/admin/settings", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ appFeeRate: 1 }),
+    });
+    expect(write.status).toBe(403);
   });
 
   test("webhook without signature is rejected", async () => {

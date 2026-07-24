@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { prisma } from "../db.js";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { initiateRedemption } from "../services/redemption.js";
+import { getOrCreateAppUser } from "../services/appUser.js";
 import { getLiveFeeConfig, injectFeeFields } from "../services/pricing.js";
 import { redeemVoucherSchema, voucherQuerySchema } from "../schemas/voucher.js";
 
@@ -114,18 +115,31 @@ vouchers.post("/:id/redeem", requireUser, async (c) => {
   const { idempotencyKey } = parsed.data;
 
   try {
+    // Resolve (or provision) the account so the redemption is tied to this
+    // specific AppUser — qualification (hasDeposited) is per-account, not per
+    // shared email (a Privy email can map to many accounts → sybil otherwise).
+    const appUser = await getOrCreateAppUser({
+      privyUserId: user.privyUserId,
+      userEmail: user.userEmail,
+    });
     const { redemption, alreadyExists } = await initiateRedemption({
       userEmail: user.userEmail,
+      appUserId: appUser.id,
       voucherId,
       idempotencyKey,
+      // Trusted wallet from the Privy account (server-side) — captured on the
+      // row so the webhook/sweep can attribute the payment without relying on
+      // the (spoofable, often-empty) app_users table.
+      walletAddress: user.walletAddress,
     });
 
-    if (alreadyExists) {
-      return c.json({ redemption, alreadyExists: true });
-    }
-
+    // txDetails ships on EVERY success response — an alreadyExists row that
+    // still needs its signature (double-click reuse, idempotent replay) is
+    // signed by the app using these very fields; omitting them stranded the
+    // flow at "Treasury wallet tidak tersedia".
     return c.json({
       redemption,
+      ...(alreadyExists ? { alreadyExists: true } : {}),
       txDetails: {
         tokenContractAddress: process.env.WEALTH_CONTRACT_ADDRESS,
         treasuryWalletAddress: process.env.DEV_WALLET_ADDRESS,

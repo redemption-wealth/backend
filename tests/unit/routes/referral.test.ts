@@ -31,7 +31,8 @@ describe("GET /api/referral", () => {
   test("returns the referral info payload", async () => {
     vi.mocked(getReferralInfo).mockResolvedValue({
       referralCode: "ABCD2345",
-      stats: { friendsJoined: 2, bonusWpReceived: 62, ratePercent: 10 },
+      ratePercent: 10,
+      stats: { friendsJoined: 2, referralWpEarned: 62 },
       friends: [],
     } as any);
 

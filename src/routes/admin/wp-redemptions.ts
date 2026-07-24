@@ -7,6 +7,7 @@ import {
   rejectRedemption,
   RewardNotAvailableError,
   RedemptionNotPendingError,
+  PayoutProofRequiredError,
 } from "../../services/reward.js";
 
 const adminWpRedemptions = new Hono<AuthEnv>();
@@ -32,7 +33,12 @@ adminWpRedemptions.patch("/:id", async (c) => {
   try {
     const redemption =
       parsed.data.status === "FULFILLED"
-        ? await fulfillRedemption(id, admin.email, parsed.data.fulfillmentNote)
+        ? await fulfillRedemption(
+            id,
+            admin.email,
+            parsed.data.fulfillmentNote,
+            parsed.data.payoutTxHash,
+          )
         : await rejectRedemption(id, admin.email, parsed.data.note);
     return c.json({ redemption });
   } catch (e) {
@@ -40,6 +46,8 @@ adminWpRedemptions.patch("/:id", async (c) => {
       return c.json({ error: "Penukaran tidak ditemukan" }, 404);
     if (e instanceof RedemptionNotPendingError)
       return c.json({ error: e.message }, 409);
+    if (e instanceof PayoutProofRequiredError)
+      return c.json({ error: e.message }, 400);
     throw e;
   }
 });

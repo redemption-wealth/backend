@@ -12,7 +12,12 @@ import {
   NotQualifiedError,
   AccountUnderReviewError,
 } from "../src/services/reward.js";
-import { evaluateMilestoneQuests, listQuestsForUser } from "../src/services/quest.js";
+import {
+  claimMilestoneTier,
+  claimAllMilestoneTiers,
+  TierLockedError,
+  listQuestsForUser,
+} from "../src/services/quest.js";
 import {
   getOverview,
   listAppUsers,
@@ -39,8 +44,10 @@ async function cleanup(appUserId?: string) {
   const id =
     appUserId ??
     (await prisma.appUser.findUnique({ where: { privyId: PRIVY_ID } }))?.id;
-  // Tear down the seeded confirmed-deposit fixtures (by email) regardless.
+  // Tear down the seeded confirmed-deposit + REDEEM-milestone fixtures regardless.
+  // The on-chain redemptions carry appUserId, so they must go before the appUser.
   await teardownConfirmedDeposit();
+  await teardownOnchainRedemptions();
   if (!id) return;
   await prisma.wpConversion.deleteMany({ where: { appUserId: id } });
   await prisma.wpRedemption.deleteMany({ where: { appUserId: id } });
@@ -52,9 +59,10 @@ async function cleanup(appUserId?: string) {
 
 const DEPOSIT_MERCHANT = "smoke-convert-merchant";
 
-// Seed a CONFIRMED redemption for EMAIL so the anti-sybil deposit cap has
-// headroom (the deposit total is SUM of the user's CONFIRMED redemptions).
-async function seedConfirmedDeposit() {
+// Seed a CONFIRMED redemption for the smoke ACCOUNT so the anti-sybil deposit
+// cap has headroom. The cap is keyed by appUserId (not the shared email), so the
+// row must carry appUserId — mirroring how vouchers.ts stamps it at redeem time.
+async function seedConfirmedDeposit(appUserId: string) {
   await teardownConfirmedDeposit();
   const merchant = await prisma.merchant.create({ data: { name: DEPOSIT_MERCHANT } });
   const voucher = await prisma.voucher.create({
@@ -76,6 +84,7 @@ async function seedConfirmedDeposit() {
   await prisma.redemption.create({
     data: {
       userEmail: EMAIL,
+      appUserId,
       voucherId: voucher.id,
       merchantId: merchant.id,
       slotId: slot.id,
@@ -93,6 +102,64 @@ async function seedConfirmedDeposit() {
 
 async function teardownConfirmedDeposit() {
   const merchant = await prisma.merchant.findFirst({ where: { name: DEPOSIT_MERCHANT } });
+  if (!merchant) return;
+  await prisma.redemption.deleteMany({ where: { merchantId: merchant.id } });
+  await prisma.redemptionSlot.deleteMany({ where: { voucher: { merchantId: merchant.id } } });
+  await prisma.voucher.deleteMany({ where: { merchantId: merchant.id } });
+  await prisma.merchant.delete({ where: { id: merchant.id } });
+}
+
+const REDEEM_MILESTONE_MERCHANT = "smoke-redeem-milestone-merchant";
+
+// Seed `count` CONFIRMED on-chain redemptions tied to this account (appUserId) —
+// the tiered REDEEM milestone counts these as progress. Distinct merchant from
+// the deposit-headroom fixture so teardown is independent.
+async function seedOnchainRedemptions(appUserId: string, count: number) {
+  await teardownOnchainRedemptions();
+  const merchant = await prisma.merchant.create({
+    data: { name: REDEEM_MILESTONE_MERCHANT },
+  });
+  const voucher = await prisma.voucher.create({
+    data: {
+      merchantId: merchant.id,
+      title: "smoke-redeem-milestone-voucher",
+      basePrice: 1,
+      totalStock: count,
+      remainingStock: 0,
+      appFeeSnapshot: 0,
+      gasFeeSnapshot: 0,
+      startDate: new Date("2020-01-01"),
+      expiryDate: new Date("2030-01-01"),
+    },
+  });
+  for (let i = 0; i < count; i++) {
+    const slot = await prisma.redemptionSlot.create({
+      data: { voucherId: voucher.id, slotIndex: i },
+    });
+    await prisma.redemption.create({
+      data: {
+        appUserId,
+        userEmail: EMAIL,
+        voucherId: voucher.id,
+        merchantId: merchant.id,
+        slotId: slot.id,
+        wealthAmount: 1,
+        priceIdrAtRedeem: 1,
+        wealthPriceIdrAtRedeem: 1,
+        appFeeAmount: 0,
+        gasFeeAmount: 0,
+        idempotencyKey: `smoke-redeem-${i}-${Date.now()}`,
+        status: "CONFIRMED",
+        confirmedAt: new Date(),
+      },
+    });
+  }
+}
+
+async function teardownOnchainRedemptions() {
+  const merchant = await prisma.merchant.findFirst({
+    where: { name: REDEEM_MILESTONE_MERCHANT },
+  });
   if (!merchant) return;
   await prisma.redemption.deleteMany({ where: { merchantId: merchant.id } });
   await prisma.redemptionSlot.deleteMany({ where: { voucher: { merchantId: merchant.id } } });
@@ -119,12 +186,14 @@ async function main() {
   assert(c2.alreadyCheckedIn && c2.reward === 0, "second check-in same day is idempotent");
   assert((await getBalance(user.id)) === 1, "balance = 1 after check-in");
 
-  // 3. Claim a seeded ONCE quest (+20)
+  // 3. Claim a seeded ONCE social quest. Honor-based social follows pay a small
+  //    fixed nudge (Phase 3 tuning: social-follow-x = 5 WP), no self-bonus while
+  //    the user has not deposited.
   const claim1 = await claimTask(user.id, "social-follow-x");
-  assert(claim1.reward === 20, "claim social-follow-x gives +20 (no self-bonus, not deposited)");
+  assert(claim1.reward === 5, "claim social-follow-x gives +5 (honor-based social, not deposited)");
   const claim2 = await claimTask(user.id, "social-follow-x");
   assert(claim2.alreadyClaimed, "re-claim same quest is idempotent");
-  assert((await getBalance(user.id)) === 21, "balance = 21 after claim");
+  assert((await getBalance(user.id)) === 6, "balance = 6 after claim (1 check-in + 5 social)");
 
   // 4. Redeem gated — not deposited → rejected
   const reward = await prisma.wpReward.findFirstOrThrow({
@@ -138,18 +207,16 @@ async function main() {
   }
   assert(gated, "redeem rejected with NotQualifiedError before deposit (ANTI-BOT GATE)");
 
-  // 5. Simulate deposit + grant WP
-  await prisma.appUser.update({
-    where: { id: user.id },
-    data: { hasDeposited: true, qualifiedAt: new Date() },
-  });
+  // 5. Simulate deposit (a CONFIRMED on-chain redemption — eligibility is now
+  //    LIVE-derived from these, not a stored flag) + grant WP.
+  await seedConfirmedDeposit(user.id);
   await adminAdjust(user.id, 600, "e2e top-up");
-  assert((await getBalance(user.id)) === 621, "balance = 621 after grant");
+  assert((await getBalance(user.id)) === 606, "balance = 606 after grant (6 + 600)");
 
   // 6. Redeem A → fulfill
   const redA = await redeemReward(user.id, reward.id);
   assert(redA.status === "PENDING" && redA.wpSpent === reward.wpCost, "redeem A creates PENDING request");
-  assert((await getBalance(user.id)) === 621 - reward.wpCost, "WP debited after redeem A");
+  assert((await getBalance(user.id)) === 606 - reward.wpCost, "WP debited after redeem A");
   const fulfilled = await fulfillRedemption(redA.id, "admin@e2e", "sent");
   assert(fulfilled.status === "FULFILLED", "redeem A fulfilled");
 
@@ -169,41 +236,70 @@ async function main() {
   assert(fulfilledRow!.fulfillmentNote === "sent", "fulfillmentNote is surfaced to the end user");
   assert(fulfilledRow!.reward.title === "Voucher Kopi Rp 25.000", "redemption carries reward info");
 
-  // 9. REDEEM milestone quest (redeem-3-times, target 3): below target after 1
-  //    fulfilled redemption → NOT awarded; then push to 3 → auto-awarded once.
-  await evaluateMilestoneQuests(user.id);
-  await adminAdjust(user.id, 2 * reward.wpCost, "milestone top-up"); // fund 2 more redeems
-  const balBeforeMilestone = await getBalance(user.id);
+  // 9. REDEEM milestone quest (redeem-3-times) is TIERED (Phase 3): progress =
+  //    this account's CONFIRMED ON-CHAIN redemptions (by appUserId), and the user
+  //    claims each ladder rung (reward = tier × milestoneBaseWp, +10% if deposited).
   const redeem3 = await prisma.quest.findUnique({ where: { key: "redeem-3-times" } });
   assert(!!redeem3, "redeem-3-times milestone quest is seeded");
-  const doneAt1 = await prisma.questCompletion.findFirst({
-    where: { appUserId: user.id, questId: redeem3!.id },
-  });
-  assert(!doneAt1, "milestone NOT completed at 1/3 fulfilled");
+  assert(redeem3!.milestoneBaseWp === 30, "redeem-3-times is tiered (base 30 WP)");
 
-  // Fulfill two more redemptions to reach 3 FULFILLED total.
-  for (let i = 0; i < 2; i++) {
-    const r = await redeemReward(user.id, reward.id);
-    await fulfillRedemption(r.id, "admin@e2e", `code-${i}`);
-  }
-  const doneAt3 = await prisma.questCompletion.findFirst({
-    where: { appUserId: user.id, questId: redeem3!.id },
-  });
-  assert(!!doneAt3, "REDEEM milestone auto-completed at 3/3 fulfilled");
-  const gained = (await getBalance(user.id)) - balBeforeMilestone;
-  // 2 more spends (-2*wpCost) plus the milestone reward (+rewardWp).
-  assert(
-    gained === redeem3!.rewardWp - 2 * reward.wpCost,
-    "milestone reward credited exactly once on completion",
-  );
+  // The deposit in step 5 is itself a CONFIRMED on-chain redemption (deposit ==
+  // redeem in the live model), so REDEEM progress already sits at 1. Add 2 more
+  // (distinct merchant) to reach exactly 3 total.
+  await seedOnchainRedemptions(user.id, 2);
 
-  // 10. Quest listing surfaces milestone progress/target for the "3/5" chip.
+  // Listing now exposes tiered state: progress 3 + which ladder rungs (1,3,5,10)
+  // are claimable. At progress 3 only tiers 1 and 3 are reached.
   const listing = await listQuestsForUser(user.id);
   const redeemState = listing.quests.find((q) => q.key === "redeem-3-times") as
-    | { progress?: number; target?: number; claimed: boolean }
+    | { tiered?: boolean; progress?: number; claimableTiers?: number[] }
     | undefined;
-  assert(redeemState?.progress === 3 && redeemState?.target === 3, "REDEEM quest exposes progress 3/3");
-  assert(redeemState?.claimed === true, "completed milestone shows as claimed");
+  assert(redeemState?.tiered === true, "redeem-3-times listed as tiered");
+  assert(redeemState?.progress === 3, "REDEEM progress = 3 confirmed on-chain redemptions");
+  assert(
+    JSON.stringify(redeemState?.claimableTiers) === JSON.stringify([1, 3]),
+    "tiers 1 and 3 claimable at progress 3 (5 and 10 still locked)",
+  );
+
+  // Claim tier 1 → 1×30 = 30 base, +10% self-bonus (deposited) = 33. Idempotent.
+  const balBeforeTier = await getBalance(user.id);
+  const tier1 = await claimMilestoneTier(user.id, "redeem-3-times", 1);
+  assert(tier1.reward === 33, "claim tier 1 credits 30 + 10% self-bonus = 33");
+  const tier1Again = await claimMilestoneTier(user.id, "redeem-3-times", 1);
+  assert(tier1Again.alreadyClaimed, "re-claiming tier 1 is idempotent");
+
+  // Tier 5 not reached yet (progress 3 < 5) → locked.
+  let tier5Locked = false;
+  try {
+    await claimMilestoneTier(user.id, "redeem-3-times", 5);
+  } catch (e) {
+    tier5Locked = e instanceof TierLockedError;
+  }
+  assert(tier5Locked, "tier 5 locked at progress 3");
+
+  // Claim-all sweeps only the remaining reached rung (tier 3 → 3×30 = 90, +9 = 99).
+  const claimAll = await claimAllMilestoneTiers(user.id, "redeem-3-times");
+  assert(
+    claimAll.tiers.length === 1 && claimAll.tiers[0] === 3,
+    "claim-all sweeps only the reached rung (tier 3)",
+  );
+  assert(claimAll.reward === 99, "claim-all tier 3 credits 90 + 10% self-bonus = 99");
+  const gained = (await getBalance(user.id)) - balBeforeTier;
+  assert(gained === 33 + 99, "tiered milestone credited exactly tier1 + tier3 (132 WP)");
+
+  // 10. Listing reflects claimed tiers 1 & 3 and no further claimable rungs.
+  const listing2 = await listQuestsForUser(user.id);
+  const redeemState2 = listing2.quests.find((q) => q.key === "redeem-3-times") as
+    | { claimedTiers?: number[]; claimableTiers?: number[] }
+    | undefined;
+  assert(
+    JSON.stringify(redeemState2?.claimedTiers) === JSON.stringify([1, 3]),
+    "claimed tiers 1 & 3 reflected in listing",
+  );
+  assert(
+    redeemState2?.claimableTiers?.length === 0,
+    "no rungs claimable until more on-chain redemptions",
+  );
 
   // 11. Admin overview aggregate returns a coherent snapshot.
   const overview = await getOverview();
@@ -254,13 +350,12 @@ async function main() {
       wpConversionMonthlyBudgetWealth: 100000,
     },
   });
-  await seedConfirmedDeposit();
+  await seedConfirmedDeposit(user.id);
 
   const TO_ADDR = "0x" + "a".repeat(40);
   const convUser = {
     id: user.id,
     email: EMAIL,
-    hasDeposited: true,
     fraudReviewStatus: "NONE" as const,
   };
 

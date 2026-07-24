@@ -56,7 +56,6 @@ const SETTINGS = {
 const USER = {
   id: "u1",
   email: "a@b.com",
-  hasDeposited: true,
   fraudReviewStatus: "NONE" as const,
 };
 
@@ -122,8 +121,10 @@ describe("convertWp — gates & caps", () => {
   });
 
   test("rejects a user who has not deposited (anti-bot gate)", async () => {
+    // Eligibility is LIVE: zero confirmed-deposit total → not eligible to convert.
+    db.redemption.aggregate.mockResolvedValue({ _sum: { wealthAmount: D(0) } });
     await expect(
-      convertWp({ ...USER, hasDeposited: false }, 5000, "0x" + "a".repeat(40))
+      convertWp(USER, 5000, "0x" + "a".repeat(40))
     ).rejects.toBeInstanceOf(NotQualifiedError);
     expect(db.wpLedger.create).not.toHaveBeenCalled();
   });

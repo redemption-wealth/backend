@@ -34,6 +34,8 @@ const PENDING = {
   rewardId: "r1",
   wpSpent: 300,
   note: null,
+  // fulfillRedemption includes the reward to gate CRYPTO payouts on a tx hash.
+  reward: { category: "VOUCHER" },
 };
 
 beforeEach(() => {

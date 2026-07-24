@@ -14,6 +14,8 @@ const DEFAULTS = {
   wpConvertMinWp: 1000,
   wpConvertMaxWpPerMonth: 100_000,
   wpConversionMonthlyBudgetWealth: new Prisma.Decimal(10_000),
+  wpReferrerBonusWp: 50,
+  wpRefereeWelcomeWp: 50,
 };
 
 const SETTINGS_SELECT = {
@@ -23,6 +25,8 @@ const SETTINGS_SELECT = {
   wpConvertMinWp: true,
   wpConvertMaxWpPerMonth: true,
   wpConversionMonthlyBudgetWealth: true,
+  wpReferrerBonusWp: true,
+  wpRefereeWelcomeWp: true,
 } as const;
 
 type SettingsRow = {
@@ -32,6 +36,8 @@ type SettingsRow = {
   wpConvertMinWp: number;
   wpConvertMaxWpPerMonth: number;
   wpConversionMonthlyBudgetWealth: Prisma.Decimal;
+  wpReferrerBonusWp: number;
+  wpRefereeWelcomeWp: number;
 };
 
 function shape(s: SettingsRow | null) {
@@ -45,6 +51,8 @@ function shape(s: SettingsRow | null) {
     wpConversionMonthlyBudgetWealth:
       s?.wpConversionMonthlyBudgetWealth ??
       DEFAULTS.wpConversionMonthlyBudgetWealth,
+    wpReferrerBonusWp: s?.wpReferrerBonusWp ?? DEFAULTS.wpReferrerBonusWp,
+    wpRefereeWelcomeWp: s?.wpRefereeWelcomeWp ?? DEFAULTS.wpRefereeWelcomeWp,
   };
 }
 
@@ -75,6 +83,8 @@ adminWpSettings.patch("/", async (c) => {
       d.wpConversionMonthlyBudgetWealth
     );
   }
+  if (d.wpReferrerBonusWp !== undefined) data.wpReferrerBonusWp = d.wpReferrerBonusWp;
+  if (d.wpRefereeWelcomeWp !== undefined) data.wpRefereeWelcomeWp = d.wpRefereeWelcomeWp;
 
   const settings = await prisma.appSettings.upsert({
     where: { id: "singleton" },

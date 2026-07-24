@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { requireUser, type AuthEnv } from "../middleware/auth.js";
 import { questClaimLimiter } from "../middleware/rate-limit.js";
-import { getOrCreateAppUser } from "../services/appUser.js";
+import { getOrCreateAppUser, hasRedeemed } from "../services/appUser.js";
 import { getBalance, InsufficientWpError } from "../services/wp.js";
 import {
   getLedger,
@@ -32,7 +32,9 @@ wp.get("/balance", requireUser, async (c) => {
   });
   return c.json({
     balance: await getBalance(appUser.id),
-    hasDeposited: appUser.hasDeposited,
+    // LIVE eligibility so the app's Use-WP store opens right after a redemption
+    // confirms (and closes again if it's refunded) — no /sync round-trip needed.
+    hasDeposited: await hasRedeemed(appUser.id),
   });
 });
 
@@ -74,7 +76,6 @@ wp.get("/convert-info", requireUser, async (c) => {
   const info = await getConvertInfo({
     id: appUser.id,
     email: appUser.email,
-    hasDeposited: appUser.hasDeposited,
     fraudReviewStatus: appUser.fraudReviewStatus,
   });
   return c.json(info);
@@ -109,7 +110,6 @@ wp.post("/convert", requireUser, questClaimLimiter, async (c) => {
       {
         id: appUser.id,
         email: appUser.email,
-        hasDeposited: appUser.hasDeposited,
         fraudReviewStatus: appUser.fraudReviewStatus,
       },
       parsed.data.wpAmount,

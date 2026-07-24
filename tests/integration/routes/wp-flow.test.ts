@@ -105,10 +105,27 @@ async function provision(u: { privyUserId: string; email: string; token: string 
   mockPrivyAs(u.privyUserId, u.email);
   const res = await authGet("/api/wp/balance", u.token);
   expect(res.status).toBe(200);
-  const row = await testPrisma.appUser.findUnique({
+  const row = (await testPrisma.appUser.findUnique({
     where: { privyId: u.privyUserId },
+  }))!;
+  // Qualification is now per-account (appUserId). Link any deposit seeded for
+  // this email (created before the account existed) to the account and flip the
+  // gate — mirrors a real redemption made by this account.
+  await testPrisma.redemption.updateMany({
+    where: { userEmail: u.email, appUserId: null },
+    data: { appUserId: row.id },
   });
-  return row!;
+  const confirmed = await testPrisma.redemption.count({
+    where: { appUserId: row.id, status: "CONFIRMED" },
+  });
+  if (confirmed > 0 && !row.hasDeposited) {
+    await testPrisma.appUser.update({
+      where: { id: row.id },
+      data: { hasDeposited: true, qualifiedAt: new Date() },
+    });
+    row.hasDeposited = true;
+  }
+  return row;
 }
 
 async function balanceOf(appUserId: string): Promise<number> {
