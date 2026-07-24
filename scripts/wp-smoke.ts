@@ -59,9 +59,10 @@ async function cleanup(appUserId?: string) {
 
 const DEPOSIT_MERCHANT = "smoke-convert-merchant";
 
-// Seed a CONFIRMED redemption for EMAIL so the anti-sybil deposit cap has
-// headroom (the deposit total is SUM of the user's CONFIRMED redemptions).
-async function seedConfirmedDeposit() {
+// Seed a CONFIRMED redemption for the smoke ACCOUNT so the anti-sybil deposit
+// cap has headroom. The cap is keyed by appUserId (not the shared email), so the
+// row must carry appUserId — mirroring how vouchers.ts stamps it at redeem time.
+async function seedConfirmedDeposit(appUserId: string) {
   await teardownConfirmedDeposit();
   const merchant = await prisma.merchant.create({ data: { name: DEPOSIT_MERCHANT } });
   const voucher = await prisma.voucher.create({
@@ -83,6 +84,7 @@ async function seedConfirmedDeposit() {
   await prisma.redemption.create({
     data: {
       userEmail: EMAIL,
+      appUserId,
       voucherId: voucher.id,
       merchantId: merchant.id,
       slotId: slot.id,
@@ -357,7 +359,7 @@ async function main() {
       wpConversionMonthlyBudgetWealth: 100000,
     },
   });
-  await seedConfirmedDeposit();
+  await seedConfirmedDeposit(user.id);
 
   const TO_ADDR = "0x" + "a".repeat(40);
   const convUser = {
