@@ -144,18 +144,21 @@ async function convertedWealthThisMonthGlobal(
 
 /**
  * Anti-sybil deposit cap source: the $WEALTH a user has actually sent through
- * the system via CONFIRMED redemptions. Redemptions are linked to the user by
- * email — the SAME join that already gates `hasDeposited`
- * (services/appUser.ts:userHasConfirmedRedemption) — so this per-user total is
- * a clean, authoritative figure, not an invented mapping.
+ * the system via CONFIRMED redemptions. Keyed by `appUserId` — the SAME identity
+ * the `hasDeposited` gate uses (services/appUser.ts:userHasConfirmedRedemption)
+ * and the SAME identity conversions are charged against
+ * (convertedWealthCumulative). It must NOT key by the shared, non-unique Privy
+ * email: one email backs many AppUser accounts, so an email-keyed ceiling would
+ * let each sybil convert against the COMBINED deposits of every account sharing
+ * the email (extracting N²·d $WEALTH for N·d deposited).
  */
 async function confirmedDepositTotal(
   client: RedemptionClient,
-  userEmail: string
+  appUserId: string
 ): Promise<Prisma.Decimal> {
   const agg = await client.redemption.aggregate({
     _sum: { wealthAmount: true },
-    where: { userEmail, status: "CONFIRMED" },
+    where: { appUserId, status: "CONFIRMED" },
   });
   return agg._sum.wealthAmount ?? new Prisma.Decimal(0);
 }
@@ -216,7 +219,7 @@ export async function convertWp(
 
     // Anti-sybil deposit cap: cumulative converted ≤ confirmed-deposit total.
     const [depositTotal, alreadyConverted] = await Promise.all([
-      confirmedDepositTotal(tx, appUser.email),
+      confirmedDepositTotal(tx, appUser.id),
       convertedWealthCumulative(tx, appUser.id),
     ]);
     if (alreadyConverted.add(wealthAmount).gt(depositTotal)) {
