@@ -64,6 +64,10 @@ async function seedRedemption(appUserId: string, status = "CONFIRMED") {
 }
 
 beforeEach(async () => {
+  // Clear every table that RESTRICT-references appUser (incl. rows a prior test
+  // file may have left — CI runs files in a different order than local) so the
+  // appUser wipe below can't hit a foreign-key violation.
+  await testPrisma.wpConversion.deleteMany();
   await testPrisma.wpLedger.deleteMany();
   await testPrisma.wpRedemption.deleteMany();
   await testPrisma.wpReward.deleteMany();
